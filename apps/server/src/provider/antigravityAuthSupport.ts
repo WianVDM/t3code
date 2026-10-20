@@ -290,6 +290,12 @@ export const prepareAntigravityProfile = Effect.fn("prepareAntigravityProfile")(
   readonly auth?: AntigravityAuthConfig;
   readonly userHome?: string;
   readonly tempDirectory?: string;
+  /**
+   * Link the user's global skill directories into the profile. The context
+   * bridge turns this off when it syncs bridged skills into the profile
+   * instead; it owns `config/skills` in that mode.
+   */
+  readonly linkUserSkills?: boolean;
 }) {
   const auth = input.auth ?? ANTIGRAVITY_PERSONAL_AUTH;
   const fs = yield* FileSystem.FileSystem;
@@ -428,7 +434,9 @@ export const prepareAntigravityProfile = Effect.fn("prepareAntigravityProfile")(
         authSupportError("The Antigravity profile settings could not be written."),
       ),
     );
-  yield* linkAntigravityUserSkills({ profileDirectory: geminiHome, userHome, platform });
+  if (input.linkUserSkills !== false) {
+    yield* linkAntigravityUserSkills({ profileDirectory: geminiHome, userHome, platform });
+  }
   return profile;
 });
 

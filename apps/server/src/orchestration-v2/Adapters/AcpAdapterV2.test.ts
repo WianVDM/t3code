@@ -18,6 +18,8 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import {
   CheckpointId,
+  ContextBridgeSettings,
+  DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
   type ModelSelection,
   ProviderDriverKind,
@@ -117,6 +119,14 @@ const layerTest = Layer.mergeAll(
   layerHost,
 );
 const ACP_TEST_DRIVER = ProviderDriverKind.make("acp-test");
+const decodeContextBridgeSettings = Schema.decodeSync(ContextBridgeSettings);
+const ACP_BRIDGE_SETTINGS = {
+  ...DEFAULT_SERVER_SETTINGS,
+  contextBridge: decodeContextBridgeSettings({
+    enabled: true,
+    routes: { antigravity: { instructions: "claudeAgent" } },
+  }),
+};
 const decodeUnknownJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
 
 describe("acpProjectedCommandExitCode", () => {
@@ -1236,6 +1246,99 @@ describe("AcpAdapterV2", () => {
         assertReinjectedInstructions(yield* runTurn("Continue work."), "Continue work.");
         assert.equal((yield* runTurn("Finish work."))[0]?.text, "Finish work.");
       }).pipe(Effect.provide(layerTest), Effect.scoped),
+  );
+
+  it.live("bridges instructions into the ACP prompt only while the route is enabled", () =>
+    Effect.gen(function* () {
+      const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const path = yield* Path.Path;
+      const mockAgentPath = yield* path.fromFileUrl(
+        new URL("../../../scripts/acp-mock-agent.ts", import.meta.url),
+      );
+      const protocolEvents = yield* Queue.unbounded<EffectAcpProtocol.AcpProtocolLogEvent>();
+      const fileSystem = yield* FileSystem.FileSystem;
+      const tempRoot = yield* fileSystem.makeTempDirectoryScoped({ prefix: "acp-context-bridge-" });
+      const cwd = NodePath.join(tempRoot, "project");
+      yield* fileSystem.makeDirectory(cwd, { recursive: true });
+      yield* fileSystem.writeFileString(NodePath.join(cwd, "CLAUDE.md"), "bridged acp rules");
+
+      const instanceId = ProviderInstanceId.make("acp-test-context-bridge");
+      const threadId = ThreadId.make("thread-acp-context-bridge");
+      const adapter = yield* makeAcpAdapterV2({
+        instanceId,
+        flavor: {
+          driver: ProviderDriverKind.make("antigravity"),
+          capabilities: AcpProviderCapabilitiesV2,
+          makeRuntime: makeMockRuntime({ childProcessSpawner, mockAgentPath, protocolEvents }),
+        },
+        selfInvocation: yield* resolveSelfInvocation(),
+      });
+      const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        cwd,
+      });
+      const modelSelection = { instanceId, model: "default" } as const;
+      const runtime = yield* adapter.openSession({
+        threadId,
+        providerSessionId: ProviderSessionId.make("provider-session-acp-context-bridge"),
+        modelSelection,
+        runtimePolicy,
+      });
+      const providerThread = yield* runtime.ensureThread({
+        threadId,
+        modelSelection,
+        runtimePolicy,
+      });
+      const now = yield* DateTime.now;
+      const runTurn = Effect.fnUntraced(function* (ordinal: number, messageText: string) {
+        yield* runtime.startTurn(
+          makeTurnInput({
+            threadId,
+            providerThread,
+            instanceId,
+            runtimePolicy,
+            now,
+            ordinal,
+            messageText,
+          }),
+        );
+        yield* runtime.events.pipe(
+          Stream.takeUntil((event) => event.type === "turn.terminal"),
+          Stream.runDrain,
+        );
+        while (true) {
+          const event = yield* Queue.take(protocolEvents);
+          if (event.direction !== "outgoing") continue;
+          if (rawProtocolMethod(event) === "session/prompt") {
+            return rawProtocolPromptTextBlocks(event)
+              .map((block) => block.text)
+              .join("\n");
+          }
+        }
+      });
+
+      const hostSettings = yield* TestProviderHost.TestProviderHostSettings;
+      // Disabled by default: the prompt carries no bridged block.
+      const nativePrompt = yield* runTurn(0, "Native request.");
+      assert.notInclude(nativePrompt, "<!-- t3-context-bridge -->");
+      assert.include(nativePrompt, "<runtime_info>");
+
+      // A settings change applies to the next turn without a restart.
+      yield* hostSettings.set(ACP_BRIDGE_SETTINGS);
+      const bridgedPrompt = yield* runTurn(1, "Bridged request.");
+      assert.include(bridgedPrompt, "<!-- t3-context-bridge -->");
+      assert.include(bridgedPrompt, 'source="claudeAgent" target="antigravity"');
+      assert.include(bridgedPrompt, "bridged acp rules");
+
+      yield* hostSettings.set(DEFAULT_SERVER_SETTINGS);
+      const restoredPrompt = yield* runTurn(2, "Restored request.");
+      assert.notInclude(restoredPrompt, "<!-- t3-context-bridge -->");
+    }).pipe(
+      Effect.provide(layerTest),
+      Effect.scoped,
+      Effect.provideService(HostProcess.HomeDirectory, NodePath.join("/nonexistent", "home")),
+    ),
   );
 
   it.live("reapplies a selection after a switch away from it failed partway", () =>

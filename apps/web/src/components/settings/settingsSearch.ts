@@ -25,6 +25,7 @@ export type SettingsPath =
   | "/settings/scheduled-tasks"
   | "/settings/source-control"
   | "/settings/storage"
+  | "/settings/context-bridge"
   | "/settings/connections"
   | "/settings/archived";
 
@@ -83,6 +84,7 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
   "/settings/scheduled-tasks": "Scheduled Tasks",
   "/settings/source-control": "Source Control",
   "/settings/storage": "Storage",
+  "/settings/context-bridge": "Context bridge",
   "/settings/connections": "Connections",
   "/settings/archived": "Archive",
 };
@@ -168,6 +170,30 @@ export const SETTINGS_SEARCH_ITEMS = [
     to: "/settings/storage",
     scope: "environment-defaults",
     searchTerms: ["disk storage browser screenshots captures rotated logs cleanup retention"],
+  },
+  {
+    id: "context-bridge",
+    title: "Context bridge",
+    to: "/settings/context-bridge",
+    searchTerms: ["context bridge instructions skills hooks bridging routes"],
+  },
+  {
+    id: "context-bridge-enabled",
+    title: "Enable context bridge",
+    to: "/settings/context-bridge",
+    searchTerms: ["enable context bridge toggle switch instructions skills hooks"],
+  },
+  {
+    id: "context-bridge-default-source",
+    title: "Default source",
+    to: "/settings/context-bridge",
+    searchTerms: ["default source context bridge fallback provider driver"],
+  },
+  {
+    id: "context-bridge-routes",
+    title: "Routes",
+    to: "/settings/context-bridge",
+    searchTerms: ["routes instructions skills hooks provider driver bridging native"],
   },
   {
     id: "project-defaults",
@@ -1017,6 +1043,7 @@ const SETTINGS_CATEGORY_SCOPES: Readonly<Record<SettingsPath, SettingsSearchScop
   "/settings/integrations": null,
   "/settings/source-control": "environment-defaults",
   "/settings/storage": "project-defaults",
+  "/settings/context-bridge": null,
   "/settings/connections": "connections",
   "/settings/scheduled-tasks": null,
   "/settings/archived": "project-defaults",

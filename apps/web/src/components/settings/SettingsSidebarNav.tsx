@@ -19,6 +19,7 @@ import {
   KeyboardIcon,
   Link2Icon,
   PaletteIcon,
+  RouteIcon,
   SearchIcon,
   Settings2Icon,
   XIcon,
@@ -86,6 +87,7 @@ const SETTINGS_SECTION_ICONS: Readonly<
   "/settings/scheduled-tasks": CalendarClockIcon,
   "/settings/source-control": GitBranchIcon,
   "/settings/storage": HardDriveIcon,
+  "/settings/context-bridge": RouteIcon,
   "/settings/connections": Link2Icon,
   "/settings/archived": ArchiveIcon,
 };

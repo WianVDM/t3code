@@ -7,6 +7,9 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { parse as parseYamlDocument } from "yaml";
 
+import { resolveBridgedSkillRoots } from "@t3tools/provider-core/server/contextBridge";
+import { currentContextBridgeSettings } from "@t3tools/provider-core/server/contextBridgeRuntime";
+
 /**
  * The home directory the agent expands `~` against, matching Python's
  * `os.path.expanduser` in the launch environment T3 hands the process:
@@ -149,6 +152,11 @@ const readSkill = Effect.fn("readAntigravitySkill")(function* (
 
 /**
  * Read failures remain typed so workspace snapshots do not cache partial results.
+ *
+ * When the context bridge routes this driver's skills to another provider, the
+ * source provider's roots are scanned first (global, then project) and win name
+ * collisions, followed by the native roots — the same merge the prototype
+ * monkey-patch performed.
  */
 export const discoverAntigravitySkills = Effect.fn("discoverAntigravitySkills")(function* (input: {
   readonly cwd: string;
@@ -164,7 +172,23 @@ export const discoverAntigravitySkills = Effect.fn("discoverAntigravitySkills")(
     path,
     path.join(input.userHome, ".gemini"),
   );
+  const contextBridge = yield* currentContextBridgeSettings();
+  const bridgedRoots =
+    contextBridge === undefined
+      ? null
+      : resolveBridgedSkillRoots({
+          settings: contextBridge,
+          targetDriver: "antigravity",
+          cwd: input.cwd,
+          userHome: input.userHome,
+        });
   const roots = [
+    ...(bridgedRoots === null
+      ? []
+      : [
+          ...bridgedRoots.global.map((directory) => ({ directory, scope: "user" })),
+          ...bridgedRoots.project.map((directory) => ({ directory, scope: "project" })),
+        ]),
     { directory: configSkills, scope: "user" },
     { directory: path.resolve(input.cwd, ".gemini", "skills"), scope: "project" },
     { directory: cliSkills, scope: "user" },

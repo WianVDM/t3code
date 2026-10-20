@@ -1090,6 +1090,35 @@ export const StorageCleanupSettings = Schema.Struct({
 });
 export type StorageCleanupSettings = typeof StorageCleanupSettings.Type;
 
+/**
+ * Where one provider's context (instructions, skills, hooks) is sourced from.
+ * "native" means the harness loads its own files and nothing is bridged;
+ * "default" means follow `ContextBridgeSettings.defaultSource`; any other
+ * value is a provider driver kind (e.g. "claudeAgent", "pi") to bridge from.
+ */
+export const ContextBridgeTarget = Schema.String;
+export type ContextBridgeTarget = typeof ContextBridgeTarget.Type;
+
+/**
+ * Per-feature source selection for one target driver kind. A missing key
+ * means "native".
+ */
+export const ContextBridgeRoute = Schema.Struct({
+  instructions: Schema.optionalKey(ContextBridgeTarget),
+  skills: Schema.optionalKey(ContextBridgeTarget),
+  hooks: Schema.optionalKey(ContextBridgeTarget),
+});
+export type ContextBridgeRoute = typeof ContextBridgeRoute.Type;
+
+export const ContextBridgeSettings = Schema.Struct({
+  enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  defaultSource: Schema.String.pipe(Schema.withDecodingDefault(Effect.succeed("claudeAgent"))),
+  routes: Schema.Record(Schema.String, ContextBridgeRoute).pipe(
+    Schema.withDecodingDefault(Effect.succeed({})),
+  ),
+});
+export type ContextBridgeSettings = typeof ContextBridgeSettings.Type;
+
 export const ServerSettings = Schema.Struct({
   // Null means no client has migrated this preference yet; an empty value is
   // authoritative so another device cannot resurrect cleared preferences.
@@ -1101,7 +1130,13 @@ export const ServerSettings = Schema.Struct({
   storageCleanup: StorageCleanupSettings.pipe(
     Schema.withDecodingDefault(Effect.succeed(Schema.decodeSync(StorageCleanupSettings)({}))),
   ),
-
+  contextBridge: ContextBridgeSettings.pipe(
+    Schema.withDecodingDefault(Effect.succeed(Schema.decodeSync(ContextBridgeSettings)({}))),
+  ),
+  /**
+   * Absolute directory new worktrees are created under, e.g. `D:\worktrees`
+   * or `~/worktrees`. Empty uses `<T3 home>/worktrees`.
+   */
   worktreesDirectory: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
   /**
    * Custom locations used before the current one. Server-maintained so
@@ -1430,6 +1465,14 @@ export const ServerSettingsPatch = Schema.Struct({
       worktreeUnchanged: Schema.optionalKey(Schema.Boolean),
       browserArtifactsAfterDays: Schema.optionalKey(StorageRetentionDays),
       logsAfterDays: Schema.optionalKey(StorageRetentionDays),
+    }),
+  ),
+  // `routes` replaces the whole map when present; see applyServerSettingsPatch.
+  contextBridge: Schema.optionalKey(
+    Schema.Struct({
+      enabled: Schema.optionalKey(Schema.Boolean),
+      defaultSource: Schema.optionalKey(Schema.String),
+      routes: Schema.optionalKey(Schema.Record(Schema.String, ContextBridgeRoute)),
     }),
   ),
   worktreesDirectory: Schema.optionalKey(TrimmedString),
