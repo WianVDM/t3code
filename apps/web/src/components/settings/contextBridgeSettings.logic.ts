@@ -51,6 +51,32 @@ export function resolveDriverLabel(
   return PROVIDER_DISPLAY_NAMES[kind] ?? driver;
 }
 
+// Only antigravity has hook files to route; other drivers bridge instructions and skills only.
+export function supportsContextBridgeHooks(driver: string): boolean {
+  return driver === "antigravity";
+}
+
+// A default source that is not an available driver (removed provider, fresh
+// install) stays selectable so the stored value survives until the user picks
+// a new one.
+export function buildDefaultSourceOptions(
+  defaultSource: string,
+  availableDrivers: ReadonlyArray<DriverOption>,
+): ReadonlyArray<DriverOption> {
+  if (availableDrivers.some((option) => option.driver === defaultSource)) {
+    return availableDrivers;
+  }
+  return [
+    ...availableDrivers,
+    { driver: defaultSource, label: resolveDriverLabel(defaultSource, availableDrivers) },
+  ];
+}
+
+export function resolveOptionLabel(options: ReadonlyArray<RouteOption>, value: string): string {
+  const found = options.find((option) => option.value === value);
+  return found?.label ?? value;
+}
+
 export function buildRouteOptions(
   rowDriver: string,
   defaultSource: string,

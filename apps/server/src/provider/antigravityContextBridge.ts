@@ -17,9 +17,8 @@ import {
 } from "./antigravityHookShimSource.ts";
 
 /**
- * Antigravity context bridge profile sync — the native port of the
- * prototype's `syncAntigravityProfile` (`~/.t3/context-bridge/bridge.mjs`).
- * Runs before each ACP runtime spawns and reconciles the private profile
+ * Antigravity context bridge profile sync. Runs before each ACP runtime
+ * spawns and reconciles the private profile
  * (`GEMINI_HOME`) with the current routes: bridged skills are linked into
  * `config/skills`, a bridged hooks route installs the hook shim and
  * `hooks.json`, and a native route restores exactly what T3 would have

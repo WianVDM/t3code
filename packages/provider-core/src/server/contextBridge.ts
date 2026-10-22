@@ -1,14 +1,13 @@
 // @effect-diagnostics nodeBuiltinImport:off
-import * as NodeFs from "node:fs";
+import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 
 import type { ContextBridgeSettings } from "@t3tools/contracts";
 
 /**
  * Context bridge: lets one provider harness run with another provider's
- * instruction files and skill roots. The catalog below is the native port of
- * the prototype monkey-patch (`~/.t3/context-bridge/bridge.mjs`); it is the
- * behavioural spec this module follows.
+ * instruction files and skill roots. The catalog below is the behavioural
+ * spec this module follows.
  *
  * File reads use synchronous `node:fs` because the call sites (adapter prompt
  * assembly, `buildRuntimeInstructions`) are synchronous; routing them through
@@ -145,6 +144,33 @@ export interface ContextBridgeInput {
 
 const BLOCK_MARKER = "<!-- t3-context-bridge -->";
 
+export type BridgedInstructionTier = "global" | "project" | "local";
+
+export type BridgedInstructionSkipReason =
+  | "native-path"
+  | "native-content"
+  | "duplicate-path"
+  | "duplicate-content";
+
+export interface BridgedInstructionFile {
+  readonly path: string;
+  readonly tier: BridgedInstructionTier;
+  readonly status: "injected" | "skipped";
+  readonly reason?: BridgedInstructionSkipReason;
+}
+
+/**
+ * The resolved instruction route for one target driver: the rendered block
+ * plus every source file that exists, marked injected or skipped-and-why.
+ * Targets that inject at runtime (pi) embed this so the harness can report
+ * exactly what the bridge did.
+ */
+export interface BridgedInstructionsResolution {
+  readonly source: string;
+  readonly block: string;
+  readonly files: readonly BridgedInstructionFile[];
+}
+
 /**
  * Resolves which driver kind supplies `feature` context for `targetDriver`.
  * Returns null when bridging is disabled, the route is native, either driver
@@ -198,13 +224,13 @@ interface ReadCandidate {
 
 function readCandidate(filePath: string): ReadCandidate | null {
   try {
-    const stat = NodeFs.statSync(filePath);
+    const stat = NodeFS.statSync(filePath);
     if (!stat.isFile()) return null;
-    const content = NodeFs.readFileSync(filePath, "utf8").replace(/^\uFEFF/, "");
+    const content = NodeFS.readFileSync(filePath, "utf8").replace(/^\uFEFF/, "");
     if (!content.trim()) return null;
     let realPath = NodePath.resolve(filePath);
     try {
-      realPath = NodeFs.realpathSync.native(filePath);
+      realPath = NodeFS.realpathSync.native(filePath);
     } catch {}
     return { path: filePath, realPath, content: content.trimEnd() };
   } catch {
@@ -261,18 +287,20 @@ function renderTier(
 }
 
 /**
- * Builds the bridged `<project_context>` block for a target driver, with
- * global < project < local precedence. Returns "" when no bridging applies.
- * Files the target harness loads natively and byte-identical duplicates are
- * skipped; missing files are ignored.
+ * Resolves the bridged instruction route for a target driver with per-file
+ * outcomes. Returns null when no instructions route applies; otherwise `block`
+ * is the rendered `<project_context>` block ("" when every file was skipped)
+ * and `files` lists each existing source file as injected or skipped-and-why.
  */
-export function buildBridgedInstructions(input: ContextBridgeInput): string {
+export function resolveBridgedInstructions(
+  input: ContextBridgeInput,
+): BridgedInstructionsResolution | null {
   const { settings, targetDriver, cwd, userHome } = input;
   const source = resolveContextBridgeSource(settings, targetDriver, "instructions");
-  if (!source) return "";
+  if (!source) return null;
   const sourceSpec = CONTEXT_BRIDGE_CATALOG[source];
   const targetSpec = CONTEXT_BRIDGE_CATALOG[targetDriver];
-  if (!sourceSpec || !targetSpec) return "";
+  if (!sourceSpec || !targetSpec) return null;
 
   const nativeRealPaths = new Set<string>();
   const nativeContents = new Set<string>();
@@ -288,26 +316,34 @@ export function buildBridgedInstructions(input: ContextBridgeInput): string {
 
   const seenRealPaths = new Set<string>();
   const seenContents = new Set<string>();
-  const files: (ReadCandidate & InstructionSpec)[] = [];
+  const files: BridgedInstructionFile[] = [];
+  const injected: (ReadCandidate & InstructionSpec)[] = [];
 
   for (const spec of collectSourceInstructionSpecs(sourceSpec, cwd, userHome)) {
     const read = readCandidate(spec.path);
     if (!read) continue;
     const normalizedRealPath = read.realPath.toLowerCase();
-    if (seenRealPaths.has(normalizedRealPath)) continue;
-    if (nativeRealPaths.has(normalizedRealPath)) continue;
-    if (seenContents.has(read.content) || nativeContents.has(read.content)) continue;
+    let reason: BridgedInstructionSkipReason | undefined;
+    if (seenRealPaths.has(normalizedRealPath)) reason = "duplicate-path";
+    else if (nativeRealPaths.has(normalizedRealPath)) reason = "native-path";
+    else if (seenContents.has(read.content)) reason = "duplicate-content";
+    else if (nativeContents.has(read.content)) reason = "native-content";
+    if (reason !== undefined) {
+      files.push({ path: read.path, tier: spec.tier, status: "skipped", reason });
+      continue;
+    }
     seenRealPaths.add(normalizedRealPath);
     seenContents.add(read.content);
-    files.push({ ...read, tier: spec.tier });
+    files.push({ path: read.path, tier: spec.tier, status: "injected" });
+    injected.push({ ...read, tier: spec.tier });
   }
 
-  if (files.length === 0) return "";
+  if (injected.length === 0) return { source, block: "", files };
 
   const sections: string[] = [];
-  const globals = files.filter((file) => file.tier === "global");
-  const projects = files.filter((file) => file.tier === "project");
-  const locals = files.filter((file) => file.tier === "local");
+  const globals = injected.filter((file) => file.tier === "global");
+  const projects = injected.filter((file) => file.tier === "project");
+  const locals = injected.filter((file) => file.tier === "local");
 
   if (globals.length > 0) {
     sections.push(
@@ -328,7 +364,18 @@ export function buildBridgedInstructions(input: ContextBridgeInput): string {
     );
   }
 
-  return `${BLOCK_MARKER}\n<project_context source="${source}" target="${targetDriver}">\n\n${sections.join("\n\n")}\n\n</project_context>`;
+  const block = `${BLOCK_MARKER}\n<project_context source="${source}" target="${targetDriver}">\n\n${sections.join("\n\n")}\n\n</project_context>`;
+  return { source, block, files };
+}
+
+/**
+ * Builds the bridged `<project_context>` block for a target driver, with
+ * global < project < local precedence. Returns "" when no bridging applies.
+ * Files the target harness loads natively and byte-identical duplicates are
+ * skipped; missing files are ignored.
+ */
+export function buildBridgedInstructions(input: ContextBridgeInput): string {
+  return resolveBridgedInstructions(input)?.block ?? "";
 }
 
 export interface BridgedSkillRoots {
@@ -339,23 +386,31 @@ export interface BridgedSkillRoots {
 /**
  * Resolves the source provider's skill directories for a target driver.
  * Returns null when skills are native for the target; the caller then uses
- * only the target's own roots.
+ * only the target's own roots. Roots the target already loads natively (for
+ * example `~/.claude/skills` when pi is the target) are filtered out so a
+ * bridged skill never registers twice.
  */
 export function resolveBridgedSkillRoots(input: ContextBridgeInput): BridgedSkillRoots | null {
   const { settings, targetDriver, cwd, userHome } = input;
   const source = resolveContextBridgeSource(settings, targetDriver, "skills");
   if (!source) return null;
   const sourceSpec = CONTEXT_BRIDGE_CATALOG[source];
-  if (!sourceSpec) return null;
-  const global = sourceSpec.globalSkills.flatMap((rel) => {
-    const expanded = expandPath(rel, cwd, userHome);
-    return expanded ? [expanded] : [];
-  });
-  const project = cwd
-    ? sourceSpec.projectSkills.flatMap((rel) => {
-        const expanded = expandPath(rel, cwd, userHome);
-        return expanded ? [expanded] : [];
-      })
-    : [];
+  const targetSpec = CONTEXT_BRIDGE_CATALOG[targetDriver];
+  if (!sourceSpec || !targetSpec) return null;
+  const nativeRoots = new Set(
+    [...targetSpec.globalSkills, ...targetSpec.projectSkills]
+      .map((rel) => expandPath(rel, cwd, userHome))
+      .filter((path): path is string => path !== null)
+      .map((path) => NodePath.normalize(path).toLowerCase()),
+  );
+  const expandRoots = (rels: readonly string[]) =>
+    rels.flatMap((rel) => {
+      const expanded = expandPath(rel, cwd, userHome);
+      return expanded !== null && !nativeRoots.has(NodePath.normalize(expanded).toLowerCase())
+        ? [expanded]
+        : [];
+    });
+  const global = expandRoots(sourceSpec.globalSkills);
+  const project = cwd ? expandRoots(sourceSpec.projectSkills) : [];
   return { global, project };
 }

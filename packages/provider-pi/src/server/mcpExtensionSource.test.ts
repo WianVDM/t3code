@@ -5,8 +5,13 @@ import * as NodeOS from "node:os";
 import * as NodeModule from "node:module";
 import * as NodeVM from "node:vm";
 import { assert, describe, expect, it } from "@effect/vitest";
+import { vi } from "vite-plus/test";
 
-import { PI_T3_MCP_EXTENSION_SOURCE } from "./mcpExtensionSource.ts";
+import {
+  buildPiT3McpExtensionSource,
+  PI_T3_MCP_EXTENSION_SOURCE,
+  type PiContextBridgeExtensionPayload,
+} from "./mcpExtensionSource.ts";
 import { loadMcpBridge } from "./mcpBridge.testkit.ts";
 
 type RequestHook = (
@@ -591,5 +596,304 @@ describe("Pi skill references", () => {
     } finally {
       await NodeFSP.rm(directory, { recursive: true });
     }
+  });
+});
+
+const CONTEXT_BRIDGE_BLOCK = `<!-- t3-context-bridge -->
+<project_context source="claudeAgent" target="pi">
+
+BRIDGED_RULES_MARKER
+
+</project_context>`;
+
+const bridgePayload: PiContextBridgeExtensionPayload = {
+  instructions: {
+    source: "claudeAgent",
+    block: CONTEXT_BRIDGE_BLOCK,
+    files: [
+      { path: "/home/.claude/CLAUDE.md", tier: "global", status: "injected" },
+      { path: "/repo/CLAUDE.md", tier: "project", status: "skipped", reason: "native-path" },
+    ],
+  },
+  skillRoots: ["/home/.codex/skills", "/repo/.claude/skills"],
+};
+
+interface BridgeReport {
+  readonly version: number;
+  readonly targetDriver: string;
+  readonly source: string;
+  readonly instructions: {
+    readonly blockInjected: boolean;
+    readonly skippedAlreadyPresent: boolean;
+    readonly duplicatesStripped: number;
+    readonly files: ReadonlyArray<{ readonly path: string; readonly status: string }>;
+  };
+  readonly skillRoots: ReadonlyArray<string>;
+  readonly census: {
+    readonly commands: ReadonlyArray<{ readonly name: string; readonly source?: string }>;
+    readonly skills: ReadonlyArray<{ readonly name: string }>;
+    readonly tools: ReadonlyArray<{ readonly name: string }>;
+    readonly mcpServers: ReadonlyArray<{ readonly name: string; readonly extensionPath: string }>;
+  };
+}
+
+async function readBridgeReport(reportPath: string): Promise<BridgeReport> {
+  let parsed: BridgeReport | undefined;
+  await vi.waitFor(
+    async () => {
+      parsed = JSON.parse(await NodeFSP.readFile(reportPath, "utf8")) as BridgeReport;
+    },
+    { timeout: 2_000, interval: 10 },
+  );
+  if (parsed === undefined) throw new Error("context bridge report was not written");
+  return parsed;
+}
+
+// Gives any in-flight extension write a window before an absence assertion.
+async function settle(milliseconds: number): Promise<void> {
+  await vi
+    .waitFor(() => expect.unreachable("settling"), {
+      timeout: milliseconds,
+      interval: milliseconds,
+    })
+    .catch(() => undefined);
+}
+
+async function withTempDir<T>(run: (directory: string) => Promise<T>): Promise<T> {
+  const directory = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "pi-context-bridge-"));
+  try {
+    return await run(directory);
+  } finally {
+    await NodeFSP.rm(directory, { recursive: true, force: true });
+  }
+}
+
+type BridgeAgentHook = (
+  event: {
+    systemPrompt: string;
+    systemPromptOptions?: { sections?: Record<string, string> | null; forceSystemPrompt?: string };
+  },
+  ctx: { model?: { api: string }; ui: { notify: (message: string, severity: string) => void } },
+) => Promise<{ systemPrompt: string } | undefined>;
+
+type BridgeRequestHook = (
+  event: { payload: unknown },
+  ctx: {
+    model?: { provider: string };
+    ui: { notify: (message: string, severity: string) => void };
+  },
+) => unknown;
+
+type BridgeDiscoverHook = (event: unknown, ctx: unknown) => { skillPaths: string[] } | undefined;
+
+describe("Pi context bridge target", () => {
+  it("embeds the resolved payload only when a route applies", () => {
+    assert.include(PI_T3_MCP_EXTENSION_SOURCE, "const CONTEXT_BRIDGE = null;");
+    const bridged = buildPiT3McpExtensionSource({ contextBridge: bridgePayload });
+    assert.include(bridged, "BRIDGED_RULES_MARKER");
+    assert.include(bridged, '"native-path"');
+    assert.include(bridged, "/home/.codex/skills");
+    assert.include(bridged, "const CONTEXT_BRIDGE = {");
+  });
+
+  it("registers no bridge handlers without a payload", async () => {
+    const bridge = await loadMcpBridge();
+    assert.isUndefined(bridge.handlers.get("resources_discover"));
+    assert.equal(bridge.handlers.getAll("before_agent_start").length, 1);
+  });
+
+  it("appends the bridged block when the assembled prompt lacks it", async () => {
+    await withTempDir(async (directory) => {
+      const bridge = await loadMcpBridge({
+        contextBridge: bridgePayload,
+        reportPath: NodePath.join(directory, "report.json"),
+      });
+      const hook = bridge.handlers.getAll("before_agent_start")[0]! as BridgeAgentHook;
+      const result = await hook(
+        { systemPrompt: "base prompt" },
+        { model: { api: "anthropic-messages" }, ui: { notify: assert.fail } },
+      );
+      assert.isDefined(result);
+      assert.isTrue(result!.systemPrompt.startsWith("base prompt\n\n"));
+      assert.include(result!.systemPrompt, "BRIDGED_RULES_MARKER");
+    });
+  });
+
+  it("adds a prompt section without overriding a sectioned prompt", async () => {
+    await withTempDir(async (directory) => {
+      const bridge = await loadMcpBridge({
+        contextBridge: bridgePayload,
+        reportPath: NodePath.join(directory, "report.json"),
+      });
+      const hook = bridge.handlers.getAll("before_agent_start")[0]! as BridgeAgentHook;
+      const sections: Record<string, string> = { existing: "keep me" };
+      const event = { systemPrompt: "base", systemPromptOptions: { sections } };
+      const result = await hook(event, {
+        model: { api: "anthropic-messages" },
+        ui: { notify: assert.fail },
+      });
+      assert.isUndefined(result);
+      assert.equal(sections.t3_context_bridge, CONTEXT_BRIDGE_BLOCK);
+      assert.equal(event.systemPrompt, "base");
+    });
+  });
+
+  it("skips injection when the assembled prompt already carries the block", async () => {
+    await withTempDir(async (directory) => {
+      const reportPath = NodePath.join(directory, "report.json");
+      const bridge = await loadMcpBridge({ contextBridge: bridgePayload, reportPath });
+      const hook = bridge.handlers.getAll("before_agent_start")[0]! as BridgeAgentHook;
+      for (const event of [
+        { systemPrompt: `base\n\n${CONTEXT_BRIDGE_BLOCK}` },
+        {
+          systemPrompt: "base",
+          systemPromptOptions: { sections: { local_context: `intro ${CONTEXT_BRIDGE_BLOCK}` } },
+        },
+      ]) {
+        assert.isUndefined(
+          await hook(event, {
+            model: { api: "anthropic-messages" },
+            ui: { notify: assert.fail },
+          }),
+        );
+      }
+      const request = bridge.handlers.get(
+        "before_provider_request",
+      )! as unknown as BridgeRequestHook;
+      assert.isUndefined(
+        await request(
+          { payload: { messages: [] } },
+          {
+            model: { provider: "anthropic" },
+            ui: { notify: assert.fail },
+          },
+        ),
+      );
+      const report = await readBridgeReport(reportPath);
+      assert.isFalse(report.instructions.blockInjected);
+      assert.isTrue(report.instructions.skippedAlreadyPresent);
+      assert.equal(report.instructions.duplicatesStripped, 0);
+    });
+  });
+
+  it("strips an exact duplicate block from the serialized payload once", async () => {
+    await withTempDir(async (directory) => {
+      const reportPath = NodePath.join(directory, "report.json");
+      const bridge = await loadMcpBridge({ contextBridge: bridgePayload, reportPath });
+      const start = bridge.handlers.getAll("before_agent_start")[0]! as BridgeAgentHook;
+      await start(
+        { systemPrompt: "base prompt" },
+        { model: { api: "anthropic-messages" }, ui: { notify: assert.fail } },
+      );
+      const request = bridge.handlers.get(
+        "before_provider_request",
+      )! as unknown as BridgeRequestHook;
+      const duplicated = `prompt\n\n${CONTEXT_BRIDGE_BLOCK}\n\n${CONTEXT_BRIDGE_BLOCK}`;
+      const payload = {
+        system: duplicated,
+        messages: [{ role: "user", content: [{ type: "text", text: duplicated }] }],
+      };
+      const replaced = await request(
+        { payload },
+        {
+          model: { provider: "anthropic" },
+          ui: { notify: assert.fail },
+        },
+      );
+      assert.isDefined(replaced);
+      const count = (text: string) => text.split(CONTEXT_BRIDGE_BLOCK).length - 1;
+      const strippedPayload = replaced as unknown as typeof payload;
+      assert.equal(count(strippedPayload.system), 1);
+      assert.equal(count(strippedPayload.messages[0]!.content[0]!.text), 1);
+      // A clean payload is left untouched by identity.
+      const clean = { system: `prompt\n\n${CONTEXT_BRIDGE_BLOCK}` };
+      assert.isUndefined(
+        await request(
+          { payload: clean },
+          {
+            model: { provider: "anthropic" },
+            ui: { notify: assert.fail },
+          },
+        ),
+      );
+      const report = await readBridgeReport(reportPath);
+      assert.isTrue(report.instructions.blockInjected);
+      assert.equal(report.instructions.duplicatesStripped, 2);
+    });
+  });
+
+  it("writes the conflict census report on the first request only", async () => {
+    await withTempDir(async (directory) => {
+      const reportPath = NodePath.join(directory, "nested", "report.json");
+      const bridge = await loadMcpBridge({
+        contextBridge: bridgePayload,
+        reportPath,
+        commands: [
+          {
+            name: "skill:review",
+            source: "skill",
+            sourceInfo: { path: "/home/.codex/skills/review/SKILL.md", scope: "user" },
+          },
+          { name: "help", source: "builtin", sourceInfo: { path: "builtin:help" } },
+        ],
+        mcpServers: [{ name: "t3-code", extensionPath: "/fixture/pi-t3-extension.ts" }],
+      });
+      const request = bridge.handlers.get(
+        "before_provider_request",
+      )! as unknown as BridgeRequestHook;
+      const ctx = { model: { provider: "anthropic" }, ui: { notify: assert.fail } };
+      assert.isUndefined(await request({ payload: {} }, ctx));
+      const report = await readBridgeReport(reportPath);
+      assert.equal(report.version, 1);
+      assert.equal(report.targetDriver, "pi");
+      assert.equal(report.source, "claudeAgent");
+      assert.deepEqual(report.skillRoots, bridgePayload.skillRoots);
+      assert.deepEqual(
+        report.instructions.files.map((file) => [file.status, file.path]),
+        [
+          ["injected", "/home/.claude/CLAUDE.md"],
+          ["skipped", "/repo/CLAUDE.md"],
+        ],
+      );
+      assert.deepEqual(
+        report.census.commands.map((command) => command.name),
+        ["skill:review", "help"],
+      );
+      assert.deepEqual(
+        report.census.skills.map((command) => command.name),
+        ["skill:review"],
+      );
+      assert.isTrue(
+        report.census.tools.some((tool) => tool.name === "mcp__t3-code__orchestrator_capabilities"),
+      );
+      assert.deepEqual(report.census.mcpServers, [
+        { name: "t3-code", extensionPath: "/fixture/pi-t3-extension.ts" },
+      ]);
+      await NodeFSP.rm(reportPath);
+      assert.isUndefined(await request({ payload: {} }, ctx));
+      await settle(50);
+      assert.isFalse(
+        await NodeFSP.stat(reportPath).then(
+          () => true,
+          () => false,
+        ),
+      );
+    });
+  });
+
+  it("exposes bridged skill roots read-only through resources_discover", async () => {
+    await withTempDir(async (directory) => {
+      const bridge = await loadMcpBridge({
+        contextBridge: bridgePayload,
+        reportPath: NodePath.join(directory, "report.json"),
+      });
+      const discover = bridge.handlers.get("resources_discover")! as unknown as BridgeDiscoverHook;
+      assert.isDefined(discover);
+      const result = await discover(
+        { type: "resources_discover", cwd: "/repo", reason: "startup" },
+        { model: { api: "anthropic-messages" }, ui: { notify: assert.fail } },
+      );
+      assert.deepEqual(result, { skillPaths: [...bridgePayload.skillRoots] });
+    });
   });
 });

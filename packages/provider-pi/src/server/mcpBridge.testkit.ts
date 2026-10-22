@@ -1,8 +1,12 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Executes the shipped Pi extension at its native JavaScript boundary.
 import * as NodeModule from "node:module";
+import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import * as NodeVM from "node:vm";
-import { PI_T3_MCP_EXTENSION_SOURCE } from "./mcpExtensionSource.ts";
+import {
+  buildPiT3McpExtensionSource,
+  type PiContextBridgeExtensionPayload,
+} from "./mcpExtensionSource.ts";
 
 interface RegisteredTool {
   readonly name: string;
@@ -47,9 +51,21 @@ export async function loadMcpBridge(
     readonly toolSearchDisabled?: boolean;
     readonly allowsTool?: (name: string) => boolean;
     readonly runtimeMode?: string;
+    readonly contextBridge?: PiContextBridgeExtensionPayload;
+    readonly reportPath?: string;
+    readonly commands?: ReadonlyArray<{
+      readonly name: string;
+      readonly source: string;
+      readonly sourceInfo?: unknown;
+    }>;
+    readonly mcpServers?: ReadonlyArray<{ readonly name: string; readonly extensionPath: string }>;
   } = {},
 ) {
-  const handlers = new Map<string, AgentStartHook>();
+  const handlerMap = new Map<string, Array<AgentStartHook>>();
+  const handlers = {
+    get: (name: string) => handlerMap.get(name)?.[0],
+    getAll: (name: string) => handlerMap.get(name) ?? [],
+  };
   const tools: RegisteredTool[] = [];
   const requests: Array<{ readonly method: string; readonly params?: unknown }> = [];
   let activeTools = ["read"];
@@ -79,10 +95,9 @@ export async function loadMcpBridge(
     outputSchema: { type: "object", properties: { count: { type: "number" } } },
   }));
   const source = NodeModule.stripTypeScriptTypes(
-    PI_T3_MCP_EXTENSION_SOURCE.replace(/^import .*;$/gm, "").replace(
-      "export default async function",
-      "async function",
-    ),
+    buildPiT3McpExtensionSource({ contextBridge: options.contextBridge })
+      .replace(/^import .*;$/gm, "")
+      .replace("export default async function", "async function"),
   );
   await NodeVM.runInNewContext(`${source}\nt3McpExtension(pi)`, {
     process: {
@@ -91,9 +106,11 @@ export async function loadMcpBridge(
         T3_MCP_BEARER_TOKEN: "fixture-token",
         T3_PI_MCP_EXTENSION_PATH: "/fixture/pi-t3-extension.ts",
         T3_PI_RUNTIME_MODE: options.runtimeMode,
+        T3_PI_CONTEXT_BRIDGE_REPORT_PATH: options.reportPath,
       },
     },
     AbortSignal,
+    NodeFSP,
     NodePath,
     Type: { Unsafe: (schema: unknown) => schema },
     fetch: async (
@@ -123,7 +140,13 @@ export async function loadMcpBridge(
       });
     },
     pi: {
-      on: (name: string, handler: AgentStartHook) => handlers.set(name, handler),
+      on: (name: string, handler: AgentStartHook) => {
+        const list = handlerMap.get(name) ?? [];
+        list.push(handler);
+        handlerMap.set(name, list);
+      },
+      getCommands: () => options.commands ?? [],
+      getMcpServers: () => options.mcpServers ?? [],
       registerTool: (tool: RegisteredTool) => {
         if (options.allowsTool && !options.allowsTool(tool.name)) return;
         const index = tools.findIndex((current) => current.name === tool.name);

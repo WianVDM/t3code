@@ -7,10 +7,13 @@ import {
 } from "@t3tools/contracts";
 import type { ProviderInstanceEntry } from "../../providerInstances";
 import {
+  buildDefaultSourceOptions,
   buildRouteOptions,
+  resolveOptionLabel,
   computeNextRoutes,
   deriveAvailableDrivers,
   resolveDriverLabel,
+  supportsContextBridgeHooks,
 } from "./contextBridgeSettings.logic";
 
 function makeMockInstanceEntry(
@@ -77,6 +80,51 @@ describe("contextBridgeSettings.logic", () => {
       expect(resolveDriverLabel("codex", availableDrivers)).toBe("Codex");
       expect(resolveDriverLabel("antigravity", availableDrivers)).toBe("Antigravity");
       expect(resolveDriverLabel("unknownDriver", availableDrivers)).toBe("unknownDriver");
+    });
+  });
+
+  describe("resolveOptionLabel", () => {
+    const options = [
+      { value: "native", label: "Native" },
+      { value: "default", label: "Default (Claude)" },
+      { value: "claudeAgent", label: "Claude" },
+    ];
+    it("resolves the label for a known value and falls back to the raw value", () => {
+      expect(resolveOptionLabel(options, "native")).toBe("Native");
+      expect(resolveOptionLabel(options, "default")).toBe("Default (Claude)");
+      expect(resolveOptionLabel(options, "claudeAgent")).toBe("Claude");
+      expect(resolveOptionLabel(options, "missingDriver")).toBe("missingDriver");
+    });
+  });
+
+  describe("supportsContextBridgeHooks", () => {
+    it("only bridges hooks for antigravity", () => {
+      expect(supportsContextBridgeHooks("antigravity")).toBe(true);
+      expect(supportsContextBridgeHooks("codex")).toBe(false);
+      expect(supportsContextBridgeHooks("claudeAgent")).toBe(false);
+      expect(supportsContextBridgeHooks("pi")).toBe(false);
+    });
+  });
+
+  describe("buildDefaultSourceOptions", () => {
+    const availableDrivers = [
+      { driver: "claudeAgent", label: "Claude" },
+      { driver: "codex", label: "Codex" },
+    ];
+    it("returns the available drivers when the default source is among them", () => {
+      expect(buildDefaultSourceOptions("codex", availableDrivers)).toBe(availableDrivers);
+    });
+    it("keeps a stored default source selectable when its driver is unavailable", () => {
+      expect(buildDefaultSourceOptions("cursor", availableDrivers)).toEqual([
+        { driver: "claudeAgent", label: "Claude" },
+        { driver: "codex", label: "Codex" },
+        { driver: "cursor", label: "Cursor" },
+      ]);
+    });
+    it("keeps the stored default source as the only option when no drivers are available", () => {
+      expect(buildDefaultSourceOptions("claudeAgent", [])).toEqual([
+        { driver: "claudeAgent", label: "Claude" },
+      ]);
     });
   });
 

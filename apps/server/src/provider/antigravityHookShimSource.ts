@@ -4,10 +4,8 @@
  *
  * The server ships inside an asar/SEA bundle, so an external process cannot
  * execute a file out of it; the shim travels as a string and lands on disk
- * next to its `shim.config.json`. It is a faithful port of the prototype's
- * `~/.t3/context-bridge/agy-hook-shim.mjs`, made self-contained: the route
- * resolution the prototype read from `bridge.mjs` is precomputed by the sync
- * and carried by the sibling config file.
+ * next to its `shim.config.json`. It is self-contained: the route resolution
+ * is precomputed by the sync and carried by the sibling config file.
  *
  * Authored without template literals so this `String.raw` embedding is
  * byte-exact: no backticks and no `${` may appear in the source below.

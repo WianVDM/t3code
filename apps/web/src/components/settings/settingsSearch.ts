@@ -25,7 +25,6 @@ export type SettingsPath =
   | "/settings/scheduled-tasks"
   | "/settings/source-control"
   | "/settings/storage"
-  | "/settings/context-bridge"
   | "/settings/connections"
   | "/settings/archived";
 
@@ -84,7 +83,6 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
   "/settings/scheduled-tasks": "Scheduled Tasks",
   "/settings/source-control": "Source Control",
   "/settings/storage": "Storage",
-  "/settings/context-bridge": "Context bridge",
   "/settings/connections": "Connections",
   "/settings/archived": "Archive",
 };
@@ -174,26 +172,23 @@ export const SETTINGS_SEARCH_ITEMS = [
   {
     id: "context-bridge",
     title: "Context bridge",
-    to: "/settings/context-bridge",
+    to: "/settings/providers",
     searchTerms: ["context bridge instructions skills hooks bridging routes"],
+    providerSettingsOnly: true,
   },
   {
     id: "context-bridge-enabled",
     title: "Enable context bridge",
-    to: "/settings/context-bridge",
+    to: "/settings/providers",
     searchTerms: ["enable context bridge toggle switch instructions skills hooks"],
+    providerSettingsOnly: true,
   },
   {
     id: "context-bridge-default-source",
     title: "Default source",
-    to: "/settings/context-bridge",
+    to: "/settings/providers",
     searchTerms: ["default source context bridge fallback provider driver"],
-  },
-  {
-    id: "context-bridge-routes",
-    title: "Routes",
-    to: "/settings/context-bridge",
-    searchTerms: ["routes instructions skills hooks provider driver bridging native"],
+    providerSettingsOnly: true,
   },
   {
     id: "project-defaults",
@@ -1043,7 +1038,6 @@ const SETTINGS_CATEGORY_SCOPES: Readonly<Record<SettingsPath, SettingsSearchScop
   "/settings/integrations": null,
   "/settings/source-control": "environment-defaults",
   "/settings/storage": "project-defaults",
-  "/settings/context-bridge": null,
   "/settings/connections": "connections",
   "/settings/scheduled-tasks": null,
   "/settings/archived": "project-defaults",

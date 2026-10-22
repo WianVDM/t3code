@@ -96,6 +96,7 @@ import { Toggle, ToggleGroup } from "../ui/toggle-group";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { AddProviderInstanceDialog } from "./AddProviderInstanceDialog";
+import { ContextBridgeSettingsSection } from "./ContextBridgeSettings";
 import { ExpandableText } from "./ExpandableText";
 import { ProviderInstanceCard } from "./ProviderInstanceCard";
 import { UsageProviderSettings } from "./UsageProviderSettings";
@@ -987,6 +988,11 @@ export function EnvironmentProviderSettings({
 
   return (
     <>
+      <ContextBridgeSettingsSection
+        environmentId={environmentId}
+        readOnly={readOnly || !canWriteSettings}
+      />
+
       <SettingsSection
         {...searchableSetting("providers")}
         variant="plain"

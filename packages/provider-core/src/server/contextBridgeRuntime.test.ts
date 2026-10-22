@@ -16,6 +16,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
 import {
+  bridgedContextForTurn,
   bridgedInstructionsForTurn,
   currentContextBridgeSettings,
 } from "./contextBridgeRuntime.ts";
@@ -131,5 +132,64 @@ describe("bridgedInstructionsForTurn", () => {
       }).pipe(Effect.provide(layerFailingSettings));
       assert.strictEqual(withFailingSettings, "");
     }),
+  );
+});
+
+describe("bridgedContextForTurn", () => {
+  const piTargetSettings = {
+    ...DEFAULT_SERVER_SETTINGS,
+    contextBridge: decodeContextBridge({
+      enabled: true,
+      routes: { pi: { instructions: "claudeAgent", skills: "claudeAgent" } },
+    }),
+  };
+
+  it.effect("resolves the pi-target instruction resolution and skill roots", () => {
+    const tempRoot = NodeFS.mkdtempSync(
+      NodePath.join(NodeFS.realpathSync(NodeOS.tmpdir()), "context-bridge-runtime-"),
+    );
+    const cwd = NodePath.join(tempRoot, "project");
+    const userHome = NodePath.join(tempRoot, "home");
+    NodeFS.mkdirSync(cwd, { recursive: true });
+    NodeFS.mkdirSync(NodePath.join(userHome, ".claude"), { recursive: true });
+    NodeFS.writeFileSync(
+      NodePath.join(userHome, ".claude", "CLAUDE.md"),
+      "global claude rules",
+      "utf8",
+    );
+    return Effect.gen(function* () {
+      const bridged = yield* bridgedContextForTurn({ targetDriver: "pi", cwd });
+      assert.strictEqual(bridged.instructions?.source, "claudeAgent");
+      assert.include(bridged.instructions?.block ?? "", "global claude rules");
+      assert.strictEqual(bridged.instructions?.files.length, 1);
+      assert.strictEqual(bridged.instructions?.files[0]?.status, "injected");
+      // pi loads ~/.claude/skills natively; the bridged route drops it.
+      assert.deepEqual(bridged.skillRoots, {
+        global: [],
+        project: [NodePath.join(cwd, ".claude", "skills")],
+      });
+    }).pipe(
+      Effect.provide(layerProviderHost(piTargetSettings)),
+      Effect.provideService(HostProcess.HomeDirectory, userHome),
+      Effect.ensuring(Effect.sync(() => NodeFS.rmSync(tempRoot, { recursive: true, force: true }))),
+    );
+  });
+
+  it.effect("yields two nulls when the bridge is disabled or the settings unreadable", () =>
+    Effect.gen(function* () {
+      const disabled = yield* bridgedContextForTurn({
+        targetDriver: "pi",
+        cwd: process.cwd(),
+      });
+      assert.isNull(disabled.instructions);
+      assert.isNull(disabled.skillRoots);
+
+      const failing = yield* bridgedContextForTurn({
+        targetDriver: "pi",
+        cwd: process.cwd(),
+      }).pipe(Effect.provide(layerFailingSettings));
+      assert.isNull(failing.instructions);
+      assert.isNull(failing.skillRoots);
+    }).pipe(Effect.provide(layerProviderHost(DEFAULT_SERVER_SETTINGS))),
   );
 });
