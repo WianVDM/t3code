@@ -79,14 +79,14 @@ const fixture = Effect.fn("AntigravityUsageTest.fixture")(function* (
       }),
     );
   if (!options.missingToken) yield* writeToken(options.refreshToken ?? "refresh-a");
-  const requests: Array<{ url: string; body: string }> = [];
+  const requests: Array<{ url: string; body: string; userAgent: string | undefined }> = [];
   const http = HttpClient.make((request, url, _signal, fiber) =>
     Effect.sync(() => {
       const init = Context.getOrUndefined(fiber.context, FetchHttpClient.RequestInit);
       expect(init?.redirect).toBe("manual");
       const body =
         request.body._tag === "Uint8Array" ? new TextDecoder().decode(request.body.body) : "";
-      requests.push({ url: request.url, body });
+      requests.push({ url: request.url, body, userAgent: request.headers["user-agent"] });
       if (request.url.endsWith("/token")) {
         expect(new URLSearchParams(body).get("grant_type")).toBe("refresh_token");
         return HttpClientResponse.fromWeb(
@@ -186,6 +186,44 @@ describe("Antigravity subscription limits", () => {
       expect(byId.get("3p-5h")?.usedPercent).toBeCloseTo(70);
       expect(byId.get("3p-weekly")?.usedPercent).toBe(100);
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect(
+    "labels the Gemini 4 Argon weekly limit apart from Gemini and identifies as a 2.x client",
+    () =>
+      Effect.gen(function* () {
+        const { probe, requests } = yield* fixture({
+          summary: {
+            groups: [
+              {
+                displayName: "Gemini 4 Argon",
+                buckets: [
+                  {
+                    bucketId: "gemini-argon-wtu-weekly",
+                    window: "weekly",
+                    remainingFraction: 0.02,
+                  },
+                ],
+              },
+            ],
+          },
+        });
+        const limits = yield* probe;
+        expect(limits.windows).toEqual([
+          expect.objectContaining({
+            id: "gemini-argon-wtu-weekly",
+            label: "Gemini 4 Argon · Weekly",
+            kind: "weekly",
+          }),
+        ]);
+        const quotaRequests = requests.filter((request) =>
+          request.url.endsWith(":retrieveUserQuotaSummary"),
+        );
+        expect(quotaRequests.length).toBeGreaterThan(0);
+        for (const request of quotaRequests) {
+          expect(request.userAgent).toContain("antigravity/hub/2.25.0");
+        }
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
   it.effect("keeps one endpoint's quotas when the other fails", () =>
