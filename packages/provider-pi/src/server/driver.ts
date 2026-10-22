@@ -23,6 +23,7 @@ import {
   discoverPiCommandsForCwd,
   enrichPiSnapshot,
 } from "./status.ts";
+import { readKimiCodeAccount } from "./usageLimits.ts";
 import { makeManagedServerProvider } from "@t3tools/provider-core/server/managedProvider";
 import {
   defaultProviderContinuationIdentity,
@@ -144,7 +145,20 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv, Path.Path> = {
     const textGeneration = yield* makePiTextGeneration(effectiveConfig, processEnv);
 
     const checkProvider = checkPiProviderStatus(effectiveConfig, processEnv, cwd).pipe(
+      Effect.flatMap((snapshot) =>
+        effectiveConfig.enabled && snapshot.installed && snapshot.auth.status === "authenticated"
+          ? readKimiCodeAccount(processEnv).pipe(
+              Effect.map(({ usageLimits }) => ({
+                ...snapshot,
+                usageLimits,
+              })),
+            )
+          : Effect.succeed(snapshot),
+      ),
       Effect.map(stampIdentity),
+      Effect.provideService(HttpClient.HttpClient, httpClient),
+      Effect.provideService(FileSystem.FileSystem, fileSystem),
+      Effect.provideService(Path.Path, pathService),
       Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
     );
 
