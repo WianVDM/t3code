@@ -37,6 +37,30 @@ it.effect("identifies a failed source read and preserves its cause", () => {
   );
 });
 
+it.effect("gives the fork its own Windows profile without migrating official state", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const directory = yield* fs.makeTempDirectoryScoped({ prefix: "t3-fork-profile-" });
+    yield* fs.makeDirectory(path.join(directory, "t3code-v2"), { recursive: true });
+    yield* fs.writeFileString(path.join(directory, "t3code-v2", "Local State"), "official-keys");
+
+    const destination = yield* resolveUserDataPath({
+      appDataDirectory: directory,
+      isDevelopment: false,
+      platform: "win32",
+      desktopVariant: "fork",
+    });
+
+    assert.equal(destination, path.join(directory, "t3code-fork"));
+    assert.isFalse(yield* fs.exists(path.join(destination, "Local State")));
+    assert.equal(
+      yield* fs.readFileString(path.join(directory, "t3code-v2", "Local State")),
+      "official-keys",
+    );
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
 it.effect.each(["t3code", "T3 Code (Alpha)"])(
   "preserves Windows credential keys from %s without copying browser databases",
   (sourceName) =>

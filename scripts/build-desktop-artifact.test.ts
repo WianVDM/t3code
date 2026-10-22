@@ -107,6 +107,11 @@ import {
   releasePackageFiles,
 } from "./update-release-package-versions.ts";
 import { BRAND_ASSET_PATHS } from "./lib/brand-assets.ts";
+import {
+  FORK_DESKTOP_BUILD,
+  InvalidDesktopBuildVariantError,
+  resolveDesktopBuildVariant,
+} from "./lib/desktop-variant.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
 
@@ -568,6 +573,92 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     assert.equal(resolveDesktopWebAssetBrand("0.0.17"), "production");
     assert.equal(resolveDesktopWebAssetBrand("0.0.17-nightly.20260413.42"), "nightly");
   });
+
+  it("resolves only the fork desktop build variant, rejecting anything else", () => {
+    assert.equal(resolveDesktopBuildVariant(undefined), "official");
+    assert.equal(resolveDesktopBuildVariant(""), "official");
+    assert.equal(resolveDesktopBuildVariant("   "), "official");
+    assert.equal(resolveDesktopBuildVariant("fork"), "fork");
+    assert.equal(resolveDesktopBuildVariant(" fork "), "fork");
+    assert.throws(() => resolveDesktopBuildVariant("beta"), InvalidDesktopBuildVariantError);
+  });
+
+  it("switches desktop packaging identity to the fork for the fork variant", () => {
+    assert.equal(resolveDesktopProductName("0.1.0", "fork"), FORK_DESKTOP_BUILD.productName);
+    assert.equal(
+      resolveDesktopProductName("0.0.17-nightly.20260413.42", "fork"),
+      FORK_DESKTOP_BUILD.productName,
+    );
+    assert.equal(resolveDesktopProductName("0.1.0"), "T3 Code (Beta)");
+  });
+
+  it("switches only the Windows icon to the fork artwork for the fork variant", () => {
+    assert.deepStrictEqual(resolveDesktopBuildIconAssets("0.0.17", "fork"), {
+      macIconPng: BRAND_ASSET_PATHS.productionMacIconPng,
+      linuxIconPng: BRAND_ASSET_PATHS.productionLinuxIconPng,
+      windowsIconIco: BRAND_ASSET_PATHS.forkWindowsIconIco,
+    });
+  });
+
+  it.effect("defaults the fork update feed to the fork repository", () =>
+    Effect.gen(function* () {
+      const emptyEnv = ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} }));
+      const forkConfig = yield* resolveGitHubPublishConfig("latest", "fork").pipe(
+        Effect.provide(emptyEnv),
+      );
+      assert.deepStrictEqual(forkConfig, {
+        provider: "github",
+        owner: "WianVDM",
+        repo: "t3code",
+        releaseType: "release",
+      });
+
+      const officialConfig = yield* resolveGitHubPublishConfig("latest").pipe(
+        Effect.provide(emptyEnv),
+      );
+      assert.equal(officialConfig, undefined);
+
+      const overrideConfig = yield* resolveGitHubPublishConfig("latest", "fork").pipe(
+        Effect.provide(
+          ConfigProvider.layer(
+            ConfigProvider.fromEnv({
+              env: { T3CODE_DESKTOP_UPDATE_REPOSITORY: "someone/elsewhere" },
+            }),
+          ),
+        ),
+      );
+      assert.deepStrictEqual(overrideConfig, {
+        provider: "github",
+        owner: "someone",
+        repo: "elsewhere",
+        releaseType: "release",
+      });
+    }),
+  );
+
+  it.effect("stamps fork identity into the electron-builder config", () =>
+    Effect.gen(function* () {
+      const config = yield* createBuildConfig(
+        "win",
+        "nsis",
+        "0.0.33",
+        false,
+        false,
+        undefined,
+        undefined,
+        false,
+        "x64",
+        "fork",
+      ).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} }))));
+
+      assert.equal(config.appId, FORK_DESKTOP_BUILD.appId);
+      assert.equal(config.productName, FORK_DESKTOP_BUILD.productName);
+      assert.equal(config.artifactName, FORK_DESKTOP_BUILD.artifactName);
+      assert.deepStrictEqual(config.publish, [
+        { provider: "github", owner: "WianVDM", repo: "t3code", releaseType: "release" },
+      ]);
+    }),
+  );
 
   it.effect("resolves GitHub desktop publish config from Effect config", () =>
     Effect.gen(function* () {
@@ -2783,6 +2874,58 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       assert.equal(resolved.signed, false);
       assert.equal(resolved.verbose, false);
       assert.equal(resolved.mockUpdates, false);
+    }),
+  );
+
+  it.effect("resolves the fork variant from the build environment", () =>
+    Effect.gen(function* () {
+      const resolved = yield* resolveBuildOptions({
+        platform: Option.some("win"),
+        target: Option.none(),
+        arch: Option.some("x64"),
+        buildVersion: Option.none(),
+        outputDir: Option.none(),
+        skipBuild: Option.none(),
+        keepStage: Option.none(),
+        signed: Option.none(),
+        verbose: Option.none(),
+        mockUpdates: Option.none(),
+        mockUpdateServerPort: Option.none(),
+        wslRuntime: Option.none(),
+      }).pipe(
+        Effect.provide(
+          ConfigProvider.layer(ConfigProvider.fromEnv({ env: { T3CODE_DESKTOP_VARIANT: "fork" } })),
+        ),
+      );
+
+      assert.equal(resolved.variant, "fork");
+    }),
+  );
+
+  it.effect("rejects an unsupported desktop variant at the build boundary", () =>
+    Effect.gen(function* () {
+      const error = yield* Effect.flip(
+        resolveBuildOptions({
+          platform: Option.some("win"),
+          target: Option.none(),
+          arch: Option.some("x64"),
+          buildVersion: Option.none(),
+          outputDir: Option.none(),
+          skipBuild: Option.none(),
+          keepStage: Option.none(),
+          signed: Option.none(),
+          verbose: Option.none(),
+          mockUpdates: Option.none(),
+          mockUpdateServerPort: Option.none(),
+          wslRuntime: Option.none(),
+        }),
+      ).pipe(
+        Effect.provide(
+          ConfigProvider.layer(ConfigProvider.fromEnv({ env: { T3CODE_DESKTOP_VARIANT: "beta" } })),
+        ),
+      );
+
+      assert.instanceOf(error, InvalidDesktopBuildVariantError);
     }),
   );
 });
