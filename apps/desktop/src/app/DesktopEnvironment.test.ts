@@ -167,6 +167,40 @@ describe("DesktopEnvironment", () => {
     }),
   );
 
+  it.effect("derives fork identity and state paths for the fork variant", () =>
+    Effect.gen(function* () {
+      const environment = yield* makeEnvironment({ desktopVariant: "fork" });
+
+      assert.equal(environment.desktopVariant, "fork");
+      assert.deepEqual(environment.branding, {
+        baseName: "T3 Code (Fork)",
+        stageLabel: "Beta",
+        displayName: "T3 Code (Fork)",
+      });
+      assert.equal(environment.displayName, "T3 Code (Fork)");
+      assert.equal(environment.appUserModelId, "com.wianvdm.t3code.fork");
+      assert.equal(environment.baseDir, "/Users/alice/.t3-fork");
+      assert.equal(environment.stateDir, "/Users/alice/.t3-fork/userdata");
+      assert.equal(environment.serverSettingsPath, "/Users/alice/.t3-fork/userdata/settings.json");
+    }),
+  );
+
+  it.effect("lets explicit home and model id overrides win over the fork defaults", () =>
+    Effect.gen(function* () {
+      const environment = yield* makeEnvironment(
+        { desktopVariant: "fork" },
+        {
+          T3CODE_HOME: "/tmp/t3-shared",
+          T3CODE_DESKTOP_APP_USER_MODEL_ID: "com.example.override",
+        },
+      );
+
+      assert.equal(environment.baseDir, "/tmp/t3-shared");
+      assert.equal(environment.stateDir, "/tmp/t3-shared/userdata");
+      assert.equal(environment.appUserModelId, "com.example.override");
+    }),
+  );
+
   it.effect("uses a configured app user model id override", () =>
     Effect.gen(function* () {
       const environment = yield* makeEnvironment(
