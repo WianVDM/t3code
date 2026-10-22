@@ -191,6 +191,8 @@ export interface CodexRuntimeInfo {
   readonly model: string;
   readonly modelName?: string | undefined;
   readonly reasoningEffort?: string | undefined;
+  /** Context bridge block resolved for this turn; appended to the runtime instructions. */
+  readonly bridgedContext?: string | undefined;
 }
 
 export function buildCodexDeveloperInstructions(interactionMode: ProviderInteractionMode): string {

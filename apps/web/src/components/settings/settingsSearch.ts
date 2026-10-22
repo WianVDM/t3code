@@ -170,6 +170,27 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["disk storage browser screenshots captures rotated logs cleanup retention"],
   },
   {
+    id: "context-bridge",
+    title: "Context bridge",
+    to: "/settings/providers",
+    searchTerms: ["context bridge instructions skills hooks bridging routes"],
+    providerSettingsOnly: true,
+  },
+  {
+    id: "context-bridge-enabled",
+    title: "Enable context bridge",
+    to: "/settings/providers",
+    searchTerms: ["enable context bridge toggle switch instructions skills hooks"],
+    providerSettingsOnly: true,
+  },
+  {
+    id: "context-bridge-default-source",
+    title: "Default source",
+    to: "/settings/providers",
+    searchTerms: ["default source context bridge fallback provider driver"],
+    providerSettingsOnly: true,
+  },
+  {
     id: "project-defaults",
     title: "Project defaults and overrides",
     to: "/settings/general",

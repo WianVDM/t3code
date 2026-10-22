@@ -4,12 +4,14 @@ import * as FileSystem from "effect/FileSystem";
 
 import type { McpProviderSessionConfig } from "@t3tools/provider-core/server/mcpSession";
 import {
+  buildPiT3McpExtensionSource,
   PI_T3_MCP_EXTENSION_FILENAME,
-  PI_T3_MCP_EXTENSION_SOURCE,
   T3_MCP_BEARER_ENV,
   T3_MCP_URL_ENV,
+  T3_PI_CONTEXT_BRIDGE_REPORT_PATH_ENV,
   T3_PI_RUNTIME_MODE_ENV,
   T3_PI_MCP_EXTENSION_PATH_ENV,
+  type PiContextBridgeExtensionPayload,
 } from "./mcpExtensionSource.ts";
 
 const RESERVED_PI_LAUNCH_ARGUMENTS = new Set([
@@ -227,17 +229,70 @@ function piT3McpExtensionDestPath(cacheDir: string): string {
   return `${cacheDir.replace(/\\/g, "/")}/${PI_T3_MCP_EXTENSION_FILENAME}`;
 }
 
+function sanitizedSessionFileKey(sessionId: string): string {
+  return sessionId.replace(/[^A-Za-z0-9_-]/g, "_");
+}
+
+/**
+ * Path of one pi session's context bridge report, written by the generated
+ * extension for a planned server-side consumer.
+ */
+export function piT3ContextBridgeReportPath(cacheDir: string, sessionId: string): string {
+  return `${cacheDir.replace(/\\/g, "/")}/context-bridge/${sanitizedSessionFileKey(sessionId)}.json`;
+}
+
+/**
+ * A session with a context bridge payload gets its own extension file: the
+ * payload is session-specific (cwd-dependent), so the shared static file
+ * cannot carry it.
+ */
+function piT3SessionExtensionDestPath(cacheDir: string, sessionId: string): string {
+  return `${cacheDir.replace(/\\/g, "/")}/pi-t3-mcp-extension.${sanitizedSessionFileKey(sessionId)}.ts`;
+}
+
 export const materializePiT3McpExtension = Effect.fn("materializePiT3McpExtension")(function* (
   cacheDir: string,
+  options?: {
+    readonly contextBridge?: PiContextBridgeExtensionPayload | undefined;
+    readonly sessionId?: string | undefined;
+  },
 ) {
   const fs = yield* FileSystem.FileSystem;
   yield* fs.makeDirectory(cacheDir, { recursive: true });
-  const dest = piT3McpExtensionDestPath(cacheDir);
+  const source = buildPiT3McpExtensionSource({ contextBridge: options?.contextBridge });
+  const dest =
+    options?.contextBridge !== undefined && options.sessionId !== undefined
+      ? piT3SessionExtensionDestPath(cacheDir, options.sessionId)
+      : piT3McpExtensionDestPath(cacheDir);
   const existing = yield* fs.readFileString(dest).pipe(Effect.orElseSucceed(() => ""));
-  if (existing !== PI_T3_MCP_EXTENSION_SOURCE) {
-    yield* fs.writeFileString(dest, PI_T3_MCP_EXTENSION_SOURCE);
+  if (existing !== source) {
+    yield* fs.writeFileString(dest, source);
   }
   return dest;
+});
+
+/**
+ * Removes the files materialized for one bridged session: its extension file
+ * and its context bridge report. The shared extension file is untouched.
+ * Best-effort: a failed delete logs a warning and never fails teardown.
+ */
+export const removePiT3SessionScopedFiles = Effect.fn("removePiT3SessionScopedFiles")(function* (
+  cacheDir: string,
+  sessionId: string,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  for (const path of [
+    piT3SessionExtensionDestPath(cacheDir, sessionId),
+    piT3ContextBridgeReportPath(cacheDir, sessionId),
+  ]) {
+    yield* fs
+      .remove(path, { force: true })
+      .pipe(
+        Effect.catch((error) =>
+          Effect.logWarning("Failed to remove pi session-scoped file.", { path, error }),
+        ),
+      );
+  }
 });
 
 export function buildPiRpcLaunch(input: {
@@ -250,6 +305,7 @@ export function buildPiRpcLaunch(input: {
   readonly disableExtensions?: boolean;
   readonly disableTools?: boolean;
   readonly runtimeMode?: "approval-required" | "auto-accept-edits" | "auto" | "full-access";
+  readonly contextBridgeReportPath?: string | undefined;
 }): {
   readonly args: ReadonlyArray<string>;
   readonly env: NodeJS.ProcessEnv;
@@ -290,6 +346,7 @@ export function buildPiRpcLaunch(input: {
   delete environment[T3_MCP_URL_ENV];
   delete environment[T3_MCP_BEARER_ENV];
   delete environment[T3_PI_MCP_EXTENSION_PATH_ENV];
+  delete environment[T3_PI_CONTEXT_BRIDGE_REPORT_PATH_ENV];
 
   return {
     args,
@@ -303,6 +360,9 @@ export function buildPiRpcLaunch(input: {
             [T3_PI_RUNTIME_MODE_ENV]:
               input.runtimeMode === "auto" ? "approval-required" : input.runtimeMode,
           }
+        : {}),
+      ...(hasT3Extension && input.contextBridgeReportPath !== undefined
+        ? { [T3_PI_CONTEXT_BRIDGE_REPORT_PATH_ENV]: input.contextBridgeReportPath }
         : {}),
       ...(hasT3Mcp && input.mcpSession !== undefined
         ? {

@@ -100,6 +100,7 @@ import {
   t3AcpPromptWithInstructions,
   type T3AcpInstructionState,
 } from "@t3tools/provider-core/server/orchestrationInstructions";
+import { bridgedInstructionsForTurn } from "@t3tools/provider-core/server/contextBridgeRuntime";
 import { buildRuntimeInstructions } from "@t3tools/provider-core/server/runtimeInstructions";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import type * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
@@ -7209,12 +7210,17 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               detail: "ACP turn requires non-empty text or attachments",
             });
           }
+          const bridgedContext = yield* bridgedInstructionsForTurn({
+            targetDriver: driver,
+            cwd: turnInput.runtimePolicy?.cwd,
+          });
           if (!isNativeSlashCommand) {
             prompt.push({
               type: "text",
               text: buildRuntimeInstructions({
                 harness: flavor.runtimeHarness ?? driver,
                 model: turnInput.modelSelection.model,
+                bridgedContext,
               }),
             });
           }

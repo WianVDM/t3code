@@ -23,6 +23,14 @@
       "types": "./src/server/collectStreamText.ts",
       "import": "./src/server/collectStreamText.ts"
     },
+    "./server/contextBridge": {
+      "types": "./src/server/contextBridge.ts",
+      "import": "./src/server/contextBridge.ts"
+    },
+    "./server/contextBridgeRuntime": {
+      "types": "./src/server/contextBridgeRuntime.ts",
+      "import": "./src/server/contextBridgeRuntime.ts"
+    },
     "./server/driver": {
       "types": "./src/server/driver.ts",
       "import": "./src/server/driver.ts"

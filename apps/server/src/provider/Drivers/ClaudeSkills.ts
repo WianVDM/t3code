@@ -10,6 +10,8 @@ import { fromLenientJson } from "@t3tools/shared/schemaJson";
 import { SKILL_MENTION_PATTERN } from "@t3tools/shared/composerInlineTokens";
 import { parse as parseYamlDocument } from "yaml";
 
+import { resolveBridgedSkillRoots } from "@t3tools/provider-core/server/contextBridge";
+import { currentContextBridgeSettings } from "@t3tools/provider-core/server/contextBridgeRuntime";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 
 type ClaudeSkillScope = "user" | "project";
@@ -440,6 +442,10 @@ const resolveClaudeConfigDirPath = Effect.fn("resolveClaudeConfigDirPath")(funct
  * Roots are listed highest precedence first and the first hit for a name wins,
  * matching Claude Code: verified against the CLI with the same skill name in
  * both scopes, the user copy is the one that runs.
+ *
+ * When the context bridge routes this driver's skills to another provider,
+ * the source provider's roots are scanned first (global, then project) and
+ * win name collisions, followed by the native roots above.
  */
 export const discoverClaudeSkills = Effect.fn("discoverClaudeSkills")(function* (
   config: Pick<ClaudeSettings, "homePath"> & Partial<Pick<ClaudeSettings, "launchArgs">>,
@@ -457,7 +463,27 @@ export const discoverClaudeSkills = Effect.fn("discoverClaudeSkills")(function* 
 
   // Use the session's argument parser so discovery sees the same --add-dir value.
   const additionalDirectory = parseCliArgs(config.launchArgs ?? "").flags["add-dir"];
+  const contextBridge = yield* currentContextBridgeSettings();
+  const bridgedRoots =
+    contextBridge === undefined
+      ? null
+      : resolveBridgedSkillRoots({
+          settings: contextBridge,
+          targetDriver: "claudeAgent",
+          cwd,
+          userHome: yield* HostProcess.HomeDirectory,
+        });
+
   const roots: ReadonlyArray<ClaudeSkillRoot> = [
+    ...(bridgedRoots === null
+      ? []
+      : [
+          ...bridgedRoots.global.map((directory) => ({ directory, scope: "user" as const })),
+          ...bridgedRoots.project.map((directory) => ({
+            directory,
+            scope: "project" as const,
+          })),
+        ]),
     { directory: path.join(configDirPath, "skills"), scope: "user" },
     ...(cwd ? [{ directory: path.join(cwd, ".claude", "skills"), scope: "project" as const }] : []),
     ...(additionalDirectory && (cwd || path.isAbsolute(additionalDirectory))

@@ -2,6 +2,7 @@
  * Do not import t3code modules from the string body. The Pi process resolves
  * `@earendil-works/pi-coding-agent` and `typebox` from the user's pi install.
  */
+import type { BridgedInstructionsResolution } from "@t3tools/provider-core/server/contextBridge";
 import { T3_CODE_ORCHESTRATION_INSTRUCTIONS } from "@t3tools/provider-core/server/orchestrationInstructions";
 
 export const PI_T3_MCP_EXTENSION_FILENAME = "pi-t3-mcp-extension.ts";
@@ -10,6 +11,17 @@ export const T3_MCP_URL_ENV = "T3_MCP_URL";
 export const T3_MCP_BEARER_ENV = "T3_MCP_BEARER_TOKEN";
 export const T3_PI_RUNTIME_MODE_ENV = "T3_PI_RUNTIME_MODE";
 export const T3_PI_MCP_EXTENSION_PATH_ENV = "T3_PI_MCP_EXTENSION_PATH";
+export const T3_PI_CONTEXT_BRIDGE_REPORT_PATH_ENV = "T3_PI_CONTEXT_BRIDGE_REPORT_PATH";
+
+/**
+ * The resolved context bridge routes for a pi session launch, embedded into
+ * the generated extension. `instructions` is null when the instructions route
+ * is native; `skillRoots` is empty when the skills route is native.
+ */
+export type PiContextBridgeExtensionPayload = {
+  readonly instructions: BridgedInstructionsResolution | null;
+  readonly skillRoots: ReadonlyArray<string>;
+};
 
 /**
  * Pi tools whose confirmations the bridge raises as file-change approvals.
@@ -17,7 +29,11 @@ export const T3_PI_MCP_EXTENSION_PATH_ENV = "T3_PI_MCP_EXTENSION_PATH";
  */
 export const PI_FILE_CHANGE_TOOLS = ["edit", "write"] as const;
 
-export const PI_T3_MCP_EXTENSION_SOURCE = `\
+export function buildPiT3McpExtensionSource(options?: {
+  readonly contextBridge?: PiContextBridgeExtensionPayload | undefined;
+}): string {
+  const contextBridgeJson = JSON.stringify(options?.contextBridge ?? null);
+  return `\
 import { stripFrontmatter, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
@@ -27,7 +43,9 @@ const URL_ENV = ${JSON.stringify(T3_MCP_URL_ENV)};
 const TOKEN_ENV = ${JSON.stringify(T3_MCP_BEARER_ENV)};
 const RUNTIME_MODE_ENV = ${JSON.stringify(T3_PI_RUNTIME_MODE_ENV)};
 const EXTENSION_PATH_ENV = ${JSON.stringify(T3_PI_MCP_EXTENSION_PATH_ENV)};
+const REPORT_PATH_ENV = ${JSON.stringify(T3_PI_CONTEXT_BRIDGE_REPORT_PATH_ENV)};
 const ORCHESTRATION_INSTRUCTIONS = ${JSON.stringify(T3_CODE_ORCHESTRATION_INSTRUCTIONS.trim())};
+const CONTEXT_BRIDGE = ${contextBridgeJson};
 const PROTOCOL = "2025-06-18";
 const READ_ONLY_TOOLS = new Set(["read", "grep", "find", "ls"]);
 const FILE_CHANGE_TOOLS = new Set(${JSON.stringify(PI_FILE_CHANGE_TOOLS)});
@@ -273,16 +291,190 @@ export default async function t3McpExtension(pi: ExtensionAPI) {
     };
   });
 
+  // T3 Context Bridge with pi as the target. The resolved route payload is
+  // embedded at launch. Dedup is dynamic: the block merges only when the
+  // assembled prompt does not already contain it (pi-native loads, an earlier
+  // CLI extension). Pi runs CLI extensions before user extensions, so a later
+  // extension can still re-add the same content; before_provider_request sees
+  // the final serialized payload regardless of handler order, so exact
+  // duplicate blocks are stripped there on every request, and the conflict
+  // census report is written for the server on the first one.
+  const contextBridge = CONTEXT_BRIDGE as {
+    readonly instructions: {
+      readonly source: string;
+      readonly block: string;
+      readonly files: ReadonlyArray<{
+        readonly path: string;
+        readonly tier: string;
+        readonly status: string;
+        readonly reason?: string;
+      }>;
+    } | null;
+    readonly skillRoots: ReadonlyArray<string>;
+  } | null;
+  const bridgeBlock = contextBridge?.instructions?.block ?? "";
+  let bridgePromptInjected = false;
+  let bridgePromptAlreadyPresent = false;
+  let bridgeDuplicatesStripped = 0;
+  let bridgeReportQueued = false;
+
+  if (contextBridge !== null && bridgeBlock.length > 0) {
+    pi.on("before_agent_start", (event) => {
+      const sections = event.systemPromptOptions?.sections;
+      if (sections && typeof sections === "object" && event.systemPromptOptions?.forceSystemPrompt === undefined) {
+        const present =
+          event.systemPrompt.includes(bridgeBlock) ||
+          Object.values(sections).some(
+            (section) => typeof section === "string" && section.includes(bridgeBlock),
+          );
+        if (present) {
+          bridgePromptAlreadyPresent = true;
+          return undefined;
+        }
+        sections.t3_context_bridge = bridgeBlock;
+        bridgePromptInjected = true;
+        return undefined;
+      }
+      if (event.systemPrompt.includes(bridgeBlock)) {
+        bridgePromptAlreadyPresent = true;
+        return undefined;
+      }
+      bridgePromptInjected = true;
+      return { systemPrompt: event.systemPrompt + "\\n\\n" + bridgeBlock };
+    });
+  }
+
+  if (contextBridge !== null && contextBridge.skillRoots.length > 0) {
+    // resources_discover exposes the bridged skill roots to pi read-only;
+    // nothing is copied into pi's own directories.
+    const skillRoots = contextBridge.skillRoots;
+    pi.on("resources_discover", () => ({ skillPaths: [...skillRoots] }));
+  }
+
+  const stripDuplicateBridgeBlocks = (
+    value: unknown,
+  ): { readonly value: unknown; readonly stripped: number } => {
+    if (typeof value === "string") {
+      const first = value.indexOf(bridgeBlock);
+      if (first === -1) return { value, stripped: 0 };
+      const after = value.slice(first + bridgeBlock.length);
+      const stripped = after.split(bridgeBlock).length - 1;
+      if (stripped === 0) return { value, stripped: 0 };
+      return {
+        value: value.slice(0, first + bridgeBlock.length) + after.split(bridgeBlock).join(""),
+        stripped,
+      };
+    }
+    if (Array.isArray(value)) {
+      let stripped = 0;
+      let changed = false;
+      const next = value.map((item) => {
+        const result = stripDuplicateBridgeBlocks(item);
+        stripped += result.stripped;
+        if (result.value !== item) changed = true;
+        return result.value;
+      });
+      return { value: changed ? next : value, stripped };
+    }
+    if (typeof value === "object" && value !== null) {
+      let stripped = 0;
+      let changed = false;
+      const next: Record<string, unknown> = {};
+      for (const [key, item] of Object.entries(value)) {
+        const result = stripDuplicateBridgeBlocks(item);
+        stripped += result.stripped;
+        if (result.value !== item) changed = true;
+        next[key] = result.value;
+      }
+      return { value: changed ? next : value, stripped };
+    }
+    return { value, stripped: 0 };
+  };
+
+  const sourceRef = (info: unknown) => {
+    if (typeof info !== "object" || info === null) return undefined;
+    const record = info as {
+      readonly path?: unknown;
+      readonly source?: unknown;
+      readonly scope?: unknown;
+      readonly origin?: unknown;
+    };
+    return {
+      path: record.path,
+      source: record.source,
+      scope: record.scope,
+      origin: record.origin,
+    };
+  };
+
+  const queueContextBridgeReport = (ctx: ExtensionContext) => {
+    if (bridgeReportQueued || contextBridge === null) return;
+    bridgeReportQueued = true;
+    const reportPath = env(REPORT_PATH_ENV);
+    if (reportPath === undefined) return;
+    const commands = typeof pi.getCommands === "function" ? pi.getCommands() : [];
+    const tools = typeof pi.getAllTools === "function" ? pi.getAllTools() : [];
+    const mcpServers = typeof pi.getMcpServers === "function" ? pi.getMcpServers() : [];
+    const commandEntry = (command: { name: string; source?: string; sourceInfo?: unknown }) => ({
+      name: command.name,
+      source: command.source,
+      sourceInfo: sourceRef(command.sourceInfo),
+    });
+    const report = {
+      version: 1,
+      targetDriver: "pi",
+      source: contextBridge.instructions?.source ?? null,
+      instructions: {
+        blockInjected: bridgePromptInjected,
+        skippedAlreadyPresent: bridgePromptAlreadyPresent,
+        duplicatesStripped: bridgeDuplicatesStripped,
+        files: contextBridge.instructions?.files ?? [],
+      },
+      skillRoots: contextBridge.skillRoots,
+      census: {
+        commands: commands.map(commandEntry),
+        skills: commands.filter((command) => command.source === "skill").map(commandEntry),
+        tools: tools.map((tool) => ({
+          name: tool.name,
+          exposure: tool.exposure,
+          sourceInfo: sourceRef(tool.sourceInfo),
+        })),
+        mcpServers: mcpServers.map((server) => ({
+          name: server.name,
+          extensionPath: server.extensionPath,
+        })),
+      },
+    };
+    void (async () => {
+      await NodeFSP.mkdir(NodePath.dirname(reportPath), { recursive: true });
+      await NodeFSP.writeFile(reportPath, JSON.stringify(report, null, 2));
+    })().catch(() => {
+      ctx.ui.notify("t3-code context bridge report failed to write.", "warning");
+    });
+  };
+
   // Workaround for an upstream Pi context-budgeting bug: pi-ai reuses the
   // previous response's usage even when a fork's instructions/tools differ,
   // then reserves almost all remaining context for output. OpenRouter can
   // reject even a short conversation. Remove this cap when Pi accounts for
   // the current request prefix reliably (api/simple-options + utils/estimate).
   pi.on("before_provider_request", (event, ctx) => {
-    if (ctx.model?.provider !== "openrouter") return;
-    const payload = event.payload;
-    if (typeof payload !== "object" || payload === null || Array.isArray(payload)) return;
-    const replacement = { ...payload } as Record<string, unknown>;
+    let current: unknown = event.payload;
+    if (contextBridge !== null && bridgeBlock.length > 0) {
+      const stripped = stripDuplicateBridgeBlocks(current);
+      if (stripped.stripped > 0) {
+        bridgeDuplicatesStripped += stripped.stripped;
+        current = stripped.value;
+      }
+    }
+    if (contextBridge !== null) queueContextBridgeReport(ctx);
+    if (ctx.model?.provider !== "openrouter") {
+      return current === event.payload ? undefined : current;
+    }
+    if (typeof current !== "object" || current === null || Array.isArray(current)) {
+      return current === event.payload ? undefined : current;
+    }
+    const replacement = { ...current } as Record<string, unknown>;
     let changed = false;
     for (const key of ["max_tokens", "max_completion_tokens"]) {
       const limit = replacement[key];
@@ -292,6 +484,7 @@ export default async function t3McpExtension(pi: ExtensionAPI) {
       }
     }
     if (changed) return replacement;
+    return current === event.payload ? undefined : current;
   });
 
   // Pi deliberately leaves permission policy to extensions. T3's injected
@@ -461,3 +654,6 @@ export default async function t3McpExtension(pi: ExtensionAPI) {
   });
 }
 `;
+}
+
+export const PI_T3_MCP_EXTENSION_SOURCE = buildPiT3McpExtensionSource();

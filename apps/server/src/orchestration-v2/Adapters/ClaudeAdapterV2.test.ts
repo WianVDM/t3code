@@ -605,6 +605,44 @@ describe("ClaudeAdapterV2 runtime query policy", () => {
   });
 });
 
+describe("ClaudeAdapterV2 context bridge", () => {
+  const baseInput = {
+    modelSelection: CLAUDE_TEST_MODEL_SELECTION,
+    nativeThreadId: "bridged-thread",
+    resume: false,
+    cwd: "/workspace",
+  } as const;
+
+  it("appends bridged context to the preset system prompt", () => {
+    const options = ClaudeAdapterV2.makeClaudeQueryOptions({
+      ...baseInput,
+      bridgedContext:
+        '<!-- t3-context-bridge -->\n<project_context source="claudeAgent" target="claudeAgent" />',
+    });
+    const systemPrompt = options.systemPrompt;
+    assert.isDefined(systemPrompt);
+    if (
+      systemPrompt === undefined ||
+      typeof systemPrompt === "string" ||
+      Array.isArray(systemPrompt) ||
+      systemPrompt.type !== "preset"
+    ) {
+      throw new Error("expected a preset system prompt");
+    }
+    assert.include(systemPrompt.append, "<!-- t3-context-bridge -->");
+    assert.include(systemPrompt.append, "<runtime_info>");
+  });
+
+  it.each([undefined, ""])(
+    "leaves the system prompt byte-identical without bridged context (%s)",
+    (bridgedContext) => {
+      const options = ClaudeAdapterV2.makeClaudeQueryOptions({ ...baseInput, bridgedContext });
+      const baseline = ClaudeAdapterV2.makeClaudeQueryOptions(baseInput);
+      assert.deepEqual(options.systemPrompt, baseline.systemPrompt);
+    },
+  );
+});
+
 describe("ClaudeAdapterV2 MCP query overrides", () => {
   const T3_MCP_SERVERS = {
     "t3-code": {

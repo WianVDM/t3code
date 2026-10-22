@@ -149,6 +149,38 @@ describe("storage cleanup settings", () => {
   });
 });
 
+describe("context bridge settings", () => {
+  it("decodes older settings without the key to the disabled defaults", () => {
+    expect(decodeServerSettings({}).contextBridge).toEqual({
+      enabled: false,
+      defaultSource: "claudeAgent",
+      routes: {},
+    });
+  });
+
+  it("round-trips a patch and accepts unknown target strings", () => {
+    const patch = {
+      contextBridge: {
+        enabled: true,
+        routes: {
+          antigravity: { instructions: "default", skills: "pi" },
+          pi: { instructions: "someFutureDriver" },
+        },
+      },
+    };
+    expect(decodeServerSettingsPatch(patch)).toEqual(patch);
+    expect(encodeServerSettings(decodeServerSettings(patch))).toMatchObject(patch);
+  });
+
+  it("treats a missing route key as native and stores routes sparsely", () => {
+    const settings = decodeServerSettings({
+      contextBridge: { enabled: true, routes: { codex: { skills: "default" } } },
+    });
+    expect(settings.contextBridge.routes["codex"]).toEqual({ skills: "default" });
+    expect(settings.contextBridge.routes["codex"]?.instructions).toBeUndefined();
+  });
+});
+
 describe("ClientSettings rich text composer", () => {
   it("keeps math opt-in and preserves its preference through patches and persistence", () => {
     expect(decodeClientSettings({}).mathRenderingEnabled).toBe(false);

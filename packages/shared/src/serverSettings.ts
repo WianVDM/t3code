@@ -383,6 +383,11 @@ export function applyServerSettingsPatch(
     usageModelAliases: usageModelAliasesPatch,
     // Entry replacement: deepMerge would keep keys the client meant to clear.
     projectSettingsOverrides: projectSettingsOverridesPatch,
+    // `routes` replaces wholesale below: deepMerge would resurrect a route
+    // the client deleted to reset that provider back to native.
+    contextBridge: contextBridgePatch,
+    // Already translated into `projectSettingsOverrides` above; the legacy
+    // maps are derived views and must never be merged directly.
     projectAgentBrowserAccessOverrides: _legacyBrowserAccess,
     projectAutoPullOverrides: _legacyAutoPull,
     projectScriptOverrides: _legacyScripts,
@@ -554,6 +559,15 @@ export function applyServerSettingsPatch(
       : {}),
     ...(patch.defaultModelSelection !== undefined
       ? { defaultModelSelection: patch.defaultModelSelection }
+      : {}),
+    ...(contextBridgePatch !== undefined
+      ? {
+          contextBridge: {
+            enabled: contextBridgePatch.enabled ?? current.contextBridge.enabled,
+            defaultSource: contextBridgePatch.defaultSource ?? current.contextBridge.defaultSource,
+            routes: contextBridgePatch.routes ?? current.contextBridge.routes,
+          },
+        }
       : {}),
     ...(patch.defaultProjectScripts !== undefined
       ? { defaultProjectScripts: patch.defaultProjectScripts }
