@@ -219,7 +219,19 @@ function resolveRate(table: RateTable, model: string): ModelRate | null {
   const key = stripVariantSuffix(normalizeRateKey(model));
   const bareName = bareModelName(key);
   if (bareName.length === 0 || UNPRICEABLE_MODELS.has(bareName)) return null;
-  return table.get(key) ?? null;
+  const exact = table.get(key);
+  if (exact !== undefined) return exact;
+
+  // OpenRouter records execution tags like :free or :batch in transcripts;
+  // rate tables catalog base models without run tags.
+  const slash = key.lastIndexOf("/");
+  const colon = key.lastIndexOf(":");
+  if (slash === -1 || colon <= slash) return null;
+
+  const untaggedKey = key.slice(0, colon);
+  const untaggedBareName = bareModelName(untaggedKey);
+  if (untaggedBareName.length === 0 || UNPRICEABLE_MODELS.has(untaggedBareName)) return null;
+  return table.get(untaggedKey) ?? null;
 }
 
 export type PricedRecord = Pick<
