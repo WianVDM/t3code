@@ -243,4 +243,33 @@ describe("usage pricing", () => {
     expect(lookupRate(table, "provider-b/example-model")?.inputCostPerToken).toBe(3);
     expect(lookupRate(table, "example-model")).toBeNull();
   });
+
+  it("resolves an OpenRouter execution-tagged model to the base model rate", () => {
+    const table = parseRateTable({
+      "openrouter/minimax/minimax-m3.1-flash": rate(1e-6, 1e-7),
+    });
+
+    expect(priceUsage(table, record("openrouter/minimax/minimax-m3.1-flash:free"))).toMatchObject({
+      costSource: "modelPriced",
+    });
+  });
+
+  it("leaves subscription models unpriced when the key is absent from the rate table", () => {
+    const table = parseRateTable({
+      "moonshot/k3-256k": rate(2e-6),
+    });
+
+    expect(priceUsage(table, record("kimi-coding/k3-256k")).costSource).toBe("unpriced");
+  });
+
+  it("preserves exact-key matching when model IDs have no tag", () => {
+    const table = parseRateTable({
+      "openrouter/minimax/minimax-m3.1-flash": rate(1e-6, 1e-7),
+    });
+
+    expect(priceUsage(table, record("openrouter/minimax/minimax-m3.1-flash"))).toMatchObject({
+      costSource: "modelPriced",
+    });
+    expect(priceUsage(table, record("openrouter/other-model")).costSource).toBe("unpriced");
+  });
 });

@@ -117,6 +117,26 @@ function modelName(name: string, id: number): string {
   return MODEL_IDS[id] ?? (id > 0 ? `antigravity-model-${id}` : "");
 }
 
+const ANTIGRAVITY_TIER_SUFFIX = /-(high|medium|low|minimal|trial)$/;
+
+const STATIC_RATE_MODELS: Readonly<Record<string, string>> = {
+  "gemini-3.8-flash": "gemini-3.8-flash",
+  "gemini-4-argon": "gemini/gemini-4-argon",
+};
+
+/**
+ * Maps Antigravity model names to a resolvable rate-table model key.
+ *
+ * rateModel is the list-price proxy; the subscription itself is flat-rate, so
+ * this is an estimate and -n/unknown SKUs deliberately stay unpriced.
+ */
+export function antigravityRateModel(model: string): string | undefined {
+  const match = model.match(ANTIGRAVITY_TIER_SUFFIX);
+  if (!match || match.index === 0) return undefined;
+  const base = model.slice(0, match.index);
+  return STATIC_RATE_MODELS[base] ?? base;
+}
+
 interface Metadata {
   model: string;
   timestampMs: number | null;
@@ -296,16 +316,19 @@ function usageCandidates(
           const id = textAt(usage, key);
           return id ? [`antigravity:${key}:${id}`] : [];
         });
+        const model =
+          MODEL_IDS[numberAt(usage, 1)] ||
+          entry.model ||
+          (source === "step" ? generationModels.get(idx) : "") ||
+          modelName("", numberAt(usage, 1)) ||
+          "antigravity-unknown";
+        const rateModel = antigravityRateModel(model);
         const record: UsageRecord = {
           provider: "antigravity",
           sessionId,
           timestampMs: entry.timestampMs ?? trajectoryTimestamp ?? fallbackTimestamp,
-          model:
-            MODEL_IDS[numberAt(usage, 1)] ||
-            entry.model ||
-            (source === "step" ? generationModels.get(idx) : "") ||
-            modelName("", numberAt(usage, 1)) ||
-            "antigravity-unknown",
+          model,
+          ...(rateModel === undefined ? {} : { rateModel }),
           totals,
           reportedCostUsd: null,
           speed: "standard",
@@ -378,14 +401,17 @@ export const readAntigravityUsage = Effect.fn("readAntigravityUsage")(function* 
         : target;
     const x = target.record.totals;
     const y = source.record.totals;
+    const model =
+      first.record.model === "antigravity-unknown"
+        ? first === target
+          ? source.record.model
+          : target.record.model
+        : first.record.model;
+    const rateModel = antigravityRateModel(model);
     target.record = {
       ...first.record,
-      model:
-        first.record.model === "antigravity-unknown"
-          ? first === target
-            ? source.record.model
-            : target.record.model
-          : first.record.model,
+      model,
+      ...(rateModel === undefined ? {} : { rateModel }),
       timestampMs: bestTime.record.timestampMs,
       totals: {
         uncachedInputTokens: Math.max(x.uncachedInputTokens, y.uncachedInputTokens),

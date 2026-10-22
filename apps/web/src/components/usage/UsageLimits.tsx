@@ -39,6 +39,7 @@ import {
 import { Button } from "../ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { UsageLimitsPooled } from "./UsageLimitsPooled";
+import { ModelVendorIcon, usesModelVendorIcon } from "./modelVendorIcon";
 import { PROVIDER_PRESENTATION } from "./usageProviders";
 
 const PACE: Record<LimitPace, { readonly label: string; readonly icon: typeof GaugeIcon }> = {
@@ -209,6 +210,9 @@ export function LimitWindows({
         return (
           <Fragment key={window.id}>
             <span className="flex min-w-0 items-center gap-2 text-xs">
+              {usesModelVendorIcon(driver) ? (
+                <ModelVendorIcon name={window.label} className="size-3.5 shrink-0" />
+              ) : null}
               <span className="truncate text-muted-foreground">{window.label}</span>
               <span className="ms-auto shrink-0 font-medium text-foreground tabular-nums">
                 {remainingPercent(window)}% left
