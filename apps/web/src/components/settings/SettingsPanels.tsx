@@ -91,6 +91,8 @@ import { useSettingsScope } from "./SettingsScopeContext";
 import { ProjectDefaultsSettings } from "./ProjectDefaultsSettings";
 import { useThreadActions } from "../../hooks/useThreadActions";
 import { useDesktopUpdateState } from "../../state/desktopUpdate";
+import { runManualUpstreamCheck } from "../../state/upstreamRelease";
+import { UpstreamReleaseRow } from "./UpstreamReleaseRow";
 import {
   getCustomModelOptionsByInstance,
   resolveAppModelSelectionState,
@@ -377,6 +379,7 @@ function AboutVersionSection() {
     }
 
     if (typeof bridge.checkForUpdate !== "function") return;
+    void runManualUpstreamCheck();
     void bridge
       .checkForUpdate()
       .then((result) => {
@@ -446,6 +449,7 @@ function AboutVersionSection() {
           </Tooltip>
         }
       />
+      <UpstreamReleaseRow />
       {hasDesktopBridge ? (
         <SettingsRow
           {...searchableSetting("update-track")}
