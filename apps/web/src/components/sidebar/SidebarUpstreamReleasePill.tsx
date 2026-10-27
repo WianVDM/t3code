@@ -1,34 +1,38 @@
-import { useEffect } from "react";
-
 import { useNewThreadHandler } from "~/hooks/useHandleNewThread";
 import {
-  registerNewThreadRunner,
   startUpstreamMerge,
   useUpstreamRelease,
   useUpstreamReleasePolling,
 } from "../../state/upstreamRelease";
+import { useDesktopUpdateState } from "../../state/desktopUpdate";
+import { cn } from "../../lib/utils";
 import { PullRequestGlyph } from "../pullRequest/pullRequestIcons";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
-import { isForkDesktopBuild } from "../upstreamRelease.logic";
+import { isForkDesktopBuild, shouldDeferUpstreamMerge } from "../upstreamRelease.logic";
 
 function SidebarUpstreamReleasePillContent() {
   useUpstreamReleasePolling();
   const newThread = useNewThreadHandler();
   const result = useUpstreamRelease();
-
-  useEffect(() => {
-    return registerNewThreadRunner(newThread);
-  }, [newThread]);
+  const desktopUpdateState = useDesktopUpdateState();
 
   if (result?.kind !== "unmerged") {
     return null;
   }
 
   const { tag } = result;
-  const title = `Upstream ${tag} ready to merge`;
-  const description = `Upstream release ${tag} is not yet merged into main. Click to start a merge thread.`;
+  const deferred = shouldDeferUpstreamMerge(desktopUpdateState);
+  const title = deferred
+    ? `Upstream ${tag} ready, install fork update first`
+    : `Upstream ${tag} ready to merge`;
+  const description = deferred
+    ? `Upstream release ${tag} is not yet merged into main. Install the pending fork update before merging upstream.`
+    : `Upstream release ${tag} is not yet merged into main. Click to start a merge thread.`;
 
   const handleClick = () => {
+    if (deferred) {
+      return;
+    }
     void startUpstreamMerge(tag, { newThread });
   };
 
@@ -43,8 +47,12 @@ function SidebarUpstreamReleasePillContent() {
             <button
               type="button"
               aria-label={description}
+              aria-disabled={deferred || undefined}
               data-provider-update-main
-              className="relative z-[1] flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left cursor-pointer"
+              className={cn(
+                "relative z-[1] flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left",
+                deferred ? "cursor-not-allowed opacity-60" : "cursor-pointer",
+              )}
               onClick={handleClick}
             >
               <PullRequestGlyph.merged className="size-3.5 shrink-0" />

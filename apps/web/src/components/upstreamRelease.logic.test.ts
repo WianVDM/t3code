@@ -1,5 +1,5 @@
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/models";
-import type { EnvironmentId, ProjectId } from "@t3tools/contracts";
+import type { DesktopUpdateState, EnvironmentId, ProjectId } from "@t3tools/contracts";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import {
@@ -9,6 +9,7 @@ import {
   refreshUpstreamReleaseIfStale,
   refreshUpstreamReleaseNow,
   resetInFlightRefreshForTesting,
+  shouldDeferUpstreamMerge,
   UPSTREAM_CHECK_STALE_AFTER_MS,
   type UpstreamReleaseOptions,
 } from "./upstreamRelease.logic";
@@ -62,6 +63,131 @@ const mockProjectBase = {
   createdAt: "2026-01-01T00:00:00.000Z",
   updatedAt: "2026-01-01T00:00:00.000Z",
 } satisfies EnvironmentProject;
+
+const mockDesktopUpdateStateBase = {
+  enabled: true,
+  status: "idle",
+  channel: "latest",
+  currentVersion: "1.0.0",
+  hostArch: "x64",
+  appArch: "x64",
+  runningUnderArm64Translation: false,
+  availableVersion: null,
+  downloadedVersion: null,
+  releaseNotes: [],
+  omittedReleaseCount: 0,
+  downloadPercent: null,
+  checkedAt: null,
+  message: null,
+  errorContext: null,
+  canRetry: false,
+} satisfies DesktopUpdateState;
+
+describe("shouldDeferUpstreamMerge", () => {
+  it("does not defer without update state or when the app is up to date", () => {
+    expect(shouldDeferUpstreamMerge(null)).toBe(false);
+    expect(
+      shouldDeferUpstreamMerge({
+        ...mockDesktopUpdateStateBase,
+        status: "up-to-date",
+      }),
+    ).toBe(false);
+  });
+
+  it("does not defer while a check is in progress with no pending versions", () => {
+    expect(
+      shouldDeferUpstreamMerge({
+        ...mockDesktopUpdateStateBase,
+        status: "checking",
+      }),
+    ).toBe(false);
+  });
+
+  it.each([
+    {
+      name: "an in-progress check that already has an available version",
+      state: {
+        ...mockDesktopUpdateStateBase,
+        status: "checking",
+        availableVersion: "1.1.0",
+      },
+    },
+    {
+      name: "an in-progress check that already has a downloaded version",
+      state: {
+        ...mockDesktopUpdateStateBase,
+        status: "checking",
+        downloadedVersion: "1.1.0",
+      },
+    },
+    {
+      name: "a failed check retaining the available version",
+      state: {
+        ...mockDesktopUpdateStateBase,
+        status: "error",
+        availableVersion: "1.1.0",
+        message: "check failed",
+        errorContext: "check",
+        canRetry: true,
+      },
+    },
+    {
+      name: "an available update",
+      state: {
+        ...mockDesktopUpdateStateBase,
+        status: "available",
+        availableVersion: "1.1.0",
+      },
+    },
+    {
+      name: "an update download in progress",
+      state: {
+        ...mockDesktopUpdateStateBase,
+        status: "downloading",
+        availableVersion: "1.1.0",
+        downloadPercent: 42,
+      },
+    },
+    {
+      name: "a downloaded update",
+      state: {
+        ...mockDesktopUpdateStateBase,
+        status: "downloaded",
+        availableVersion: "1.1.0",
+        downloadedVersion: "1.1.0",
+        downloadPercent: 100,
+      },
+    },
+    {
+      name: "a retryable download error",
+      state: {
+        ...mockDesktopUpdateStateBase,
+        status: "error",
+        availableVersion: "1.1.0",
+        message: "network timeout",
+        errorContext: "download",
+        canRetry: true,
+      },
+    },
+    {
+      name: "a retryable install error",
+      state: {
+        ...mockDesktopUpdateStateBase,
+        status: "error",
+        availableVersion: "1.1.0",
+        downloadedVersion: "1.1.0",
+        message: "install failed",
+        errorContext: "install",
+        canRetry: true,
+      },
+    },
+  ] satisfies ReadonlyArray<{ name: string; state: DesktopUpdateState }>)(
+    "defers for $name",
+    ({ state }) => {
+      expect(shouldDeferUpstreamMerge(state)).toBe(true);
+    },
+  );
+});
 
 describe("upstreamRelease status mapping", () => {
   beforeEach(() => {
@@ -270,20 +396,23 @@ describe("upstreamRelease cache behavior", () => {
 
   it("shares one in-flight promise across concurrent calls", async () => {
     let latestCallCount = 0;
+    let resolveLatest: (response: Response) => void = () => {};
+    const latestResponse = new Promise<Response>((resolve) => {
+      resolveLatest = resolve;
+    });
     const fetchFn = createFakeFetch({
-      latest: async () => {
+      latest: () => {
         latestCallCount += 1;
-        await new Promise((resolve) => setTimeout(resolve, 20));
-        return Response.json({ tag_name: "v4.0.0" });
+        return latestResponse;
       },
     });
     const storage = createMockStorage();
     const options: UpstreamReleaseOptions = { fetchFn, storage };
 
-    const [result1, result2] = await Promise.all([
-      refreshUpstreamReleaseNow(options),
-      refreshUpstreamReleaseNow(options),
-    ]);
+    const promise1 = refreshUpstreamReleaseNow(options);
+    const promise2 = refreshUpstreamReleaseNow(options);
+    resolveLatest(Response.json({ tag_name: "v4.0.0" }));
+    const [result1, result2] = await Promise.all([promise1, promise2]);
 
     expect(result1).toEqual({ kind: "unmerged", tag: "v4.0.0" });
     expect(result2).toEqual({ kind: "unmerged", tag: "v4.0.0" });
@@ -504,18 +633,21 @@ describe("pickForkProject ranking", () => {
 });
 
 describe("buildUpstreamMergePrompt", () => {
-  it("includes the tag in the three required places and the no push instruction", () => {
+  it("uses the script-driven merge flow with confirmation before finishing", () => {
     const prompt = buildUpstreamMergePrompt("v1.5.0");
 
     expect(prompt).toContain(
       "Merge upstream release v1.5.0 (https://github.com/pingdotgg/t3code/releases/tag/v1.5.0)",
     );
-
+    expect(prompt).toContain("node scripts/upstream-sync.ts --tag v1.5.0 prepare");
     expect(prompt).toContain("sync/upstream-v1.5.0");
-
     expect(prompt).toContain("git merge v1.5.0");
-    expect(prompt).toContain("git log --oneline main --not v1.5.0");
-
+    expect(prompt).toContain("fork-only commit list printed by the prepare step");
+    expect(prompt).toContain("node scripts/upstream-sync.ts --tag v1.5.0 verify");
+    expect(prompt).toContain(
+      "Ask for explicit confirmation before running finish or creating any commit.",
+    );
+    expect(prompt).toContain("node scripts/upstream-sync.ts --tag v1.5.0 finish");
     expect(prompt).toContain("Do not push, tag, or open a pull request.");
   });
 });

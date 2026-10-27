@@ -1,5 +1,5 @@
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/models";
-import type { ScopedProjectRef } from "@t3tools/contracts";
+import type { DesktopUpdateState, ScopedProjectRef } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
 export const UPSTREAM_REPOSITORY = "pingdotgg/t3code";
@@ -37,6 +37,17 @@ export interface UpstreamReleaseOptions {
 
 export const isForkDesktopBuild = import.meta.env.T3CODE_DESKTOP_VARIANT === "fork";
 
+export function shouldDeferUpstreamMerge(state: DesktopUpdateState | null): boolean {
+  if (!state) {
+    return false;
+  }
+  return (
+    state.status === "downloading" ||
+    state.availableVersion !== null ||
+    state.downloadedVersion !== null
+  );
+}
+
 export function isUpstreamCacheEntryFresh(entry: UpstreamReleaseCacheEntry, now: number): boolean {
   const age = now - entry.checkedAt;
   if (age < 0) {
@@ -51,11 +62,12 @@ export function isUpstreamCacheEntryFresh(entry: UpstreamReleaseCacheEntry, now:
 export function buildUpstreamMergePrompt(tag: string): string {
   return `Merge upstream release ${tag} (https://github.com/pingdotgg/t3code/releases/tag/${tag}) into this fork.
 
-1. Make sure an \`upstream\` remote exists (https://github.com/pingdotgg/t3code) and run \`git fetch upstream --tags\`.
-2. In this worktree, create and switch to branch \`sync/upstream-${tag}\` from the fork's \`main\`.
-3. Run \`git merge ${tag}\` and keep the real merge commit (no squash, no rebase). Resolve conflicts so the fork's own behavior survives: list the fork-only commits first with \`git log --oneline main --not ${tag}\` and check each one still works after the merge.
-4. Run only targeted tests for the files you touched while resolving conflicts. No repo-wide checks.
-5. Do not push, tag, or open a pull request. Finish with a report: conflicts and how you resolved them, tests run and their results, and anything you are unsure about.`;
+1. Run \`node scripts/upstream-sync.ts --tag ${tag} prepare\`. Let the script create \`sync/upstream-${tag}\` and handle the \`git merge ${tag}\` mechanics; the final commit must be a real merge commit (no squash, no rebase).
+2. Resolve any semantic conflicts yourself so the fork's own behavior survives. Review the fork-only commit list printed by the prepare step and check each fork change still works after the merge. Use your judgment to run only targeted tests for files touched while resolving conflicts; no repo-wide checks.
+3. Run \`node scripts/upstream-sync.ts --tag ${tag} verify\` and address any failures.
+4. Ask for explicit confirmation before running finish or creating any commit. After confirmation, run \`node scripts/upstream-sync.ts --tag ${tag} finish\` to create the real merge commit.
+
+Do not push, tag, or open a pull request. Finish with a report: conflicts and how you resolved them, tests run and their results, and anything you are unsure about.`;
 }
 
 interface ScoredProject {
