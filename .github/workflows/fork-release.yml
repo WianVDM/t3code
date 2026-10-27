@@ -1,0 +1,86 @@
+name: Fork release
+
+on:
+  push:
+    tags:
+      - "v*-fork.*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fork-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build, verify, and publish Windows x64
+    if: github.repository == 'WianVDM/t3code'
+    runs-on: windows-latest
+    env:
+      ARCH: x64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - name: Setup dependencies
+        uses: ./.github/actions/setup-ci-deps
+
+      - name: Validate tag and derive version
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="$GITHUB_REF_NAME"
+          version_component='0|[1-9][0-9]*'
+          if [[ ! "$tag" =~ ^v($version_component)\.($version_component)\.($version_component)-fork\.($version_component)$ ]]; then
+            echo "Invalid fork release tag '$tag'. Expected v<major>.<minor>.<patch>-fork.<n>." >&2
+            exit 1
+          fi
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build Windows installer
+        shell: bash
+        env:
+          T3CODE_DESKTOP_VARIANT: fork
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          node scripts/build-desktop-artifact.ts \
+            --platform win \
+            --target nsis \
+            --arch "$ARCH" \
+            --build-version "$VERSION" \
+            --output-dir release
+
+      - name: Verify release artifacts
+        shell: bash
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          node scripts/verify-fork-release.ts \
+            --version "$VERSION" \
+            --arch "$ARCH" \
+            release
+
+      - name: Publish GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          installer="release/T3-Code-Fork-${VERSION}-${ARCH}.exe"
+          gh release create "$GITHUB_REF_NAME" \
+            "$installer" \
+            "${installer}.blockmap" \
+            release/latest.yml \
+            --latest \
+            --generate-notes \
+            --verify-tag

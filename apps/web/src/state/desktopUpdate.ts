@@ -6,6 +6,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import { Atom } from "effect/reactivity";
+import { appAtomRegistry } from "~/rpc/atomRegistry";
 
 type DesktopUpdateBridge = Pick<DesktopBridge, "getUpdateState" | "onUpdateState">;
 
@@ -80,6 +81,10 @@ export function createDesktopUpdateStateAtom(getBridge: () => DesktopUpdateBridg
 }
 
 const desktopUpdateStateAtom = createDesktopUpdateStateAtom(getDesktopUpdateBridge);
+
+export function readDesktopUpdateState(): DesktopUpdateState | null {
+  return AsyncResult.getOrElse(appAtomRegistry.get(desktopUpdateStateAtom), () => null);
+}
 
 export function useDesktopUpdateState(): DesktopUpdateState | null {
   return AsyncResult.getOrElse(useAtomValue(desktopUpdateStateAtom), () => null);
