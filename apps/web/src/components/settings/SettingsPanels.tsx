@@ -56,6 +56,7 @@ import { scopedIdleCompaction } from "./scopedSettings";
 import { ProjectDefaultsSettings } from "./ProjectDefaultsSettings";
 import { useDesktopUpdateState } from "../../state/desktopUpdate";
 import { runManualUpstreamCheck } from "../../state/upstreamRelease";
+import { isForkDesktopBuild } from "../upstreamRelease.logic";
 import { UpstreamReleaseRow } from "./UpstreamReleaseRow";
 import {
   getCustomModelOptionsByInstance,
@@ -139,7 +140,7 @@ const DEFAULT_DRIVER_KIND = ProviderDriverKind.make("codex");
 function AboutVersionTitle() {
   return (
     <span className="inline-flex items-baseline gap-2">
-      <span>Version</span>
+      <span>{isForkDesktopBuild ? "Fork version" : "Version"}</span>
       <code className="text-2xs font-medium text-muted-foreground">{APP_VERSION}</code>
     </span>
   );
