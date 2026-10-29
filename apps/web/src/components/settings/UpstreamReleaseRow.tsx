@@ -1,5 +1,6 @@
 import { useState } from "react";
 
+import { APP_VERSION } from "../../branding";
 import { useNewThreadHandler } from "../../hooks/useHandleNewThread";
 import { useDesktopUpdateState } from "../../state/desktopUpdate";
 import {
@@ -17,7 +18,7 @@ function UpstreamReleaseRowContent() {
   const result = useUpstreamRelease();
   const [isChecking, setIsChecking] = useState(false);
 
-  if (!result) {
+  if (!result || result.kind === "merged") {
     return null;
   }
 
@@ -28,7 +29,7 @@ function UpstreamReleaseRowContent() {
     };
     return (
       <SettingsRow
-        title="Upstream"
+        title="Upstream release"
         description="Upstream release status is unavailable."
         status="The release check failed. Retry to check again."
         control={
@@ -40,10 +41,6 @@ function UpstreamReleaseRowContent() {
     );
   }
 
-  if (result.kind === "merged") {
-    return <SettingsRow title="Upstream" description={`Merged through ${result.tag}`} />;
-  }
-
   const deferMerge = shouldDeferUpstreamMerge(updateState);
   const handleStartMerge = () => {
     void startUpstreamMerge(result.tag, { newThread });
@@ -51,7 +48,7 @@ function UpstreamReleaseRowContent() {
 
   return (
     <SettingsRow
-      title="Upstream"
+      title="Upstream release"
       description={`${result.tag} is ready to merge`}
       status={deferMerge ? "Update the fork app first, then start the merge." : undefined}
       control={
@@ -68,5 +65,12 @@ export function UpstreamReleaseRow() {
     return null;
   }
 
-  return <UpstreamReleaseRowContent />;
+  const upstreamBaseTag = `v${APP_VERSION.replace(/-fork\.\d+$/, "")}`;
+
+  return (
+    <>
+      <SettingsRow title="Upstream base" description={upstreamBaseTag} />
+      <UpstreamReleaseRowContent />
+    </>
+  );
 }
