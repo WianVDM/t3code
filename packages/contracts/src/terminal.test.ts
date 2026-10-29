@@ -6,6 +6,7 @@ import {
   TerminalError,
   TerminalOpenInput,
   TerminalProviderEnvironmentError,
+  TerminalSummary,
 } from "./terminal.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 
@@ -47,5 +48,34 @@ describe("TerminalOpenInput", () => {
       env: { "bad-key": "1", GOOD_KEY: "2" },
     });
     expect(parsed.env).toEqual({ GOOD_KEY: "2" });
+  });
+});
+
+describe("TerminalSummary", () => {
+  const base = {
+    threadId: "thread-1",
+    terminalId: DEFAULT_TERMINAL_ID,
+    cwd: "/tmp/project",
+    worktreePath: null,
+    status: "running",
+    pid: 1234,
+    exitCode: null,
+    exitSignal: null,
+    hasRunningSubprocess: true,
+    label: "Primary",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+  };
+
+  it("decodes summaries from an older server that has no startedAt", () => {
+    const summary = decodeSync(TerminalSummary, base);
+    expect(summary.startedAt).toBeUndefined();
+  });
+
+  it("keeps the session start time when a newer server reports it", () => {
+    const summary = decodeSync(TerminalSummary, {
+      ...base,
+      startedAt: "2026-01-01T00:00:01.000Z",
+    });
+    expect(summary.startedAt).toBe("2026-01-01T00:00:01.000Z");
   });
 });

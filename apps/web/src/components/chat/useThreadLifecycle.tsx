@@ -175,7 +175,7 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
     now: new Date().toISOString(),
   }));
   if (snoozeClockState.shell !== activeThreadShell) {
-    setSnoozeClockState({ shell: activeThreadShell, now: new Date().toISOString() });
+    setSnoozeClockState(() => ({ shell: activeThreadShell, now: new Date().toISOString() }));
   }
   const snoozeClock = snoozeClockState.now;
   const activeThreadSnoozed =
@@ -604,8 +604,10 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
     childInputBanner,
     goalBanner,
     handleSwitchCheckoutToThread,
+    handleStopBackgroundWorkStable,
     handleSwitchCheckoutToThreadStable,
     isRestoringThreadBranch,
+    isStoppingBackgroundWork,
     onOpenRelatedThread,
     onOpenRelatedThreadStable,
     sendStandaloneCommand,

@@ -2395,6 +2395,9 @@ function claudePendingBackgroundTask(input: {
   readonly description: string | undefined;
   // Undeclared SDK field: the subagent whose own background work this is.
   readonly parentTaskId: unknown;
+  // Genuine start stamped when this session saw the task's task_started. Never filled from a
+  // roster snapshot: a task that only ever appeared in snapshots has an unknown start.
+  readonly startedAt?: string;
 }): OrchestrationV2PendingBackgroundTask {
   return {
     taskId: input.taskId,
@@ -2409,6 +2412,7 @@ function claudePendingBackgroundTask(input: {
     ...(typeof input.parentTaskId === "string" && input.parentTaskId.trim().length > 0
       ? { parentTaskId: input.parentTaskId }
       : {}),
+    ...(input.startedAt === undefined ? {} : { startedAt: input.startedAt }),
   };
 }
 
@@ -4225,6 +4229,15 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         const lastKnownOpaqueTasks = yield* Ref.make(
           new Map<string, OrchestrationV2PendingBackgroundTask>(),
         );
+        // Reset-time preservation, keyed by native thread and then task: a replayed
+        // task_started must tell "known task whose start was never observed" (stays
+        // untimed) apart from a genuinely new task (may be stamped). Sibling native
+        // threads can reuse a task id, so the task id alone cannot key this. A null
+        // value records a known-but-untimed task. Replaced wholesale at each process
+        // reset from the live and persisted rosters, so it cannot grow unbounded.
+        const preservedBackgroundTaskStarts = yield* Ref.make(
+          new Map<string, ReadonlyMap<string, string | null>>(),
+        );
         const claudeMonitors = yield* Ref.make<{
           readonly calls: ReadonlySet<string>;
           readonly tasks: ReadonlyMap<
@@ -4408,6 +4421,53 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             yield* Ref.update(lastProviderThreadByNativeThread, (current) =>
               new Map(current).set(nativeThreadId, providerThread),
             );
+          });
+
+        // A roster reset on query open replaces the remembered roster with the new process's
+        // (initially empty) one. The persisted start stamps are the only timing a fresh
+        // process can truthfully report, so they are kept aside for wake-report naming.
+        // First stamp wins: an in-session task_started outranks a persisted stamp.
+        const seedPreservedStartedAt = (
+          tasks: ReadonlyArray<OrchestrationV2PendingBackgroundTask>,
+        ) =>
+          Ref.update(lastKnownOpaqueTasks, (current) => {
+            const stamped = tasks.filter(
+              (task) => task.startedAt !== undefined && !current.has(task.taskId),
+            );
+            if (stamped.length === 0) return current;
+            const updated = new Map(current);
+            for (const task of stamped) updated.set(task.taskId, task);
+            for (const oldest of updated.keys()) {
+              if (updated.size <= 64) break;
+              updated.delete(oldest);
+            }
+            return updated;
+          });
+
+        // Full task identity (stamped and known-but-untimed alike) captured at reset,
+        // before the roster is cleared. Unlike the bounded wake-naming cache this is
+        // the source preservedStartedAt trusts, so eviction cannot fabricate a start.
+        const preserveBackgroundTaskStartsForReset = (
+          nativeThreadId: string,
+          liveRoster: ReadonlyMap<string, OrchestrationV2PendingBackgroundTask>,
+          persistedRoster: ReadonlyArray<OrchestrationV2PendingBackgroundTask> | undefined,
+        ) =>
+          Ref.update(preservedBackgroundTaskStarts, (current) => {
+            const snapshot = new Map<string, string | null>();
+            for (const task of persistedRoster ?? []) {
+              snapshot.set(task.taskId, task.startedAt ?? null);
+            }
+            // An in-session task_started stamp outranks the persisted stamp.
+            for (const [taskId, task] of liveRoster) {
+              snapshot.set(taskId, task.startedAt ?? snapshot.get(taskId) ?? null);
+            }
+            const updated = new Map(current);
+            if (snapshot.size === 0) {
+              updated.delete(nativeThreadId);
+            } else {
+              updated.set(nativeThreadId, snapshot);
+            }
+            return updated;
           });
 
         const rosterForNativeThread = (
@@ -4717,13 +4777,26 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             readonly status?: OrchestrationV2ProviderThread["status"];
           },
         ) {
-          const hadRoster =
-            rosterForNativeThread(
-              yield* Ref.get(pendingBackgroundTasksByNativeThread),
-              nativeThreadId,
-            ).size > 0;
+          const liveRoster = rosterForNativeThread(
+            yield* Ref.get(pendingBackgroundTasksByNativeThread),
+            nativeThreadId,
+          );
+          const hadRoster = liveRoster.size > 0;
           const remembered = (yield* Ref.get(lastProviderThreadByNativeThread)).get(nativeThreadId);
           const hadPersistedRoster = (remembered?.pendingBackgroundTasks?.length ?? 0) > 0;
+          // Keep the persisted start stamps reachable after the reset clears the roster,
+          // or a replayed task_started would invent a fresh start for a resumed task.
+          if (remembered?.pendingBackgroundTasks !== undefined) {
+            yield* seedPreservedStartedAt(remembered.pendingBackgroundTasks);
+          }
+          // Capture full task identity — stamped and known-but-untimed — before the
+          // roster clear below, so a replayed task_started can tell a known task apart
+          // from a new one. Untimed tasks must stay untimed, not pick up replay time.
+          yield* preserveBackgroundTaskStartsForReset(
+            nativeThreadId,
+            liveRoster,
+            remembered?.pendingBackgroundTasks,
+          );
           const priorOpaqueTombstones = taskIdSetForNativeThread(
             yield* Ref.get(opaqueBackgroundTaskReplayTombstonesByNativeThread),
             nativeThreadId,
@@ -7269,6 +7342,40 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           const message = input.message;
           let rosterChanged = false;
 
+          // A start stamped by an earlier task_started survives roster rebuilds: snapshots
+          // replace the roster wholesale, and a re-emitted or replayed task_started must not
+          // fabricate a fresh start. Falls back to the reset-time identity snapshot and the
+          // persisted provider-thread roster so a resume keeps the original stamp too. The
+          // found/missing distinction matters: a task known before this session but never
+          // observed starting must stay untimed; only an unseen task may be stamped.
+          const preservedStartedAt = Effect.fnUntraced(function* (
+            taskId: string,
+          ): Effect.fn.Return<
+            | { readonly found: true; readonly startedAt: string | undefined }
+            | { readonly found: false }
+          > {
+            const live = rosterForNativeThread(
+              yield* Ref.get(pendingBackgroundTasksByNativeThread),
+              input.nativeThreadId,
+            ).get(taskId);
+            if (live !== undefined) return { found: true, startedAt: live.startedAt };
+            // A fresh process resets the roster when its query opens; the identity
+            // snapshot taken at that reset survives it, per native thread.
+            const seeded = (yield* Ref.get(preservedBackgroundTaskStarts))
+              .get(input.nativeThreadId)
+              ?.get(taskId);
+            if (seeded !== undefined) {
+              return { found: true, startedAt: seeded ?? undefined };
+            }
+            const persisted = (yield* Ref.get(lastProviderThreadByNativeThread))
+              .get(input.nativeThreadId)
+              ?.pendingBackgroundTasks?.find((task) => task.taskId === taskId);
+            if (persisted !== undefined) {
+              return { found: true, startedAt: persisted.startedAt };
+            }
+            return { found: false };
+          });
+
           if (isClaudeBackgroundTasksChangedMessage(message)) {
             const roster = Reflect.get(message, "tasks");
             if (!Array.isArray(roster)) {
@@ -7291,7 +7398,9 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             for (const entry of roster) {
               const task = parseClaudeBackgroundTaskEntry(entry, monitorTasks);
               if (task !== null) {
-                nextTasks.push(task);
+                const preserved = yield* preservedStartedAt(task.taskId);
+                const startedAt = preserved.found ? preserved.startedAt : undefined;
+                nextTasks.push(startedAt === undefined ? task : { ...task, startedAt });
               }
             }
             yield* replacePendingBackgroundTasks(input.nativeThreadId, nextTasks);
@@ -7300,6 +7409,13 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             if (!isClaudeNonSubagentTask(message) || message.is_backgrounded === false) {
               return false;
             }
+            const preserved = yield* preservedStartedAt(message.task_id);
+            // A task already known to this native thread keeps its stamp — or its lack
+            // of one: a replayed task_started for a known-but-untimed task must not
+            // pick up the replay time. Only an unseen task is stamped now.
+            const startedAt = preserved.found
+              ? preserved.startedAt
+              : DateTime.formatIso(yield* DateTime.now);
             yield* upsertPendingBackgroundTask(
               input.nativeThreadId,
               claudePendingBackgroundTask({
@@ -7313,6 +7429,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 description:
                   typeof message.description === "string" ? message.description : undefined,
                 parentTaskId: Reflect.get(message, "parent_task_id"),
+                ...(startedAt === undefined ? {} : { startedAt }),
               }),
             );
             rosterChanged = true;
@@ -10535,39 +10652,3 @@ export const ClaudeAdapterV2Driver: ProviderAdapterDriver<
   defaultConfig: (): ClaudeSettings => DEFAULT_CLAUDE_SETTINGS,
   create: (input) => createClaudeAdapterV2(input, {}),
 };
-
-const makeDefaultClaudeAdapterV2 = Effect.fn("ClaudeAdapterV2.layer")(function* () {
-  const fileSystem = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
-  const crypto = yield* Crypto.Crypto;
-  const hostEnvironment = yield* HostProcess.Environment;
-  const idAllocator = yield* IdAllocator.IdAllocatorV2;
-  const queryRunner = yield* ClaudeAgentSdkQueryRunner;
-  const serverConfig = yield* ServerConfig.ServerConfig;
-  const continuationRequests = yield* ProviderContinuationRequests.ProviderContinuationRequests;
-
-  return yield* makeClaudeAdapterV2({
-    instanceId: CLAUDE_DEFAULT_INSTANCE_ID,
-    settings: DEFAULT_CLAUDE_SETTINGS,
-    environment: hostEnvironment,
-    attachmentsDir: serverConfig.attachmentsDir,
-    fileSystem,
-    path,
-    crypto,
-    idAllocator,
-    queryRunner,
-    continuationRequests,
-  });
-});
-
-const layer: Layer.Layer<
-  ProviderAdapter.ProviderAdapterV2,
-  never,
-  | ClaudeAgentSdkQueryRunner
-  | Crypto.Crypto
-  | FileSystem.FileSystem
-  | IdAllocator.IdAllocatorV2
-  | McpProviderSessions.McpProviderSessions
-  | Path.Path
-  | ServerConfig.ServerConfig
-> = Layer.effect(ProviderAdapter.ProviderAdapterV2, makeDefaultClaudeAdapterV2());
