@@ -126,6 +126,11 @@ export const TerminalSummary = Schema.Struct({
   hasRunningSubprocess: Schema.Boolean,
   label: Schema.String.check(Schema.isMaxLength(128)),
   updatedAt: Schema.String,
+  /**
+   * When the session's current PTY was spawned, stamped by the terminal manager. Optional so
+   * clients talking to an older server still decode; absent means the start time is unknown.
+   */
+  startedAt: Schema.optional(Schema.String),
 });
 export type TerminalSummary = typeof TerminalSummary.Type;
 

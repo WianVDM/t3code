@@ -7,6 +7,7 @@ import type {
   ThreadPullRequestLink,
 } from "@t3tools/contracts";
 import { isOrchestrationV2WorkActive } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import * as Predicate from "effect/Predicate";
 
 import { resolveT3McpToolId } from "./t3McpToolPresentation.ts";
@@ -52,6 +53,13 @@ const SETTLED_FOR_BACKGROUND_WAIT_RUN_STATUSES = new Set<OrchestrationV2Run["sta
 void TERMINAL_RUN_STATUSES;
 
 export type PendingBackgroundWorkTask = OrchestrationV2PendingBackgroundTask;
+
+/**
+ * Task id namespace for app-owned pull request watches. Unlike provider roster tasks these are
+ * fully described by the thread's pull request links, so clients can recognize them by prefix
+ * instead of treating them as opaque provider work.
+ */
+export const PULL_REQUEST_WATCH_TASK_ID_PREFIX = "pull-request-watch:";
 
 export function turnItemUpdateCanEndBackgroundWork(
   item: Pick<OrchestrationV2TurnItem, "type" | "status">,
@@ -109,7 +117,9 @@ function backgroundWorkKindHoldsCompletion(kind: PendingBackgroundWorkTask["kind
   }
 }
 
-type PendingBackgroundWorkRun = Pick<OrchestrationV2Run, "id" | "ordinal" | "status">;
+type PendingBackgroundWorkRun = Pick<OrchestrationV2Run, "id" | "ordinal" | "status"> & {
+  readonly queueHeld?: OrchestrationV2Run["queueHeld"];
+};
 
 type PendingBackgroundWorkPullRequest = Pick<
   ThreadPullRequestLink,
@@ -121,7 +131,7 @@ type PendingBackgroundWorkProviderThread = Pick<
   "id" | "pendingBackgroundTasks"
 > & { readonly providerInstanceId?: OrchestrationV2ProviderThread["providerInstanceId"] };
 
-type PendingBackgroundWorkTurnItem = {
+export type PendingBackgroundWorkTurnItem = {
   readonly id: OrchestrationV2TurnItem["id"] | string;
   readonly type: OrchestrationV2TurnItem["type"];
   readonly status: OrchestrationV2TurnItem["status"];
@@ -135,7 +145,21 @@ type PendingBackgroundWorkTurnItem = {
   readonly input?: unknown;
   readonly prompt?: string | undefined;
   readonly childThreadId?: ThreadId | null;
+  readonly startedAt?: OrchestrationV2TurnItem["startedAt"];
 };
+
+// Mirrors latestUnheldRun on this narrowed run shape: the newest run not waiting in a held
+// queue. Queue-held runs never outrank the run they wait behind as the thread's outcome.
+function latestUnheldPendingBackgroundRun(
+  runs: ReadonlyArray<PendingBackgroundWorkRun>,
+): PendingBackgroundWorkRun | null {
+  let latest: PendingBackgroundWorkRun | null = null;
+  for (const run of runs) {
+    if (run.status === "queued" && run.queueHeld === true) continue;
+    if (latest === null || run.ordinal > latest.ordinal) latest = run;
+  }
+  return latest;
+}
 
 function isLatestRunSettledForBackgroundWait(
   latestRun: PendingBackgroundWorkRun | null | undefined,
@@ -179,7 +203,14 @@ function pendingTaskFromTurnItem(
   item: PendingBackgroundWorkTurnItem,
 ): PendingBackgroundWorkTask {
   const description = descriptionFromTurnItem(item);
-  const named = { taskId, ...(description === undefined ? {} : { description }) };
+  const named = {
+    taskId,
+    ...(description === undefined ? {} : { description }),
+    // Only the item's own start is truthful timing; nothing is backfilled when it is unknown.
+    ...(item.startedAt === undefined || item.startedAt === null
+      ? {}
+      : { startedAt: DateTime.formatIso(item.startedAt) }),
+  };
   switch (item.type) {
     case "subagent":
       return {
@@ -227,44 +258,42 @@ export function pendingBackgroundTurnItems<Item extends PendingBackgroundWorkTur
   );
 }
 
-export function derivePendingBackgroundWork(input: {
-  readonly latestRun: PendingBackgroundWorkRun | null | undefined;
-  readonly providerThreads: ReadonlyArray<PendingBackgroundWorkProviderThread>;
-  readonly turnItems: ReadonlyArray<PendingBackgroundWorkTurnItem>;
-  readonly activeProviderThreadId?: string | null;
-  readonly hasActiveRun?: boolean;
-  /**
-   * Run rows used to exclude items owned by rolled_back runs. Optional for
-   * callers that already filtered (SQL shell path); in-memory callers should
-   * pass projection runs so policy cannot drift.
-   */
+/**
+ * Candidate background turn items keyed by the roster task id they answer to. Roster task
+ * ids are the provider's native ids, which differ from turn item ids, so this join reuses
+ * the same nativeTaskIdFromTurnItem/pendingBackgroundTurnItems semantics as
+ * derivePendingBackgroundWork rather than casting a taskId to a TurnItemId.
+ */
+export function pendingBackgroundTurnItemsByTaskId<
+  Item extends PendingBackgroundWorkTurnItem,
+>(input: {
+  readonly turnItems: ReadonlyArray<Item>;
   readonly runs?: ReadonlyArray<PendingBackgroundWorkRun>;
-  readonly pullRequests?: ReadonlyArray<PendingBackgroundWorkPullRequest> | undefined;
-}): ReadonlyArray<PendingBackgroundWorkTask> {
-  const hasActiveRun =
-    input.hasActiveRun ??
-    input.runs?.some(
-      (run) => run.status === "preparing" || run.status === "starting" || run.status === "running",
-    ) ??
-    false;
-  if (hasActiveRun) {
-    return [];
+}): ReadonlyMap<string, Item> {
+  const byTaskId = new Map<string, Item>();
+  for (const item of pendingBackgroundTurnItems(input)) {
+    byTaskId.set(nativeTaskIdFromTurnItem(item), item);
   }
-  if (input.latestRun == null) {
-    return pullRequestWatchTasks(input.pullRequests);
-  }
-  if (!isLatestRunSettledForBackgroundWait(input.latestRun)) {
-    return [];
-  }
+  return byTaskId;
+}
 
-  const byTaskId = new Map<string, PendingBackgroundWorkTask>();
+const ACTIVE_RUN_STATUSES = new Set<OrchestrationV2Run["status"]>([
+  "preparing",
+  "starting",
+  "running",
+]);
 
-  const providerThreads =
-    input.activeProviderThreadId === undefined || input.activeProviderThreadId === null
-      ? input.providerThreads
-      : input.providerThreads.filter((thread) => thread.id === input.activeProviderThreadId);
+function collectRosterTasks(
+  byTaskId: Map<string, PendingBackgroundWorkTask>,
+  providerThreads: ReadonlyArray<PendingBackgroundWorkProviderThread>,
+  activeProviderThreadId: string | null | undefined,
+): void {
+  const threads =
+    activeProviderThreadId === undefined || activeProviderThreadId === null
+      ? providerThreads
+      : providerThreads.filter((thread) => thread.id === activeProviderThreadId);
 
-  for (const providerThread of providerThreads) {
+  for (const providerThread of threads) {
     for (const task of providerThread.pendingBackgroundTasks ?? []) {
       if (task.taskId.length === 0 || byTaskId.has(task.taskId)) {
         continue;
@@ -280,6 +309,93 @@ export function derivePendingBackgroundWork(input: {
       });
     }
   }
+}
+
+/**
+ * Ongoing work for the Processes panel. Unlike derivePendingBackgroundWork — the composer
+ * banner's list, which goes quiet while a turn runs — this stays truthful through a follow-up
+ * foreground turn: the provider roster is always authoritative, and a turn item is included
+ * unless an active run owns it. Items an active run owns are foreground work unless the roster
+ * claims them, so they never get promoted into background processes.
+ */
+export function deriveOngoingThreadBackgroundWork(input: {
+  readonly providerThreads: ReadonlyArray<PendingBackgroundWorkProviderThread>;
+  readonly turnItems: ReadonlyArray<PendingBackgroundWorkTurnItem>;
+  readonly activeProviderThreadId?: string | null;
+  readonly runs?: ReadonlyArray<PendingBackgroundWorkRun>;
+  readonly pullRequests?: ReadonlyArray<PendingBackgroundWorkPullRequest> | undefined;
+  /**
+   * True while the owner of runless work — a provider-native thread's root turn — is active
+   * or its state is unknown. Runless items are that turn's foreground work then, so item-only
+   * inference is skipped; roster tasks stay authoritative either way.
+   */
+  readonly runlessOwnerActive?: boolean;
+}): ReadonlyArray<PendingBackgroundWorkTask> {
+  // A rolled-back latest run fails the whole provider-work gate, matching
+  // derivePendingBackgroundWork: the roster is not run-tied and rollback removed the
+  // interruption target, so any roster or inferred row would be a stale no-op. Pull request
+  // watches stay independent monitors.
+  if (latestUnheldPendingBackgroundRun(input.runs ?? [])?.status === "rolled_back") {
+    return pullRequestWatchTasks(input.pullRequests);
+  }
+
+  const activeRunIds = new Set(
+    (input.runs ?? [])
+      .filter((run) => ACTIVE_RUN_STATUSES.has(run.status))
+      .map((run) => String(run.id)),
+  );
+
+  const byTaskId = new Map<string, PendingBackgroundWorkTask>();
+  collectRosterTasks(byTaskId, input.providerThreads, input.activeProviderThreadId);
+
+  for (const item of pendingBackgroundTurnItems(input)) {
+    const taskId = nativeTaskIdFromTurnItem(item);
+    if (byTaskId.has(taskId)) {
+      continue;
+    }
+    if (item.runId === undefined || item.runId === null) {
+      if (input.runlessOwnerActive === true) {
+        continue;
+      }
+    } else if (activeRunIds.has(String(item.runId))) {
+      continue;
+    }
+    byTaskId.set(taskId, pendingTaskFromTurnItem(taskId, item));
+  }
+
+  for (const task of pullRequestWatchTasks(input.pullRequests)) byTaskId.set(task.taskId, task);
+
+  return Array.from(byTaskId.values());
+}
+
+export function derivePendingBackgroundWork(input: {
+  readonly latestRun: PendingBackgroundWorkRun | null | undefined;
+  readonly providerThreads: ReadonlyArray<PendingBackgroundWorkProviderThread>;
+  readonly turnItems: ReadonlyArray<PendingBackgroundWorkTurnItem>;
+  readonly activeProviderThreadId?: string | null;
+  readonly hasActiveRun?: boolean;
+  /**
+   * Run rows used to exclude items owned by rolled_back runs. Optional for
+   * callers that already filtered (SQL shell path); in-memory callers should
+   * pass projection runs so policy cannot drift.
+   */
+  readonly runs?: ReadonlyArray<PendingBackgroundWorkRun>;
+  readonly pullRequests?: ReadonlyArray<PendingBackgroundWorkPullRequest> | undefined;
+}): ReadonlyArray<PendingBackgroundWorkTask> {
+  const hasActiveRun =
+    input.hasActiveRun ?? input.runs?.some((run) => ACTIVE_RUN_STATUSES.has(run.status)) ?? false;
+  if (hasActiveRun) {
+    return [];
+  }
+  if (input.latestRun == null) {
+    return pullRequestWatchTasks(input.pullRequests);
+  }
+  if (!isLatestRunSettledForBackgroundWait(input.latestRun)) {
+    return [];
+  }
+
+  const byTaskId = new Map<string, PendingBackgroundWorkTask>();
+  collectRosterTasks(byTaskId, input.providerThreads, input.activeProviderThreadId);
 
   for (const item of pendingBackgroundTurnItems(input)) {
     const taskId = nativeTaskIdFromTurnItem(item);
@@ -303,9 +419,10 @@ function pullRequestWatchTasks(
       ? []
       : [
           {
-            taskId: `pull-request-watch:${threadPullRequestKeyOf(link)}`,
+            taskId: `${PULL_REQUEST_WATCH_TASK_ID_PREFIX}${threadPullRequestKeyOf(link)}`,
             description: `Watching pull request #${link.number}`,
             kind: "monitor" as const,
+            startedAt: link.watch.startedAt,
           },
         ],
   );

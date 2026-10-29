@@ -22,6 +22,7 @@ import { OpenInPicker } from "./OpenInPicker";
 import { ThreadDetailsSection } from "./ThreadDetailsSection";
 import { ThreadAutomationsPanel } from "./ThreadAutomationsPanel";
 import { ThreadRelationshipsPanel } from "./ThreadRelationshipsControl";
+import { ThreadProcessesPanel } from "./ThreadProcessesPanel";
 
 const GitActionsControl = memo(BaseGitActionsControl);
 
@@ -66,6 +67,8 @@ export interface ThreadDetailsPanelProps extends Pick<
     input: NewProjectScriptInput,
   ) => Promise<ProjectScriptActionResult>;
   onDeleteProjectScript: (scriptId: string) => Promise<ProjectScriptActionResult>;
+  isStoppingBackgroundWork: boolean;
+  onStopBackgroundWork: () => void;
 }
 
 export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
@@ -190,6 +193,15 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
             <ThreadRelationshipsPanel
               environmentId={props.environmentId}
               threadId={props.threadId}
+            />
+          ) : null}
+
+          {density === "full" && !props.draftId ? (
+            <ThreadProcessesPanel
+              environmentId={props.environmentId}
+              threadId={props.threadId}
+              isStoppingBackgroundWork={props.isStoppingBackgroundWork}
+              onStopBackgroundWork={props.onStopBackgroundWork}
             />
           ) : null}
         </>

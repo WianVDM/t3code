@@ -557,6 +557,40 @@ describe("background work kinds from older or newer servers", () => {
       }),
     ).toThrow();
   });
+
+  it("keeps startedAt on roster tasks, including kinds from a newer server", () => {
+    const providerThread = decodeOrchestrationV2ProviderThreadJson({
+      id: "provider-thread-1",
+      driver: "claude",
+      providerInstanceId: "claudeAgent",
+      providerSessionId: null,
+      appThreadId: "thread-1",
+      ownerNodeId: null,
+      nativeThreadRef: null,
+      nativeConversationHeadRef: null,
+      status: "idle",
+      firstRunOrdinal: 1,
+      lastRunOrdinal: 1,
+      handoffIds: [],
+      forkedFrom: null,
+      createdAt: "2026-04-20T00:00:00.000Z",
+      updatedAt: "2026-04-20T00:00:00.000Z",
+      pendingBackgroundTasks: [
+        { taskId: "bg-1", kind: "command", startedAt: "2026-04-20T00:00:01.000Z" },
+        { taskId: "bg-2", kind: "workflow", startedAt: "2026-04-20T00:00:02.000Z" },
+        { taskId: "bg-3", kind: "command" },
+      ],
+    });
+    expect(providerThread.pendingBackgroundTasks).toEqual([
+      { taskId: "bg-1", kind: "command", startedAt: "2026-04-20T00:00:01.000Z" },
+      { taskId: "bg-2", kind: "background_task", startedAt: "2026-04-20T00:00:02.000Z" },
+      { taskId: "bg-3", kind: "command" },
+    ]);
+    // Round-trips unchanged, so a persisted roster never loses a stamped start.
+    expect(encodeOrchestrationV2ProviderThreadJson(providerThread).pendingBackgroundTasks).toEqual(
+      providerThread.pendingBackgroundTasks,
+    );
+  });
 });
 
 describe("latestProviderTurnForAttempt", () => {

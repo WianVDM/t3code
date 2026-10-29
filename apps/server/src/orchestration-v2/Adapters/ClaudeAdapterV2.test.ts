@@ -6312,6 +6312,522 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       ),
   );
 
+  it.effect(
+    "stamps a task_started roster start and preserves it through re-emission and snapshots",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const harness = yield* makeWakeHarness;
+          const now = yield* DateTime.now;
+          let frameNumber = 1000;
+          const nextUuid = () =>
+            `00000000-0000-4000-8000-${String(++frameNumber).padStart(12, "0")}`;
+
+          yield* harness.runtime.startTurn(
+            makeClaudeTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now,
+              attemptId: RunAttemptId.make("attempt-claude-roster-timing"),
+              text: "Run the build in the background.",
+              attachments: [],
+            }),
+          );
+          yield* Queue.offer(harness.sdkMessages, wakeTaskStarted);
+          yield* harness.until(() =>
+            providerThreadRosterEvents(harness.events).some(
+              (event) => (event.providerThread.pendingBackgroundTasks?.length ?? 0) > 0,
+            ),
+          );
+          const stamped = providerThreadRosterEvents(harness.events)
+            .at(-1)
+            ?.providerThread.pendingBackgroundTasks?.find((task) => task.taskId === WAKE_TASK_ID);
+          assert.isString(stamped?.startedAt);
+          assert.isTrue(Number.isFinite(Date.parse(stamped!.startedAt!)));
+
+          // A re-emitted task_started for the same task keeps the original start.
+          yield* Queue.offer(
+            harness.sdkMessages,
+            claudeSdkFrame({
+              type: "system",
+              subtype: "task_started",
+              task_id: WAKE_TASK_ID,
+              tool_use_id: WAKE_TOOL_USE_ID,
+              description: WAKE_TASK_DESCRIPTION,
+              is_backgrounded: true,
+              task_type: "local_bash",
+              uuid: nextUuid(),
+              session_id: WAKE_NATIVE_SESSION,
+            }),
+          );
+          yield* harness.until(
+            () =>
+              providerThreadRosterEvents(harness.events).length >
+              providerThreadRosterEvents(harness.events).findLastIndex(
+                (event) => event.providerThread.pendingBackgroundTasks?.length === 0,
+              ) +
+                2,
+          );
+          const reemitted = providerThreadRosterEvents(harness.events)
+            .at(-1)
+            ?.providerThread.pendingBackgroundTasks?.find((task) => task.taskId === WAKE_TASK_ID);
+          assert.equal(reemitted?.startedAt, stamped!.startedAt);
+
+          // A later background_tasks_changed snapshot preserves the stamped start.
+          yield* Queue.offer(
+            harness.sdkMessages,
+            claudeSdkFrame({
+              type: "system",
+              subtype: "background_tasks_changed",
+              tasks: [
+                {
+                  task_id: WAKE_TASK_ID,
+                  task_type: "local_bash",
+                  description: "Background sleep test (snapshot)",
+                },
+              ],
+              uuid: nextUuid(),
+              session_id: WAKE_NATIVE_SESSION,
+            }),
+          );
+          yield* harness.until(() =>
+            providerThreadRosterEvents(harness.events).some(
+              (event) =>
+                event.providerThread.pendingBackgroundTasks?.[0]?.description ===
+                "Background sleep test (snapshot)",
+            ),
+          );
+          const fromSnapshot = providerThreadRosterEvents(harness.events)
+            .at(-1)
+            ?.providerThread.pendingBackgroundTasks?.find((task) => task.taskId === WAKE_TASK_ID);
+          assert.equal(fromSnapshot?.startedAt, stamped!.startedAt);
+
+          yield* Queue.offer(harness.sdkMessages, turnOneResult);
+          yield* harness.until(() => harness.terminalEvents().length === 1);
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          ),
+        ),
+      ),
+  );
+
+  it.effect("leaves snapshot-only roster tasks untimed", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarness;
+        const now = yield* DateTime.now;
+
+        yield* harness.runtime.startTurn(
+          makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now,
+            attemptId: RunAttemptId.make("attempt-claude-roster-snapshot-only"),
+            text: "Anything running in the background?",
+            attachments: [],
+          }),
+        );
+        // A snapshot can list a task this session never saw a task_started for
+        // (started before the server process, or reported by a resumed CLI).
+        yield* Queue.offer(
+          harness.sdkMessages,
+          claudeSdkFrame({
+            type: "system",
+            subtype: "background_tasks_changed",
+            tasks: [
+              {
+                task_id: "snapshot-only-task",
+                task_type: "local_bash",
+                description: "pre-existing watch",
+              },
+            ],
+            uuid: "00000000-0000-4000-8000-000000000301",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        yield* harness.until(() =>
+          providerThreadRosterEvents(harness.events).some(
+            (event) => (event.providerThread.pendingBackgroundTasks?.length ?? 0) > 0,
+          ),
+        );
+        const task = providerThreadRosterEvents(harness.events)
+          .at(-1)
+          ?.providerThread.pendingBackgroundTasks?.find(
+            (entry) => entry.taskId === "snapshot-only-task",
+          );
+        assert.isDefined(task);
+        assert.isUndefined(task!.startedAt);
+
+        yield* Queue.offer(harness.sdkMessages, turnOneResult);
+        yield* harness.until(() => harness.terminalEvents().length === 1);
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+    ),
+  );
+
+  it.effect("keeps a resumed roster's start stamps without inventing replay timestamps", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarness;
+        const now = yield* DateTime.now;
+        const resumedStartedAt = "2020-01-01T00:00:00.000Z";
+
+        // A fresh adapter process resuming a thread receives the persisted roster on the
+        // provider thread; its start stamps are the only timing the session can truthfully
+        // report.
+        yield* harness.runtime.startTurn(
+          makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: {
+              ...harness.providerThread,
+              pendingBackgroundTasks: [
+                {
+                  taskId: WAKE_TASK_ID,
+                  kind: "command",
+                  description: WAKE_TASK_DESCRIPTION,
+                  startedAt: resumedStartedAt,
+                },
+              ],
+            },
+            now,
+            attemptId: RunAttemptId.make("attempt-claude-roster-resume"),
+            text: "Resume and keep the background work going.",
+            attachments: [],
+          }),
+        );
+
+        // A replayed task_started for the known task must not stamp a fresh start.
+        yield* Queue.offer(harness.sdkMessages, wakeTaskStarted);
+        yield* harness.until(() =>
+          providerThreadRosterEvents(harness.events).some(
+            (event) => (event.providerThread.pendingBackgroundTasks?.length ?? 0) > 0,
+          ),
+        );
+        const replayed = providerThreadRosterEvents(harness.events)
+          .at(-1)
+          ?.providerThread.pendingBackgroundTasks?.find((task) => task.taskId === WAKE_TASK_ID);
+        assert.equal(replayed?.startedAt, resumedStartedAt);
+
+        // A snapshot keeps the known task's stamp and leaves a task this session never saw
+        // start — one the resumed CLI already ran — unknown.
+        yield* Queue.offer(
+          harness.sdkMessages,
+          claudeSdkFrame({
+            type: "system",
+            subtype: "background_tasks_changed",
+            tasks: [
+              {
+                task_id: WAKE_TASK_ID,
+                task_type: "local_bash",
+                description: "Background sleep test",
+              },
+              {
+                task_id: "snapshot-only-task",
+                task_type: "local_bash",
+                description: "pre-existing watch",
+              },
+            ],
+            uuid: "00000000-0000-4000-8000-000000000302",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        yield* harness.until(() =>
+          providerThreadRosterEvents(harness.events).some(
+            (event) => (event.providerThread.pendingBackgroundTasks?.length ?? 0) >= 2,
+          ),
+        );
+        const roster = providerThreadRosterEvents(harness.events).at(-1)?.providerThread
+          .pendingBackgroundTasks;
+        assert.equal(
+          roster?.find((task) => task.taskId === WAKE_TASK_ID)?.startedAt,
+          resumedStartedAt,
+        );
+        assert.isUndefined(roster?.find((task) => task.taskId === "snapshot-only-task")?.startedAt);
+
+        yield* Queue.offer(harness.sdkMessages, turnOneResult);
+        yield* harness.until(() => harness.terminalEvents().length === 1);
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+    ),
+  );
+
+  it.effect("leaves a resumed untimed task untimed when its task_started replays after reset", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarness;
+        const now = yield* DateTime.now;
+
+        // A fresh adapter process resuming a thread whose persisted roster names a task
+        // that never had a start stamp: the task is known, its start is not.
+        yield* harness.runtime.startTurn(
+          makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: {
+              ...harness.providerThread,
+              pendingBackgroundTasks: [
+                {
+                  taskId: WAKE_TASK_ID,
+                  kind: "command",
+                  description: WAKE_TASK_DESCRIPTION,
+                },
+              ],
+            },
+            now,
+            attemptId: RunAttemptId.make("attempt-claude-roster-resume-untimed"),
+            text: "Resume with an untimed background task.",
+            attachments: [],
+          }),
+        );
+
+        // A replayed task_started for the known-but-untimed task must not pick up the
+        // replay time; only a task this session never saw may be stamped.
+        yield* Queue.offer(harness.sdkMessages, wakeTaskStarted);
+        yield* harness.until(() =>
+          providerThreadRosterEvents(harness.events).some(
+            (event) => (event.providerThread.pendingBackgroundTasks?.length ?? 0) > 0,
+          ),
+        );
+        const replayed = providerThreadRosterEvents(harness.events)
+          .at(-1)
+          ?.providerThread.pendingBackgroundTasks?.find((task) => task.taskId === WAKE_TASK_ID);
+        assert.isDefined(replayed);
+        assert.isUndefined(replayed!.startedAt);
+
+        yield* Queue.offer(harness.sdkMessages, turnOneResult);
+        yield* harness.until(() => harness.terminalEvents().length === 1);
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+    ),
+  );
+
+  it.effect(
+    "keeps a resumed start stamp after the wake cache overflows and the roster moves on",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const harness = yield* makeWakeHarness;
+          const now = yield* DateTime.now;
+          const evictedTaskId = "evicted-task-0";
+          const evictedStartedAt = "2020-06-01T00:00:00.000Z";
+          // More tasks than the bounded wake-naming cache holds, so the oldest stamp is
+          // evicted from it on seed.
+          const persistedTasks = [
+            {
+              taskId: evictedTaskId,
+              kind: "command" as const,
+              description: "evicted task",
+              startedAt: evictedStartedAt,
+            },
+            ...Array.from({ length: 64 }, (_, index) => ({
+              taskId: `filler-task-${index + 1}`,
+              kind: "command" as const,
+              description: `filler ${index + 1}`,
+              startedAt: `2020-06-02T00:00:${String(index).padStart(2, "0")}.000Z`,
+            })),
+          ];
+
+          yield* harness.runtime.startTurn(
+            makeClaudeTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: {
+                ...harness.providerThread,
+                pendingBackgroundTasks: persistedTasks,
+              },
+              now,
+              attemptId: RunAttemptId.make("attempt-claude-roster-resume-eviction"),
+              text: "Resume with many stamped background tasks.",
+              attachments: [],
+            }),
+          );
+
+          // The roster moves on without the evicted task, so the persisted roster drops
+          // it too; only the reset-time identity snapshot still knows its stamp.
+          yield* Queue.offer(
+            harness.sdkMessages,
+            claudeSdkFrame({
+              type: "system",
+              subtype: "background_tasks_changed",
+              tasks: persistedTasks.slice(1).map((task) => ({
+                task_id: task.taskId,
+                task_type: "local_bash",
+                description: task.description,
+              })),
+              uuid: "00000000-0000-4000-8000-000000000401",
+              session_id: WAKE_NATIVE_SESSION,
+            }),
+          );
+          yield* harness.until(() =>
+            providerThreadRosterEvents(harness.events).some(
+              (event) =>
+                event.providerThread.pendingBackgroundTasks?.some(
+                  (task) => task.taskId === "filler-task-64",
+                ) === true &&
+                !event.providerThread.pendingBackgroundTasks.some(
+                  (task) => task.taskId === evictedTaskId,
+                ),
+            ),
+          );
+
+          // A replayed task_started for the evicted task keeps its original stamp.
+          yield* Queue.offer(
+            harness.sdkMessages,
+            claudeSdkFrame({
+              type: "system",
+              subtype: "task_started",
+              task_id: evictedTaskId,
+              tool_use_id: "toolu_evicted",
+              description: "evicted task",
+              is_backgrounded: true,
+              task_type: "local_bash",
+              uuid: "00000000-0000-4000-8000-000000000402",
+              session_id: WAKE_NATIVE_SESSION,
+            }),
+          );
+          yield* harness.until(() =>
+            providerThreadRosterEvents(harness.events).some(
+              (event) =>
+                event.providerThread.pendingBackgroundTasks?.some(
+                  (task) => task.taskId === evictedTaskId,
+                ) === true,
+            ),
+          );
+          const replayed = providerThreadRosterEvents(harness.events)
+            .at(-1)
+            ?.providerThread.pendingBackgroundTasks?.find((task) => task.taskId === evictedTaskId);
+          assert.equal(replayed?.startedAt, evictedStartedAt);
+
+          yield* Queue.offer(harness.sdkMessages, turnOneResult);
+          yield* harness.until(() => harness.terminalEvents().length === 1);
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          ),
+        ),
+      ),
+  );
+
+  it.effect("does not share start stamps across native threads that reuse a task id", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const forkedNativeSession = "native-thread-claude-wake-forked";
+        const forkedThreadId = ThreadId.make("thread-claude-wake-forked");
+        const sourceStartedAt = "2020-03-01T00:00:00.000Z";
+        const forkedStartedAt = "2020-04-01T00:00:00.000Z";
+        const harness = yield* makeWakeHarnessWithOptions({
+          // Forking replaces the live query; each process gets its own queue so the
+          // closing process's stream stops draining frames meant for the new one.
+          close: (sdkMessages) => Queue.shutdown(sdkMessages),
+          freshQueueOnReopen: true,
+          forkSession: () => Effect.succeed({ sessionId: forkedNativeSession }),
+        });
+        const now = yield* DateTime.now;
+
+        // The source native thread resumes with the shared task id stamped T_source.
+        yield* harness.runtime.startTurn(
+          makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: {
+              ...harness.providerThread,
+              pendingBackgroundTasks: [
+                {
+                  taskId: WAKE_TASK_ID,
+                  kind: "command",
+                  description: WAKE_TASK_DESCRIPTION,
+                  startedAt: sourceStartedAt,
+                },
+              ],
+            },
+            now,
+            attemptId: RunAttemptId.make("attempt-claude-roster-shared-source"),
+            text: "Resume the source background task.",
+            attachments: [],
+          }),
+        );
+        yield* harness.offerAndWait(turnOneResult);
+        yield* harness.until(() => harness.terminalEvents().length === 1);
+
+        // A forked sibling native thread resumes with the same task id stamped T_fork.
+        const forkedProviderThread = yield* harness.runtime.forkThread({
+          sourceProviderThread: harness.providerThread,
+          targetThreadId: forkedThreadId,
+        });
+        yield* harness.runtime.startTurn(
+          makeClaudeTestTurnInput({
+            threadId: forkedThreadId,
+            providerThread: {
+              ...forkedProviderThread,
+              pendingBackgroundTasks: [
+                {
+                  taskId: WAKE_TASK_ID,
+                  kind: "command",
+                  description: "Forked background task",
+                  startedAt: forkedStartedAt,
+                },
+              ],
+            },
+            now,
+            attemptId: RunAttemptId.make("attempt-claude-roster-shared-fork"),
+            text: "Resume the forked background task.",
+            attachments: [],
+            nativeThreadHasTurns: false,
+          }),
+        );
+
+        // A replayed task_started on the forked native thread keeps its own persisted
+        // stamp instead of inheriting the source thread's.
+        yield* harness.offerAndWait(
+          claudeSdkFrame({
+            type: "system",
+            subtype: "task_started",
+            task_id: WAKE_TASK_ID,
+            tool_use_id: "toolu_forked",
+            description: "Forked background task",
+            is_backgrounded: true,
+            task_type: "local_bash",
+            uuid: "00000000-0000-4000-8000-000000000501",
+            session_id: forkedNativeSession,
+          }),
+        );
+        yield* harness.until(() =>
+          providerThreadRosterEvents(harness.events).some(
+            (event) =>
+              event.providerThread.nativeThreadRef?.nativeId === forkedNativeSession &&
+              (event.providerThread.pendingBackgroundTasks?.length ?? 0) > 0,
+          ),
+        );
+        const forkedTask = providerThreadRosterEvents(harness.events)
+          .findLast(
+            (event) => event.providerThread.nativeThreadRef?.nativeId === forkedNativeSession,
+          )
+          ?.providerThread.pendingBackgroundTasks?.find((task) => task.taskId === WAKE_TASK_ID);
+        assert.equal(forkedTask?.startedAt, forkedStartedAt);
+
+        yield* harness.offerAndWait(
+          claudeSdkFrame({
+            ...(turnOneResult as unknown as Record<string, unknown>),
+            uuid: "00000000-0000-4000-8000-000000000502",
+            session_id: forkedNativeSession,
+          }),
+        );
+        yield* harness.until(() => harness.terminalEvents().length === 2);
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+    ),
+  );
+
   it.effect("keeps a running Claude monitor typed after many newer monitors end", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -6438,7 +6954,13 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         const roster = providerThreadRosterEvents(harness.events).at(-1)?.providerThread
           .pendingBackgroundTasks;
         assert.deepEqual(roster, [
-          { taskId: longRunning.taskId, kind: "monitor", description: "Monitor 0" },
+          // The closing snapshot preserves the start stamped by this session's task_started.
+          {
+            taskId: longRunning.taskId,
+            kind: "monitor",
+            description: "Monitor 0",
+            startedAt: "1970-01-01T00:00:00.000Z",
+          },
         ]);
       }).pipe(
         Effect.provide(
@@ -6836,7 +7358,13 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             (event) => event.providerThread.id === providerThreadA.id,
           )?.providerThread.pendingBackgroundTasks;
           assert.deepEqual(rosterAAfterSettle ?? [], [
-            { taskId: taskA, description: "work on A", kind: "command" },
+            // task_started stamps the genuine start; this harness's clock is frozen at epoch.
+            {
+              taskId: taskA,
+              description: "work on A",
+              kind: "command",
+              startedAt: "1970-01-01T00:00:00.000Z",
+            },
           ]);
           assert.isTrue(yield* hasPendingBackgroundWork);
           assert.isTrue(yield* hasPendingBackgroundWorkForThread(providerThreadA));
