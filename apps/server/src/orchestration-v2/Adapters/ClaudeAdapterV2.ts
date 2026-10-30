@@ -163,7 +163,11 @@ import {
 import type { ManagedServerProvider } from "@t3tools/provider-core/server/snapshot";
 import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/instanceEnvironment";
 import { T3_CODE_ORCHESTRATION_INSTRUCTIONS } from "@t3tools/provider-core/server/orchestrationInstructions";
-import { bridgedInstructionsForTurn } from "@t3tools/provider-core/server/contextBridgeRuntime";
+import {
+  bridgedInstructionsForTurn,
+  currentContextBridgeSettings,
+} from "@t3tools/provider-core/server/contextBridgeRuntime";
+import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
 import { buildRuntimeInstructions } from "@t3tools/provider-core/server/runtimeInstructions";
 import {
   mcpToolPresentation,
@@ -3911,6 +3915,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
 ) {
   const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
   const serverSettings = yield* Effect.serviceOption(ServerSettings.ServerSettingsService);
+  const host = yield* ProviderHost.ProviderHost;
   const { attachmentsDir, fileSystem, path, crypto, idAllocator, queryRunner } = adapterOptions;
   const subagentModelCatalog = scopeClaudeModelCatalog(
     BUNDLED_CLAUDE_MODEL_CATALOG,
@@ -3983,11 +3988,17 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
   );
 
   const userInvocableSkills = (cwd: string | null) =>
-    discoverClaudeSkills(
-      adapterOptions.settings,
-      cwd ?? undefined,
-      adapterOptions.environment,
-    ).pipe(
+    currentContextBridgeSettings(host).pipe(
+      Effect.flatMap((contextBridge) =>
+        Effect.fn("ClaudeAdapterV2.discoverUserInvocableSkills")(() =>
+          discoverClaudeSkills(
+            adapterOptions.settings,
+            cwd ?? undefined,
+            adapterOptions.environment,
+            contextBridge,
+          ),
+        )(),
+      ),
       Effect.map(
         (skills) =>
           new Map(
@@ -9398,6 +9409,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           const shouldResume =
             resumeSessionAt !== undefined || openedWithResume || hasPersistedProviderTurn;
           const bridgedContext = yield* bridgedInstructionsForTurn({
+            host,
             targetDriver: CLAUDE_PROVIDER,
             cwd: turnInput.runtimePolicy.cwd,
           });
@@ -10593,6 +10605,7 @@ export type ClaudeAdapterV2DriverEnv =
   | IdAllocator.IdAllocatorV2
   | McpProviderSessions.McpProviderSessions
   | Path.Path
+  | ProviderHost.ProviderHost
   | ServerConfig.ServerConfig;
 
 export const createClaudeAdapterV2 = Effect.fn("ClaudeAdapterV2Driver.create")(

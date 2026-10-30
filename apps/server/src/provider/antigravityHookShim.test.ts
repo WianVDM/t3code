@@ -127,4 +127,97 @@ describe("antigravity hook shim", () => {
     expect(result.status).toBe(0);
     expect(JSON.parse(result.stdout.trim())).toEqual({ decision: "allow" });
   });
+
+  it("emits a deny decision when a PreToolUse command hook exits 2", () => {
+    const denyPath = NodePath.join(tempRoot, "deny-hook.cjs");
+    NodeFS.writeFileSync(
+      denyPath,
+      'process.stderr.write("  blocked by policy \\n ");\nprocess.exit(2);\n',
+      "utf8",
+    );
+    NodeFS.writeFileSync(
+      claudeSettingsPath,
+      JSON.stringify({
+        hooks: {
+          PreToolUse: [
+            {
+              matcher: "*",
+              hooks: [{ type: "command", command: `node "${denyPath}"` }],
+            },
+          ],
+        },
+      }),
+      "utf8",
+    );
+
+    const result = NodeChildProcess.spawnSync(process.execPath, [shimPath], {
+      input: JSON.stringify({
+        conversationId: "conversation-1",
+        workspacePaths: [workspaceRoot],
+        toolCall: { name: "run_command", args: { CommandLine: "echo nope", Cwd: workspaceRoot } },
+      }),
+      encoding: "utf8",
+      timeout: 30_000,
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout.trim())).toEqual({
+      decision: "deny",
+      reason: "blocked by policy",
+      allowTool: false,
+      denyReason: "blocked by policy",
+    });
+  });
+
+  it("fails open with allow when shim.config.json is missing", () => {
+    NodeFS.rmSync(NodePath.join(tempRoot, ANTIGRAVITY_HOOK_SHIM_CONFIG_FILENAME));
+
+    const result = NodeChildProcess.spawnSync(process.execPath, [shimPath], {
+      input: JSON.stringify({
+        conversationId: "conversation-1",
+        workspacePaths: [workspaceRoot],
+        toolCall: { name: "run_command", args: { CommandLine: "echo hi" } },
+      }),
+      encoding: "utf8",
+      timeout: 30_000,
+    });
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout.trim())).toEqual({ decision: "allow" });
+  });
+
+  it("fails open with allow when shim.config.json is corrupt", () => {
+    NodeFS.writeFileSync(
+      NodePath.join(tempRoot, ANTIGRAVITY_HOOK_SHIM_CONFIG_FILENAME),
+      "{ not json",
+      "utf8",
+    );
+
+    const result = NodeChildProcess.spawnSync(process.execPath, [shimPath], {
+      input: JSON.stringify({
+        conversationId: "conversation-1",
+        workspacePaths: [workspaceRoot],
+        toolCall: { name: "run_command", args: { CommandLine: "echo hi" } },
+      }),
+      encoding: "utf8",
+      timeout: 30_000,
+    });
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout.trim())).toEqual({ decision: "allow" });
+  });
+
+  it("fails open with allow when the Claude settings JSON is corrupt", () => {
+    NodeFS.writeFileSync(claudeSettingsPath, "{ not json", "utf8");
+
+    const result = NodeChildProcess.spawnSync(process.execPath, [shimPath], {
+      input: JSON.stringify({
+        conversationId: "conversation-1",
+        workspacePaths: [workspaceRoot],
+        toolCall: { name: "run_command", args: { CommandLine: "echo hi" } },
+      }),
+      encoding: "utf8",
+      timeout: 30_000,
+    });
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout.trim())).toEqual({ decision: "allow" });
+  });
 });

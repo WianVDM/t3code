@@ -1,4 +1,4 @@
-import type { ServerProviderSkill } from "@t3tools/contracts";
+import type { ContextBridgeSettings, ServerProviderSkill } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -8,7 +8,6 @@ import * as Stream from "effect/Stream";
 import { parse as parseYamlDocument } from "yaml";
 
 import { resolveBridgedSkillRoots } from "@t3tools/provider-core/server/contextBridge";
-import { currentContextBridgeSettings } from "@t3tools/provider-core/server/contextBridgeRuntime";
 
 /**
  * The home directory the agent expands `~` against, matching Python's
@@ -161,6 +160,12 @@ const readSkill = Effect.fn("readAntigravitySkill")(function* (
 export const discoverAntigravitySkills = Effect.fn("discoverAntigravitySkills")(function* (input: {
   readonly cwd: string;
   readonly userHome: string;
+  /**
+   * Resolved by the caller from the host captured at construction; undefined
+   * means no bridge applies. Read per call so a settings change applies to
+   * the next snapshot without a restart.
+   */
+  readonly contextBridge?: ContextBridgeSettings | undefined;
 }): Effect.fn.Return<
   ReadonlyArray<ServerProviderSkill>,
   AntigravitySkillsProbeError,
@@ -172,7 +177,7 @@ export const discoverAntigravitySkills = Effect.fn("discoverAntigravitySkills")(
     path,
     path.join(input.userHome, ".gemini"),
   );
-  const contextBridge = yield* currentContextBridgeSettings();
+  const contextBridge = input.contextBridge;
   const bridgedRoots =
     contextBridge === undefined
       ? null

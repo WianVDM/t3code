@@ -24,6 +24,17 @@ import * as ProviderHost from "./ProviderHost.ts";
 
 const decodeContextBridge = Schema.decodeSync(ContextBridgeSettings);
 
+// Ancestor walks reach the filesystem root, so fixtures must sit outside the
+// user profile: real files like ~/.claude/CLAUDE.md would leak in as project
+// instructions. Windows temp is inside the profile, so use Windows\Temp.
+function makeTempRoot(): string {
+  const tempBase =
+    HostProcess.Platform.defaultValue() === "win32"
+      ? NodePath.join(process.env.SystemDrive ?? "C:", "\\", "Windows", "Temp")
+      : NodeFS.realpathSync(NodeOS.tmpdir());
+  return NodeFS.mkdtempSync(NodePath.join(tempBase, "context-bridge-runtime-"));
+}
+
 function layerProviderHost(settings: typeof DEFAULT_SERVER_SETTINGS) {
   return Layer.succeed(
     ProviderHost.ProviderHost,
@@ -86,15 +97,18 @@ const bridgedSettings = {
 describe("bridgedInstructionsForTurn", () => {
   it.effect("includes the bridged block when the route is enabled", () =>
     Effect.gen(function* () {
-      const tempRoot = NodeFS.mkdtempSync(
-        NodePath.join(NodeFS.realpathSync(NodeOS.tmpdir()), "context-bridge-runtime-"),
-      );
+      const tempRoot = makeTempRoot();
       try {
         const cwd = NodePath.join(tempRoot, "project");
         NodeFS.mkdirSync(cwd, { recursive: true });
         NodeFS.writeFileSync(NodePath.join(cwd, "CLAUDE.md"), "bridged project rules", "utf8");
 
-        const bridged = yield* bridgedInstructionsForTurn({ targetDriver: "codex", cwd });
+        const host = yield* ProviderHost.ProviderHost;
+        const bridged = yield* bridgedInstructionsForTurn({
+          host,
+          targetDriver: "codex",
+          cwd,
+        });
         assert.include(bridged, "<!-- t3-context-bridge -->");
         assert.include(bridged, 'source="claudeAgent"');
         assert.include(bridged, "bridged project rules");
@@ -109,7 +123,9 @@ describe("bridgedInstructionsForTurn", () => {
 
   it.effect("is unchanged when the bridge is disabled", () =>
     Effect.gen(function* () {
+      const host = yield* ProviderHost.ProviderHost;
       const bridged = yield* bridgedInstructionsForTurn({
+        host,
         targetDriver: "codex",
         cwd: process.cwd(),
       });
@@ -117,21 +133,17 @@ describe("bridgedInstructionsForTurn", () => {
     }).pipe(Effect.provide(layerProviderHost(DEFAULT_SERVER_SETTINGS))),
   );
 
-  it.effect("resolves nothing without a host or with unreadable settings", () =>
+  it.effect("resolves nothing when the settings read fails", () =>
     Effect.gen(function* () {
-      const withoutHost = yield* bridgedInstructionsForTurn({
+      const failingHost = yield* ProviderHost.ProviderHost;
+      const withFailingSettings = yield* bridgedInstructionsForTurn({
+        host: failingHost,
         targetDriver: "codex",
         cwd: process.cwd(),
       });
-      assert.strictEqual(withoutHost, "");
-      assert.isUndefined(yield* currentContextBridgeSettings());
-
-      const withFailingSettings = yield* bridgedInstructionsForTurn({
-        targetDriver: "codex",
-        cwd: process.cwd(),
-      }).pipe(Effect.provide(layerFailingSettings));
       assert.strictEqual(withFailingSettings, "");
-    }),
+      assert.isUndefined(yield* currentContextBridgeSettings(failingHost));
+    }).pipe(Effect.provide(layerFailingSettings)),
   );
 });
 
@@ -144,52 +156,148 @@ describe("bridgedContextForTurn", () => {
     }),
   };
 
-  it.effect("resolves the pi-target instruction resolution and skill roots", () => {
-    const tempRoot = NodeFS.mkdtempSync(
-      NodePath.join(NodeFS.realpathSync(NodeOS.tmpdir()), "context-bridge-runtime-"),
-    );
+  function withSkillFixture(tempRoot: string, userHome: string) {
     const cwd = NodePath.join(tempRoot, "project");
-    const userHome = NodePath.join(tempRoot, "home");
     NodeFS.mkdirSync(cwd, { recursive: true });
-    NodeFS.mkdirSync(NodePath.join(userHome, ".claude"), { recursive: true });
-    NodeFS.writeFileSync(
-      NodePath.join(userHome, ".claude", "CLAUDE.md"),
-      "global claude rules",
-      "utf8",
-    );
-    return Effect.gen(function* () {
-      const bridged = yield* bridgedContextForTurn({ targetDriver: "pi", cwd });
-      assert.strictEqual(bridged.instructions?.source, "claudeAgent");
-      assert.include(bridged.instructions?.block ?? "", "global claude rules");
-      assert.strictEqual(bridged.instructions?.files.length, 1);
-      assert.strictEqual(bridged.instructions?.files[0]?.status, "injected");
-      // pi loads ~/.claude/skills natively; the bridged route drops it.
-      assert.deepEqual(bridged.skillRoots, {
+    NodeFS.mkdirSync(NodePath.join(userHome, ".claude", "skills"), { recursive: true });
+    return {
+      cwd,
+      bridged: {
+        global: [NodePath.join(userHome, ".claude", "skills")],
+        project: [NodePath.join(cwd, ".claude", "skills")],
+      },
+      unbridged: {
         global: [],
         project: [NodePath.join(cwd, ".claude", "skills")],
-      });
-    }).pipe(
-      Effect.provide(layerProviderHost(piTargetSettings)),
-      Effect.provideService(HostProcess.HomeDirectory, userHome),
-      Effect.ensuring(Effect.sync(() => NodeFS.rmSync(tempRoot, { recursive: true, force: true }))),
-    );
-  });
+      },
+    };
+  }
+
+  function withPiTargetFixture<A, E, R>(
+    use: (fixture: {
+      tempRoot: string;
+      userHome: string;
+      skillRoots: ReturnType<typeof withSkillFixture>;
+    }) => Effect.Effect<A, E, R>,
+  ): Effect.Effect<A, E, Exclude<R, ProviderHost.ProviderHost>> {
+    return Effect.gen(function* () {
+      const tempRoot = makeTempRoot();
+      try {
+        const userHome = NodePath.join(tempRoot, "home");
+        const skillRoots = withSkillFixture(tempRoot, userHome);
+        const result = yield* use({ tempRoot, userHome, skillRoots }).pipe(
+          Effect.provide(layerProviderHost(piTargetSettings)),
+          Effect.provideService(HostProcess.HomeDirectory, userHome),
+        );
+        return result;
+      } finally {
+        NodeFS.rmSync(tempRoot, { recursive: true, force: true });
+      }
+    });
+  }
+
+  it.effect("resolves the pi-target instruction resolution and skill roots", () =>
+    withPiTargetFixture(({ userHome, skillRoots }) =>
+      Effect.gen(function* () {
+        NodeFS.mkdirSync(NodePath.join(userHome, ".claude"), { recursive: true });
+        NodeFS.writeFileSync(
+          NodePath.join(userHome, ".claude", "CLAUDE.md"),
+          "global claude rules",
+          "utf8",
+        );
+        const host = yield* ProviderHost.ProviderHost;
+        const bridged = yield* bridgedContextForTurn({
+          host,
+          targetDriver: "pi",
+          cwd: skillRoots.cwd,
+        });
+        assert.strictEqual(bridged.instructions?.source, "claudeAgent");
+        assert.include(bridged.instructions?.block ?? "", "global claude rules");
+        assert.strictEqual(bridged.instructions?.files.length, 1);
+        assert.strictEqual(bridged.instructions?.files[0]?.status, "injected");
+        // pi loads ~/.claude/skills natively, so the bridged route drops it.
+        assert.deepEqual(bridged.skillRoots, skillRoots.unbridged);
+      }),
+    ),
+  );
+
+  it.effect("honors a pi native home redirect and keeps home-anchored skills bridged", () =>
+    withPiTargetFixture(({ tempRoot, userHome, skillRoots }) =>
+      Effect.gen(function* () {
+        const agentDir = NodePath.join(tempRoot, "custom-agent-home");
+        const host = yield* ProviderHost.ProviderHost;
+
+        // An explicit PI_CODING_AGENT_DIR moves pi's native discovery, so
+        // ~/.claude/skills must stay bridged.
+        const viaAgentDir = yield* bridgedContextForTurn({
+          host,
+          targetDriver: "pi",
+          cwd: skillRoots.cwd,
+          environment: { PI_CODING_AGENT_DIR: agentDir },
+        });
+        assert.deepEqual(viaAgentDir.skillRoots, skillRoots.bridged);
+
+        // A launch HOME different from the server home redirects the same way.
+        const viaHome = yield* bridgedContextForTurn({
+          host,
+          targetDriver: "pi",
+          cwd: skillRoots.cwd,
+          environment: { HOME: NodePath.join(tempRoot, "other-home") },
+        });
+        assert.deepEqual(viaHome.skillRoots, skillRoots.bridged);
+
+        // No redirect: pi's native global skills root is dropped.
+        const noRedirect = yield* bridgedContextForTurn({
+          host,
+          targetDriver: "pi",
+          cwd: skillRoots.cwd,
+          environment: { HOME: userHome },
+        });
+        assert.deepEqual(noRedirect.skillRoots, skillRoots.unbridged);
+      }),
+    ),
+  );
+
+  it.effect("treats a PI_CODING_AGENT_DIR restating the default as unmoved", () =>
+    withPiTargetFixture(({ userHome, skillRoots }) =>
+      Effect.gen(function* () {
+        const host = yield* ProviderHost.ProviderHost;
+        // Restating ~/.pi/agent under the server home is not a move: pi still
+        // loads ~/.claude/skills natively, so the bridged root stays filtered.
+        const restated = yield* bridgedContextForTurn({
+          host,
+          targetDriver: "pi",
+          cwd: skillRoots.cwd,
+          environment: { PI_CODING_AGENT_DIR: NodePath.join(userHome, ".pi", "agent") },
+        });
+        assert.deepEqual(restated.skillRoots, skillRoots.unbridged);
+      }),
+    ),
+  );
 
   it.effect("yields two nulls when the bridge is disabled or the settings unreadable", () =>
     Effect.gen(function* () {
+      const host = yield* ProviderHost.ProviderHost;
       const disabled = yield* bridgedContextForTurn({
+        host,
         targetDriver: "pi",
         cwd: process.cwd(),
       });
       assert.isNull(disabled.instructions);
       assert.isNull(disabled.skillRoots);
+    }).pipe(Effect.provide(layerProviderHost(DEFAULT_SERVER_SETTINGS))),
+  );
 
+  it.effect("yields two nulls when the settings read fails", () =>
+    Effect.gen(function* () {
+      const failingHost = yield* ProviderHost.ProviderHost;
       const failing = yield* bridgedContextForTurn({
+        host: failingHost,
         targetDriver: "pi",
         cwd: process.cwd(),
-      }).pipe(Effect.provide(layerFailingSettings));
+      });
       assert.isNull(failing.instructions);
       assert.isNull(failing.skillRoots);
-    }).pipe(Effect.provide(layerProviderHost(DEFAULT_SERVER_SETTINGS))),
+    }).pipe(Effect.provide(layerFailingSettings)),
   );
 });

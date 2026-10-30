@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { planClaudeSkillDispatch, type ClaudeSkillTarget } from "./ClaudeSkillDispatch.ts";
+import {
+  CLAUDE_BUILTIN_LOCAL_COMMANDS,
+  planClaudeSkillDispatch,
+  type ClaudeSkillTarget,
+} from "./ClaudeSkillDispatch.ts";
+
+const shadowedNote = (name: string, path: string, tail: string) =>
+  `The user invoked the "${name}" skill. Claude Code's built-in /${name} command shadows it, so read and follow the skill instructions at: ${path}.${tail.trim().length > 0 ? ` Arguments:${tail}` : ""}`;
 
 const skillPath = (name: string) => `/home/me/.claude/skills/${name}/SKILL.md`;
 
@@ -87,6 +94,94 @@ describe("planClaudeSkillDispatch", () => {
       leadingText: `/interrogate [The user invoked this skill. Follow the instructions at: ${skillPath("interrogate")}] then /interrogate then /implement and /implement the fixes`,
       commandText: "/implement the fixes",
       skillName: "implement",
+    });
+  });
+
+  it("falls back to reading the exact skill file for a built-in-shadowed skill", () => {
+    // `/voice` is intercepted by Claude Code's built-in voice command
+    // (unavailable_headless in headless sessions) before the user skill can
+    // expand, and the Skill tool is not used, so the dispatch names the exact
+    // SKILL.md path and the arguments instead of a slash command.
+    const path = skillPath("voice");
+    expect(planClaudeSkillDispatch("$voice read me the summary", skillMap(["voice"]))).toEqual({
+      leadingText: undefined,
+      commandText: shadowedNote("voice", path, " read me the summary"),
+      skillName: "voice",
+    });
+    expect(planClaudeSkillDispatch("please $voice now", skillMap(["voice"]))).toEqual({
+      leadingText: "please /voice now",
+      commandText: shadowedNote("voice", path, " now"),
+      skillName: "voice",
+    });
+  });
+
+  it("omits the Arguments suffix when a shadowed skill dispatch has no trailing text", () => {
+    const path = skillPath("voice");
+    expect(planClaudeSkillDispatch("$voice", skillMap(["voice"]))).toEqual({
+      leadingText: undefined,
+      commandText: shadowedNote("voice", path, ""),
+      skillName: "voice",
+    });
+    expect(planClaudeSkillDispatch("$voice", skillMap(["voice"]))?.commandText).not.toContain(
+      "Arguments:",
+    );
+  });
+
+  it("falls back to the exact file for every built-in-shadowed name", () => {
+    for (const name of CLAUDE_BUILTIN_LOCAL_COMMANDS) {
+      const path = skillPath(name);
+      expect(planClaudeSkillDispatch(`$${name} do the thing`, skillMap([name]))).toEqual({
+        leadingText: undefined,
+        commandText: shadowedNote(name, path, " do the thing"),
+        skillName: name,
+      });
+    }
+  });
+
+  it("never dispatches a Skill-tool call or a built-in slash command for a shadowed skill", () => {
+    for (const name of CLAUDE_BUILTIN_LOCAL_COMMANDS) {
+      const dispatch = planClaudeSkillDispatch(`$${name} do the thing`, skillMap([name]));
+      expect(dispatch?.commandText).not.toContain("Skill tool");
+      expect(dispatch?.commandText).not.toMatch(new RegExp(`^/${name}(?:\\s|$)`));
+    }
+  });
+
+  it("keeps the native dispatch when only an earlier mention is shadowed", () => {
+    expect(
+      planClaudeSkillDispatch(
+        "$voice now, then $implement the fixes",
+        skillMap(["voice", "implement"]),
+      ),
+    ).toEqual({
+      leadingText: "/voice now, then /implement the fixes",
+      commandText: "/implement the fixes",
+      skillName: "implement",
+    });
+  });
+
+  it("keeps the file-note annotation for earlier user-only skills a built-in shadows", () => {
+    const skills = new Map<string, ClaudeSkillTarget>([
+      ["voice", { path: skillPath("voice"), userInvocationOnly: true }],
+      ["implement", { path: skillPath("implement") }],
+    ]);
+    expect(planClaudeSkillDispatch("$voice now then $implement the fixes", skills)).toEqual({
+      leadingText: `/voice [The user invoked this skill. Follow the instructions at: ${skillPath("voice")}] now then /implement the fixes`,
+      commandText: "/implement the fixes",
+      skillName: "implement",
+    });
+  });
+
+  it("falls back to the file note when a shadowed user-only skill is the dispatch", () => {
+    // The Skill tool refuses disable-model-invocation skills, so a shadowed
+    // slash form leaves the file note as the only route that still runs the
+    // discovered SKILL.md.
+    const skills = new Map<string, ClaudeSkillTarget>([
+      ["voice", { path: skillPath("voice"), userInvocationOnly: true }],
+    ]);
+    expect(planClaudeSkillDispatch("please $voice now", skills)).toEqual({
+      leadingText: "please /voice now",
+      commandText: `The user invoked this skill. Follow the instructions at: ${skillPath("voice")} now`,
+      skillName: "voice",
     });
   });
 });

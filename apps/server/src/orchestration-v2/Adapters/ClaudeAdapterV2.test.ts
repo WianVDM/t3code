@@ -77,6 +77,7 @@ import { WorkflowAgentTranscriptReadObserver } from "../workflowAgentTranscript.
 import * as ServerConfig from "../../config.ts";
 import * as McpProviderSession from "@t3tools/provider-core/server/mcpSession";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
+import * as TestProviderHost from "@t3tools/provider-testing/TestProviderHost";
 import { PreviewControlsToolkit } from "../../mcp/toolkits/previewControls/tools.ts";
 import { HtmlToolkit } from "../../mcp/toolkits/html/tools.ts";
 import { EnvironmentToolkit } from "../../mcp/toolkits/environment/tools.ts";
@@ -117,6 +118,10 @@ beforeEach(() => {
 });
 
 const DEFAULT_CLAUDE_SETTINGS = Schema.decodeSync(ClaudeSettings)({});
+
+// ProviderHost is required to construct the adapter; the bridge stays off
+// under default settings.
+const layerTestProviderHost = TestProviderHost.layer().pipe(Layer.provide(NodeServices.layer));
 const AUTO_COMPACT_CLAUDE_SETTINGS = Schema.decodeSync(ClaudeSettings)({
   autoCompactWindow: "300000",
 });
@@ -844,7 +849,12 @@ describe("ClaudeAdapterV2 Auto-accept edits", () => {
         assert.equal((yield* Fiber.join(decision))?.behavior, "allow");
       }).pipe(
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
     ),
@@ -944,7 +954,12 @@ describe("ClaudeAdapterV2 append-system-prompt-file launch argument", () => {
         assert.equal(opened[0]!.extraArgs?.["system-prompt"], "Replacement");
       }).pipe(
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
     ),
@@ -995,7 +1010,12 @@ describe("ClaudeAdapterV2 append-system-prompt-file launch argument", () => {
         );
       }).pipe(
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
     ),
@@ -1104,7 +1124,12 @@ describe("ClaudeAdapterV2 executable path", () => {
       }),
     ).pipe(
       Effect.provide(
-        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          layerTestProviderHost,
+        ),
       ),
     ),
   );
@@ -1194,7 +1219,12 @@ describe("ClaudeAdapterV2 resumeThread", () => {
       }),
     ).pipe(
       Effect.provide(
-        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          layerTestProviderHost,
+        ),
       ),
     ),
   );
@@ -1403,7 +1433,12 @@ describe("ClaudeAdapterV2 resume compaction", () => {
         );
       }).pipe(
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
     ),
@@ -1590,7 +1625,12 @@ describe("ClaudeAdapterV2 attachments", () => {
           assert.deepEqual(offeredMessages[1]?.message.content, expectedContent);
         }).pipe(
           Effect.provide(
-            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+            Layer.mergeAll(
+              IdAllocator.layer,
+              McpProviderSessions.layer,
+              NodeServices.layer,
+              layerTestProviderHost,
+            ),
           ),
         ),
       ),
@@ -1772,7 +1812,12 @@ describe("ClaudeAdapterV2 native fork", () => {
         assert.equal(openedQueries[0]?.options.sessionId, undefined);
       }).pipe(
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
     ),
@@ -1949,7 +1994,12 @@ describe("ClaudeAdapterV2 native session identity", () => {
         return openedQueries;
       }).pipe(
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
     );
@@ -2473,7 +2523,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         assert.equal((yield* open).permissionMode, "auto");
       }).pipe(
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
     );
@@ -2735,7 +2790,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         assert.equal(notices().length, 1);
       }).pipe(
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
     );
@@ -2784,7 +2844,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           ]);
         }).pipe(
           Effect.provide(
-            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+            Layer.mergeAll(
+              IdAllocator.layer,
+              McpProviderSessions.layer,
+              NodeServices.layer,
+              layerTestProviderHost,
+            ),
           ),
         ),
     );
@@ -2870,7 +2935,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           );
         }).pipe(
           Effect.provide(
-            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+            Layer.mergeAll(
+              IdAllocator.layer,
+              McpProviderSessions.layer,
+              NodeServices.layer,
+              layerTestProviderHost,
+            ),
           ),
         ),
     );
@@ -2970,7 +3040,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         }).pipe(
           Effect.scoped,
           Effect.provide(
-            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+            Layer.mergeAll(
+              IdAllocator.layer,
+              McpProviderSessions.layer,
+              NodeServices.layer,
+              layerTestProviderHost,
+            ),
           ),
         ),
     );
@@ -2987,7 +3062,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       }).pipe(
         Effect.scoped,
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
     );
@@ -3016,7 +3096,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       }).pipe(
         Effect.scoped,
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
     );
@@ -3093,9 +3178,62 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         ]);
       }).pipe(
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
+  );
+
+  it.effect("reads and follows a built-in-shadowed voice skill instead of dispatching it", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const homePath = yield* fs.makeTempDirectoryScoped({ prefix: "t3-claude-skill-voice-" });
+      const skillInstructionsPath = path.join(homePath, "skills", "voice", "SKILL.md");
+      yield* fs.makeDirectory(path.dirname(skillInstructionsPath), { recursive: true });
+      yield* fs.writeFileString(
+        skillInstructionsPath,
+        "---\nname: voice\ndescription: Read the summary aloud\n---\nSpeak the summary.\n",
+      );
+      const harness = yield* makeWakeHarnessWithOptions({
+        settings: { ...DEFAULT_CLAUDE_SETTINGS, homePath },
+      });
+      const input = makeClaudeTestTurnInput({
+        threadId: harness.threadId,
+        providerThread: harness.providerThread,
+        now: yield* DateTime.now,
+        attemptId: RunAttemptId.make("skill-voice-dispatch"),
+        text: "$voice read me the summary",
+        attachments: [],
+        runtimePolicy: { ...CLAUDE_TEST_RUNTIME_POLICY, cwd: homePath },
+      });
+      yield* harness.runtime.startTurn(input);
+
+      // The last text block is the dispatch. Starting it with /voice runs
+      // Claude Code's built-in voice command instead of the discovered skill,
+      // and headless sessions answer unavailable_headless, so the fallback
+      // points the agent at the real SKILL.md path instead.
+      assert.deepEqual(harness.offeredMessages[0]?.message.content, [
+        { type: "text", text: "Ultrathink:\n/voice read me the summary" },
+        {
+          type: "text",
+          text: `The user invoked the "voice" skill. Claude Code's built-in /voice command shadows it, so read and follow the skill instructions at: ${skillInstructionsPath}. Arguments: read me the summary`,
+        },
+      ]);
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          layerTestProviderHost,
+        ),
+      ),
+    ),
   );
 
   // regression: #15475 MCP title arriving after the tool starts must survive to completion
@@ -3210,7 +3348,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     }).pipe(
       Effect.scoped,
       Effect.provide(
-        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          layerTestProviderHost,
+        ),
       ),
     ),
   );
@@ -3295,7 +3438,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           assert.isTrue(yield* harness.hasPendingBackgroundWork);
         }).pipe(
           Effect.provide(
-            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+            Layer.mergeAll(
+              IdAllocator.layer,
+              McpProviderSessions.layer,
+              NodeServices.layer,
+              layerTestProviderHost,
+            ),
           ),
         ),
       ),
@@ -3419,7 +3567,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       }).pipe(
         Effect.scoped,
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
   );
@@ -3492,7 +3645,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           assert.equal(node?.type === "node.updated" ? node.node.status : undefined, failed.status);
         }).pipe(
           Effect.provide(
-            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+            Layer.mergeAll(
+              IdAllocator.layer,
+              McpProviderSessions.layer,
+              NodeServices.layer,
+              layerTestProviderHost,
+            ),
           ),
         ),
       ),
@@ -3598,7 +3756,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         assert.lengthOf(harness.terminalEvents(), 1);
       }).pipe(
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
     ),
@@ -3668,7 +3831,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       assert.notEqual(notices()[0]?.id, notices()[2]?.id);
     }).pipe(
       Effect.provide(
-        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          layerTestProviderHost,
+        ),
       ),
     ),
   );
@@ -3723,7 +3891,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       assert.equal(terminal.failure.resetAt, "2026-10-12T12:20:00.000Z");
     }).pipe(
       Effect.provide(
-        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          layerTestProviderHost,
+        ),
       ),
     ),
   );
@@ -3814,7 +3987,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       );
     }).pipe(
       Effect.provide(
-        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          layerTestProviderHost,
+        ),
       ),
     ),
   );
@@ -3865,7 +4043,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       assert.notInclude(terminal.failure.message, "repeated API errors");
     }).pipe(
       Effect.provide(
-        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          layerTestProviderHost,
+        ),
       ),
     ),
   );
@@ -3908,7 +4091,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       assert.equal(terminal.failure.code, "api_error_403");
     }).pipe(
       Effect.provide(
-        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          layerTestProviderHost,
+        ),
       ),
     ),
   );
@@ -4018,7 +4206,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       }
     }).pipe(
       Effect.provide(
-        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          layerTestProviderHost,
+        ),
       ),
     ),
   );
@@ -4073,7 +4266,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         assert.equal(rolledBack.providerThread.nativeConversationHeadRef?.nativeId, mainUuid);
       }).pipe(
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
   );
@@ -4161,7 +4359,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       assert.isUndefined(harness.getOpenedOptions()?.resumeSessionAt);
     }).pipe(
       Effect.provide(
-        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          layerTestProviderHost,
+        ),
       ),
     ),
   );
@@ -4300,7 +4503,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       );
     }).pipe(
       Effect.provide(
-        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          layerTestProviderHost,
+        ),
       ),
     ),
   );
@@ -4379,7 +4587,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       );
     }).pipe(
       Effect.provide(
-        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          layerTestProviderHost,
+        ),
       ),
     ),
   );
@@ -4437,7 +4650,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       }
     }).pipe(
       Effect.provide(
-        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          layerTestProviderHost,
+        ),
       ),
     ),
   );
@@ -4505,7 +4723,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       assert.deepEqual(reportedContext, [2]);
     }).pipe(
       Effect.provide(
-        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          layerTestProviderHost,
+        ),
       ),
     ),
   );
@@ -4602,7 +4825,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       assert.deepEqual(reportedContextTokens(harness.events), [38_123]);
     }).pipe(
       Effect.provide(
-        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          layerTestProviderHost,
+        ),
       ),
     ),
   );
@@ -4682,7 +4910,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       );
     }).pipe(
       Effect.provide(
-        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          layerTestProviderHost,
+        ),
       ),
     ),
   );
@@ -4744,7 +4977,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         );
       }).pipe(
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
   );
@@ -4816,7 +5054,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     }).pipe(
       Effect.scoped,
       Effect.provide(
-        Layer.mergeAll(NodeServices.layer, IdAllocator.layer, McpProviderSessions.layer),
+        Layer.mergeAll(
+          NodeServices.layer,
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          layerTestProviderHost,
+        ),
       ),
     ),
   );
@@ -4893,7 +5136,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       }).pipe(
         Effect.scoped,
         Effect.provide(
-          Layer.mergeAll(NodeServices.layer, IdAllocator.layer, McpProviderSessions.layer),
+          Layer.mergeAll(
+            NodeServices.layer,
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
   );
@@ -5120,7 +5368,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     }).pipe(
       Effect.scoped,
       Effect.provide(
-        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          layerTestProviderHost,
+        ),
       ),
     ),
   );
@@ -5194,7 +5447,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       }).pipe(
         Effect.scoped,
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
   );
@@ -5259,7 +5517,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       }).pipe(
         Effect.scoped,
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
   );
@@ -5501,7 +5764,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         );
       }).pipe(
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
     ),
@@ -5774,7 +6042,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       }).pipe(
         Effect.scoped,
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
   );
@@ -5805,7 +6078,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     }).pipe(
       Effect.scoped,
       Effect.provide(
-        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          layerTestProviderHost,
+        ),
       ),
     ),
   );
@@ -5860,7 +6138,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       }).pipe(
         Effect.scoped,
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
   );
@@ -5886,7 +6169,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       }).pipe(
         Effect.scoped,
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
   );
@@ -5928,7 +6216,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     }).pipe(
       Effect.scoped,
       Effect.provide(
-        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          layerTestProviderHost,
+        ),
       ),
     ),
   );
@@ -5975,7 +6268,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     }).pipe(
       Effect.scoped,
       Effect.provide(
-        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          layerTestProviderHost,
+        ),
       ),
     ),
   );
@@ -6005,7 +6303,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     }).pipe(
       Effect.scoped,
       Effect.provide(
-        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          layerTestProviderHost,
+        ),
       ),
     ),
   );
@@ -6021,7 +6324,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     }).pipe(
       Effect.scoped,
       Effect.provide(
-        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          layerTestProviderHost,
+        ),
       ),
     ),
   );
@@ -6098,7 +6406,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         yield* harness.awaitTerminal(1);
       }).pipe(
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
     ),
@@ -6150,7 +6463,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           );
         }).pipe(
           Effect.provide(
-            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+            Layer.mergeAll(
+              IdAllocator.layer,
+              McpProviderSessions.layer,
+              NodeServices.layer,
+              layerTestProviderHost,
+            ),
           ),
         ),
       ),
@@ -6215,7 +6533,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         }
       }).pipe(
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
   );
@@ -6306,7 +6629,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           assert.isFalse(yield* harness.hasPendingBackgroundWork);
         }).pipe(
           Effect.provide(
-            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+            Layer.mergeAll(
+              IdAllocator.layer,
+              McpProviderSessions.layer,
+              NodeServices.layer,
+              layerTestProviderHost,
+            ),
           ),
         ),
       ),
@@ -6406,7 +6734,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           yield* harness.until(() => harness.terminalEvents().length === 1);
         }).pipe(
           Effect.provide(
-            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+            Layer.mergeAll(
+              IdAllocator.layer,
+              McpProviderSessions.layer,
+              NodeServices.layer,
+              layerTestProviderHost,
+            ),
           ),
         ),
       ),
@@ -6463,7 +6796,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         yield* harness.until(() => harness.terminalEvents().length === 1);
       }).pipe(
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
     ),
@@ -6552,7 +6890,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         yield* harness.until(() => harness.terminalEvents().length === 1);
       }).pipe(
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
     ),
@@ -6604,7 +6947,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         yield* harness.until(() => harness.terminalEvents().length === 1);
       }).pipe(
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
     ),
@@ -6710,7 +7058,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           yield* harness.until(() => harness.terminalEvents().length === 1);
         }).pipe(
           Effect.provide(
-            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+            Layer.mergeAll(
+              IdAllocator.layer,
+              McpProviderSessions.layer,
+              NodeServices.layer,
+              layerTestProviderHost,
+            ),
           ),
         ),
       ),
@@ -6822,7 +7175,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         yield* harness.until(() => harness.terminalEvents().length === 2);
       }).pipe(
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
     ),
@@ -6964,7 +7322,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         ]);
       }).pipe(
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
     ),
@@ -7015,7 +7378,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         assert.lengthOf(harness.continuationRequests, 0);
       }).pipe(
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
     ),
@@ -7197,7 +7565,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         yield* changes.until(() => continuationRequests.length === 1);
       }).pipe(
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
     ),
@@ -7461,7 +7834,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           assert.isFalse(yield* hasPendingBackgroundWork);
         }).pipe(
           Effect.provide(
-            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+            Layer.mergeAll(
+              IdAllocator.layer,
+              McpProviderSessions.layer,
+              NodeServices.layer,
+              layerTestProviderHost,
+            ),
           ),
         ),
       ),
@@ -7667,7 +8045,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           );
         }).pipe(
           Effect.provide(
-            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+            Layer.mergeAll(
+              IdAllocator.layer,
+              McpProviderSessions.layer,
+              NodeServices.layer,
+              layerTestProviderHost,
+            ),
           ),
         ),
       ),
@@ -7754,7 +8137,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         );
       }).pipe(
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
     ),
@@ -7875,7 +8263,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         assert.equal(result?.behavior, "allow");
       }).pipe(
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
     ),
@@ -7950,7 +8343,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         assert.equal(harness.terminalEvents()[1]?.status, "failed");
       }).pipe(
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
     ),
@@ -7991,7 +8389,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         assert.include(terminal.failure.message, "never started a turn");
       }).pipe(
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
     ),
@@ -8045,7 +8448,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         assert.equal(harness.terminalEvents()[0]?.status, "completed");
       }).pipe(
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
     ),
@@ -8091,7 +8499,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         assert.isTrue(yield* harness.hasPendingBackgroundWork);
       }).pipe(
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
     ),
@@ -8150,7 +8563,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         );
       }).pipe(
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
     ),
@@ -8262,7 +8680,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           }
         }).pipe(
           Effect.provide(
-            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+            Layer.mergeAll(
+              IdAllocator.layer,
+              McpProviderSessions.layer,
+              NodeServices.layer,
+              layerTestProviderHost,
+            ),
           ),
         ),
       ),
@@ -8353,7 +8776,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         assert.isFalse(yield* harness.hasPendingBackgroundWork);
       }).pipe(
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
     ),
@@ -8435,7 +8863,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         assert.isFalse(hasMessageText(staleResultText));
       }).pipe(
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
     ),
@@ -8494,7 +8927,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           assert.lengthOf(harness.terminalEvents(), 1);
         }).pipe(
           Effect.provide(
-            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+            Layer.mergeAll(
+              IdAllocator.layer,
+              McpProviderSessions.layer,
+              NodeServices.layer,
+              layerTestProviderHost,
+            ),
           ),
         ),
       ),
@@ -8524,7 +8962,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         assert.lengthOf(harness.offeredMessages, 0);
       }).pipe(
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
     ),
@@ -8765,7 +9208,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           );
         }).pipe(
           Effect.provide(
-            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+            Layer.mergeAll(
+              IdAllocator.layer,
+              McpProviderSessions.layer,
+              NodeServices.layer,
+              layerTestProviderHost,
+            ),
           ),
         ),
       ),
@@ -8924,7 +9372,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         );
       }).pipe(
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
     ),
@@ -9108,7 +9561,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         );
       }).pipe(
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
     ),
@@ -9234,7 +9692,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         assert.lengthOf(harness.continuationRequests, 0);
       }).pipe(
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
     ),
@@ -9314,7 +9777,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           ]);
         }).pipe(
           Effect.provide(
-            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+            Layer.mergeAll(
+              IdAllocator.layer,
+              McpProviderSessions.layer,
+              NodeServices.layer,
+              layerTestProviderHost,
+            ),
           ),
         ),
       ),
@@ -9475,7 +9943,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           ]);
         }).pipe(
           Effect.provide(
-            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+            Layer.mergeAll(
+              IdAllocator.layer,
+              McpProviderSessions.layer,
+              NodeServices.layer,
+              layerTestProviderHost,
+            ),
           ),
         ),
       ),
@@ -9624,7 +10097,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           ]);
         }).pipe(
           Effect.provide(
-            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+            Layer.mergeAll(
+              IdAllocator.layer,
+              McpProviderSessions.layer,
+              NodeServices.layer,
+              layerTestProviderHost,
+            ),
           ),
         ),
       ),
@@ -9791,7 +10269,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           assert.lengthOf(harness.continuationRequests, 1);
         }).pipe(
           Effect.provide(
-            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+            Layer.mergeAll(
+              IdAllocator.layer,
+              McpProviderSessions.layer,
+              NodeServices.layer,
+              layerTestProviderHost,
+            ),
           ),
         ),
       ),
@@ -9882,7 +10365,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         assert.deepEqual(routing.assistantTexts(harness.threadId), ["The auditor finished."]);
       }).pipe(
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
     ),
@@ -9968,7 +10456,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           assert.equal(latest.subagent.completedAt === null, resume);
         }).pipe(
           Effect.provide(
-            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+            Layer.mergeAll(
+              IdAllocator.layer,
+              McpProviderSessions.layer,
+              NodeServices.layer,
+              layerTestProviderHost,
+            ),
           ),
         ),
       ),
@@ -10080,7 +10573,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         });
       }).pipe(
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
     ),
@@ -10194,7 +10692,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           assert.equal(closes, 0);
         }).pipe(
           Effect.provide(
-            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+            Layer.mergeAll(
+              IdAllocator.layer,
+              McpProviderSessions.layer,
+              NodeServices.layer,
+              layerTestProviderHost,
+            ),
           ),
         ),
       ),
@@ -10318,7 +10821,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           assert.equal(child?.appThread.modelSelection?.model, initialModel ?? parentModel);
         }).pipe(
           Effect.provide(
-            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+            Layer.mergeAll(
+              IdAllocator.layer,
+              McpProviderSessions.layer,
+              NodeServices.layer,
+              layerTestProviderHost,
+            ),
           ),
         ),
       ),
@@ -10420,7 +10928,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         });
       }).pipe(
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
     ),
@@ -10539,7 +11052,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         assert.deepEqual(childEfforts, ["low", "low", "max"]);
       }).pipe(
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
     ),
@@ -10625,7 +11143,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         yield* harness.awaitTerminal(1);
       }).pipe(
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
     ),
@@ -10722,7 +11245,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         assert.isFalse(yield* harness.hasPendingBackgroundWork);
       }).pipe(
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
     ),
@@ -10982,7 +11510,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         assert.isFalse(yield* harness.hasPendingBackgroundWork);
       }).pipe(
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
     ),
@@ -11149,7 +11682,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         );
       }).pipe(
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
     ),
@@ -11328,7 +11866,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           assert.isFalse(yield* hasPendingBackgroundWork);
         }).pipe(
           Effect.provide(
-            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+            Layer.mergeAll(
+              IdAllocator.layer,
+              McpProviderSessions.layer,
+              NodeServices.layer,
+              layerTestProviderHost,
+            ),
           ),
         ),
       ),
@@ -11494,7 +12037,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         assert.lengthOf(processQueues, 3);
       }).pipe(
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
     ),
@@ -11625,7 +12173,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         assert.equal(closes, 0);
       }).pipe(
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
     ),
@@ -11754,7 +12307,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           assert.isTrue(yield* hasPendingBackgroundWork);
         }).pipe(
           Effect.provide(
-            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+            Layer.mergeAll(
+              IdAllocator.layer,
+              McpProviderSessions.layer,
+              NodeServices.layer,
+              layerTestProviderHost,
+            ),
           ),
         ),
       ),
@@ -12034,7 +12592,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           assert.isFalse(yield* harness.hasPendingBackgroundWork);
         }).pipe(
           Effect.provide(
-            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+            Layer.mergeAll(
+              IdAllocator.layer,
+              McpProviderSessions.layer,
+              NodeServices.layer,
+              layerTestProviderHost,
+            ),
           ),
         ),
       ),
@@ -12119,7 +12682,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         });
       }).pipe(
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
     ),
@@ -12227,7 +12795,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         assert.deepEqual(stoppedTasks, [WORKFLOW_TASK_ID]);
       }).pipe(
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
     ),
@@ -12482,7 +13055,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         );
       }).pipe(
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
     ),
@@ -12572,7 +13150,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         );
       }).pipe(
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
     ),
@@ -12800,7 +13383,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         );
       }).pipe(
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
     ),
@@ -12920,7 +13508,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         );
       }).pipe(
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
     ),
@@ -13026,7 +13619,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           }
         }).pipe(
           Effect.provide(
-            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+            Layer.mergeAll(
+              IdAllocator.layer,
+              McpProviderSessions.layer,
+              NodeServices.layer,
+              layerTestProviderHost,
+            ),
           ),
         ),
       ),
@@ -13246,7 +13844,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         );
       }).pipe(
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
     ),
@@ -13449,7 +14052,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         );
       }).pipe(
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
     ),
@@ -13496,7 +14104,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         yield* Queue.take(harness.terminalReceipts);
       }).pipe(
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
     ),
@@ -13550,7 +14163,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         yield* Queue.take(harness.terminalReceipts);
       }).pipe(
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
     ),
@@ -13599,7 +14217,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         );
       }).pipe(
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
     ),
@@ -13685,7 +14308,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       }).pipe(
         Effect.scoped,
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
     );
@@ -13774,7 +14402,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         }).pipe(
           Effect.scoped,
           Effect.provide(
-            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+            Layer.mergeAll(
+              IdAllocator.layer,
+              McpProviderSessions.layer,
+              NodeServices.layer,
+              layerTestProviderHost,
+            ),
           ),
         ),
     );
@@ -13817,7 +14450,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       }).pipe(
         Effect.scoped,
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
     );
@@ -13856,7 +14494,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       }).pipe(
         Effect.scoped,
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
     );

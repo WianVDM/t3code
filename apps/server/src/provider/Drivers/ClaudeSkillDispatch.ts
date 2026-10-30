@@ -16,12 +16,28 @@ import type { ServerProviderSkill } from "@t3tools/contracts";
 const SKILL_MENTION_PATTERN =
   /(^|\s)\p{Sc}(?![0-9][0-9_]*(?:[kKmMbBtT]|[eE][0-9]+)?(?:\s|$))(?=[a-zA-Z0-9:_-]*[a-zA-Z])([a-zA-Z0-9][a-zA-Z0-9:_-]*)(?=\s|$)/gu;
 
+/**
+ * Built-in local slash commands whose `/name` intercepts a same-named skill.
+ * The SDK documents these under `SDKLocalCommandOutputMessage` and offers no
+ * way to make `/name` mean the skill, so shadowed names read SKILL.md instead.
+ * The CLI owns this list and grows it; other names keep the native route.
+ */
+export const CLAUDE_BUILTIN_LOCAL_COMMANDS: ReadonlySet<string> = new Set([
+  "voice",
+  "usage",
+  "cost",
+  "stats",
+]);
+
 export type ClaudeSkillTarget = Pick<ServerProviderSkill, "path" | "userInvocationOnly">;
 
 export interface ClaudeSkillDispatch {
   /** The whole prompt with mentions as `/name`, or `undefined` when the mention opens it. */
   readonly leadingText: string | undefined;
-  /** `/name` plus the trailing text, ready to be the message's last text block. */
+  /**
+   * `/name` plus the trailing text, or the exact-file fallback when a built-in
+   * command shadows the name. Ready to be the message's last text block.
+   */
   readonly commandText: string;
   readonly skillName: string;
 }
@@ -57,10 +73,20 @@ export function planClaudeSkillDispatch(
   }
   promptWithInlineSlashes = `${promptWithInlineSlashes}${prompt.slice(cursor)}`.trimEnd();
 
+  const tail = prompt.slice(last.end);
+  // A shadowed `/name` runs the built-in command, never the skill, so it reads
+  // the skill file directly instead of emitting a slash command.
+  const commandText = CLAUDE_BUILTIN_LOCAL_COMMANDS.has(last.name)
+    ? last.skill.userInvocationOnly === true
+      ? `The user invoked this skill. Follow the instructions at: ${last.skill.path}${tail}`
+      : `The user invoked the "${last.name}" skill. Claude Code's built-in /${last.name} command shadows it, so read and follow the skill instructions at: ${last.skill.path}.${
+          tail.trim().length > 0 ? ` Arguments:${tail}` : ""
+        }`
+    : `/${last.name}${tail}`;
   return {
     leadingText:
       prompt.slice(0, last.start).trim().length > 0 ? promptWithInlineSlashes : undefined,
-    commandText: `/${last.name}${prompt.slice(last.end)}`.trimEnd(),
+    commandText: commandText.trimEnd(),
     skillName: last.name,
   };
 }

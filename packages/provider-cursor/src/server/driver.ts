@@ -13,6 +13,7 @@ import * as HttpClient from "effect/http/HttpClient";
 import { readCursorUsageLimits } from "./usageLimits.ts";
 
 import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
+import { currentContextBridgeSettings } from "@t3tools/provider-core/server/contextBridgeRuntime";
 import { makeCursorTextGeneration } from "./textGeneration.ts";
 import { makeCursorAdapterV2, type CursorAdapterV2DriverEnv } from "./adapter.ts";
 import { ProviderDriverError } from "@t3tools/provider-core/server/errors";
@@ -292,22 +293,27 @@ export const CursorDriver: ProviderDriver<
       snapshotForCwd: (cwd) =>
         !effectiveConfig.enabled
           ? snapshot.getSnapshot
-          : Effect.all([
-              snapshot.getSnapshot,
-              probeCursorSkills(cwd, processEnv).pipe(
-                Effect.provideService(FileSystem.FileSystem, fileSystem),
-                Effect.provideService(Path.Path, path),
-                Effect.mapError(
-                  (cause) =>
-                    new ProviderDriverError({
-                      driver: DRIVER_KIND,
-                      instanceId,
-                      detail: `Failed to discover Cursor skills for '${cwd}'`,
-                      cause,
-                    }),
-                ),
+          : currentContextBridgeSettings(host).pipe(
+              Effect.flatMap((contextBridge) =>
+                Effect.all([
+                  snapshot.getSnapshot,
+                  probeCursorSkills(cwd, processEnv, contextBridge).pipe(
+                    Effect.provideService(FileSystem.FileSystem, fileSystem),
+                    Effect.provideService(Path.Path, path),
+                    Effect.mapError(
+                      (cause) =>
+                        new ProviderDriverError({
+                          driver: DRIVER_KIND,
+                          instanceId,
+                          detail: `Failed to discover Cursor skills for '${cwd}'`,
+                          cause,
+                        }),
+                    ),
+                  ),
+                ]),
               ),
-            ]).pipe(Effect.map(([machineSnapshot, skills]) => ({ ...machineSnapshot, skills }))),
+              Effect.map(([machineSnapshot, skills]) => ({ ...machineSnapshot, skills })),
+            ),
       orchestrationAdapter,
       textGeneration,
     } satisfies ProviderInstance;

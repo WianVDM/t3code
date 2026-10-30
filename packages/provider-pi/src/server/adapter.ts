@@ -469,8 +469,10 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
       // A bridged context route embeds into a session-specific extension file;
       // resolution failures log a context-bridge warning and yield stock pi.
       const bridgedContext = yield* bridgedContextForTurn({
+        host,
         targetDriver: PI_PROVIDER,
         cwd,
+        environment: options.environment,
       });
       const contextBridge: PiContextBridgeExtensionPayload | undefined =
         bridgedContext.instructions === null && bridgedContext.skillRoots === null

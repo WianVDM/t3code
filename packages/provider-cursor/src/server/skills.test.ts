@@ -6,6 +6,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import type * as Scope from "effect/Scope";
 import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
+import type { ContextBridgeSettings } from "@t3tools/contracts";
 
 import {
   discoverCursorSkills,
@@ -213,6 +214,54 @@ describe("Cursor skills", () => {
         }),
       ),
   );
+
+  it("bridges Claude skills through contextBridge settings and rewrites $voice to /voice", async () =>
+    await runNode(
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const userHome = yield* fileSystem
+          .makeTempDirectoryScoped({
+            directory: NodeOS.tmpdir(),
+            prefix: "cursor-skills-home-",
+          })
+          .pipe(Effect.flatMap((directory) => fileSystem.realPath(directory)));
+        const workspace = yield* fileSystem
+          .makeTempDirectoryScoped({
+            directory: NodeOS.tmpdir(),
+            prefix: "cursor-skills-workspace-",
+          })
+          .pipe(Effect.flatMap((directory) => fileSystem.realPath(directory)));
+        const claudeRoot = path.join(workspace, ".claude", "skills", "voice");
+        yield* fileSystem.makeDirectory(claudeRoot, { recursive: true });
+        yield* fileSystem.writeFileString(
+          path.join(claudeRoot, "SKILL.md"),
+          "---\ndescription: voice capture\n---\n",
+        );
+
+        const contextBridge: ContextBridgeSettings = {
+          enabled: true,
+          defaultSource: "claudeAgent",
+          routes: { cursor: { skills: "claudeAgent" } },
+        };
+        const skills = yield* discoverCursorSkills(workspace, { HOME: userHome }, contextBridge);
+        expect(skills).toEqual([
+          {
+            name: "voice",
+            description: "voice capture",
+            path: path.join(claudeRoot, "SKILL.md"),
+            scope: "project",
+            enabled: true,
+          },
+        ]);
+        expect(
+          rewriteCursorSkillMentions(
+            "dictate $voice notes",
+            new Set(skills.map((skill) => skill.name)),
+          ),
+        ).toBe("dictate /voice notes");
+      }),
+    ));
 
   it("rewrites only discovered skill mentions into Cursor slash invocations", () => {
     expect(hasCursorSkillMention("use $Review_Pr:V2 here")).toBe(true);

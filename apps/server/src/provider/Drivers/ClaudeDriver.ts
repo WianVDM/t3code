@@ -14,6 +14,7 @@ import { ChildProcessSpawner } from "effect/process";
 import { makeClaudeTextGeneration } from "../../textGeneration/ClaudeTextGeneration.ts";
 import * as ProviderLatestVersions from "@t3tools/provider-core/server/ProviderLatestVersions";
 import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
+import { currentContextBridgeSettings } from "@t3tools/provider-core/server/contextBridgeRuntime";
 import * as ServerConfig from "../../config.ts";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
@@ -124,6 +125,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
+    const host = yield* ProviderHost.ProviderHost;
     // The server cwd is $HOME in packaged desktop builds, and `claude`
     // wrappers that scope themselves to their cwd refuse to run there.
     const { stateDir } = yield* ServerConfig.ServerConfig;
@@ -257,29 +259,34 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
 
     const checkProvider = catalogService.refreshInBackground.pipe(
       Effect.andThen(
-        modelCatalog.pipe(
-          Effect.flatMap((catalog) =>
-            checkClaudeProviderStatus(
-              effectiveConfig,
-              () => resolveCapabilities,
-              processEnv,
-              stateDir,
-              catalog,
-              scopedLimitNames,
-              (version) =>
-                ClaudeResetCredits.readClaudeResetCredits(configDir, version).pipe(
-                  Effect.provideService(HttpClient.HttpClient, httpClient),
-                  Effect.provideService(FileSystem.FileSystem, fileSystem),
-                  Effect.provideService(Path.Path, path),
+        currentContextBridgeSettings(host).pipe(
+          Effect.flatMap((contextBridge) =>
+            modelCatalog.pipe(
+              Effect.flatMap((catalog) =>
+                checkClaudeProviderStatus(
+                  effectiveConfig,
+                  () => resolveCapabilities,
+                  processEnv,
+                  stateDir,
+                  catalog,
+                  scopedLimitNames,
+                  (version) =>
+                    ClaudeResetCredits.readClaudeResetCredits(configDir, version).pipe(
+                      Effect.provideService(HttpClient.HttpClient, httpClient),
+                      Effect.provideService(FileSystem.FileSystem, fileSystem),
+                      Effect.provideService(Path.Path, path),
+                    ),
+                  contextBridge,
                 ),
+              ),
+              Effect.tap((provider) =>
+                provider.auth.status === "unauthenticated"
+                  ? Cache.invalidateAll(capabilitiesProbeCache)
+                  : Effect.void,
+              ),
+              Effect.map(stampIdentity),
             ),
           ),
-          Effect.tap((provider) =>
-            provider.auth.status === "unauthenticated"
-              ? Cache.invalidateAll(capabilitiesProbeCache)
-              : Effect.void,
-          ),
-          Effect.map(stampIdentity),
         ),
       ),
       Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
@@ -399,7 +406,17 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
       snapshotForCwd: (cwd: string) =>
         snapshot.getSnapshot.pipe(
           Effect.flatMap((machineSnapshot) =>
-            probeClaudeWorkspaceSnapshot(effectiveConfig, machineSnapshot, cwd, processEnv),
+            currentContextBridgeSettings(host).pipe(
+              Effect.flatMap((contextBridge) =>
+                probeClaudeWorkspaceSnapshot(
+                  effectiveConfig,
+                  machineSnapshot,
+                  cwd,
+                  processEnv,
+                  contextBridge,
+                ),
+              ),
+            ),
           ),
           Effect.provideService(FileSystem.FileSystem, fileSystem),
           Effect.provideService(Path.Path, path),

@@ -7220,6 +7220,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             });
           }
           const bridgedContext = yield* bridgedInstructionsForTurn({
+            host,
             targetDriver: driver,
             cwd: turnInput.runtimePolicy?.cwd,
           });

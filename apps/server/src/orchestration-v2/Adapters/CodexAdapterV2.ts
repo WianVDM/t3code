@@ -1,5 +1,10 @@
 import { revertCodexThread } from "../../provider/CodexThreadRevert.ts";
-import { bridgedInstructionsForTurn } from "@t3tools/provider-core/server/contextBridgeRuntime";
+import {
+  bridgedInstructionsForTurn,
+  currentContextBridgeSettings,
+} from "@t3tools/provider-core/server/contextBridgeRuntime";
+import { resolveBridgedSkillRoots } from "@t3tools/provider-core/server/contextBridge";
+import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
 import { historyResponseItems } from "@t3tools/provider-core/server/handoffBudget";
 import { makeProviderTextDeltaCoalescer } from "./ProviderTextDeltaCoalescer.ts";
 import {
@@ -94,6 +99,7 @@ import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import { parse as parseSkillYaml } from "yaml";
 
 import { resolveAttachmentPath, resolveAttachmentPathById } from "../../attachmentStore.ts";
 import { getCodexServiceTierOptionValue } from "../../codexModelOptions.ts";
@@ -424,6 +430,24 @@ function codexItemStatus(status: "inProgress" | "completed" | "failed" | "declin
  */
 function codexSkillMentionText(text: string): string {
   return text.replace(SKILL_MENTION_PATTERN, "$1$$$2");
+}
+
+const SKILL_FRONTMATTER_PATTERN = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/;
+
+/**
+ * Codex registers a bridged skill under its SKILL.md frontmatter `name`, so
+ * the unsupported-roots mention guard must match that, not the directory
+ * basename.
+ */
+function bridgedSkillFrontmatterName(contents: string): string | null {
+  const frontmatter = SKILL_FRONTMATTER_PATTERN.exec(contents)?.[1];
+  if (frontmatter === undefined) return null;
+  try {
+    const parsed = parseSkillYaml(frontmatter) as { name?: unknown } | null;
+    return typeof parsed?.name === "string" && parsed.name.length > 0 ? parsed.name : null;
+  } catch {
+    return null;
+  }
 }
 
 const BACKGROUND_COMMAND_DETAIL_COMMAND_MAX_LENGTH = 200;
@@ -1617,6 +1641,7 @@ export type CodexAdapterV2DriverEnv =
   | IdAllocator.IdAllocatorV2
   | McpProviderSessions.McpProviderSessions
   | Path.Path
+  | ProviderHost.ProviderHost
   | ServerConfig;
 
 export const createCodexAdapterV2 = Effect.fn("CodexAdapterV2.createCodexAdapterV2")(function* (
@@ -1680,6 +1705,8 @@ const layer: Layer.Layer<
   | FileSystem.FileSystem
   | IdAllocator.IdAllocatorV2
   | McpProviderSessions.McpProviderSessions
+  | Path.Path
+  | ProviderHost.ProviderHost
   | ServerConfig
 > = Layer.effect(
   ProviderAdapter.ProviderAdapterV2,
@@ -1732,6 +1759,8 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
   adapterOptions: CodexAdapterV2Options,
 ) {
   const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
+  const host = yield* ProviderHost.ProviderHost;
+  const pathService = yield* Path.Path;
   const readMcpSession = (threadId: ThreadId | null) =>
     threadId === null ? Effect.succeed(undefined) : mcpSessions.read(threadId);
   const { clientFactory, crypto, fileSystem, idAllocator, serverConfig } = adapterOptions;
@@ -1837,6 +1866,106 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             yield* Ref.set(initialized, true);
           }),
         );
+        const lastSyncedExtraRoots = yield* Ref.make<ReadonlyArray<string> | null>(null);
+        const extraRootsUnsupported = yield* Ref.make<boolean>(false);
+        // Real SKILL.md frontmatter names in the last resolved bridged roots;
+        // null when no external roots apply, so only those exact mentions can
+        // ever be rejected (never arbitrary $tokens or native-only skills).
+        const bridgedSkillNames = yield* Ref.make<ReadonlySet<string> | null>(null);
+        const syncBridgedSkillRoots = Effect.fn("CodexAdapterV2.syncBridgedSkillRoots")(function* (
+          cwd: string | null | undefined,
+        ) {
+          const settings = yield* currentContextBridgeSettings(host);
+          if (settings === undefined) {
+            yield* Ref.set(bridgedSkillNames, null);
+            return;
+          }
+          const userHome = yield* HostProcess.HomeDirectory;
+          // A synchronous throw here must not fail the turn: log and skip
+          // this sync, leaving the last synced state (and the latch) intact.
+          const resolved = yield* Effect.try(() =>
+            resolveBridgedSkillRoots({
+              settings,
+              targetDriver: CODEX_DRIVER_KIND,
+              cwd: cwd ?? undefined,
+              userHome,
+            }),
+          ).pipe(
+            Effect.asSome,
+            Effect.catch((cause) =>
+              Effect.logWarning("orchestration-v2.codex-extra-roots-resolve-failed", {
+                cause,
+              }).pipe(Effect.as(Option.none())),
+            ),
+          );
+          if (Option.isNone(resolved)) return;
+          const roots = resolved.value;
+          if (roots === null) {
+            yield* Ref.set(bridgedSkillNames, null);
+            const previous = yield* Ref.get(lastSyncedExtraRoots);
+            if (previous !== null) {
+              const unsupported = yield* Ref.get(extraRootsUnsupported);
+              if (!unsupported) {
+                yield* client.request("skills/extraRoots/set", { extraRoots: [] }).pipe(
+                  Effect.catch((cause) =>
+                    Effect.logWarning("orchestration-v2.codex-extra-roots-clear-failed", {
+                      cause,
+                    }),
+                  ),
+                );
+              }
+              yield* Ref.set(lastSyncedExtraRoots, null);
+            }
+            return;
+          }
+          const extraRoots = Array.from(new Set([...roots.global, ...roots.project]));
+          // Track the real bridged skill names before the RPC, and rescan on
+          // every sync even when the root list is unchanged, so skill
+          // additions, removals, and frontmatter renames are reflected. Even
+          // when the roots cannot be registered, a mention of one would
+          // silently do nothing, so it is the only mention the turn may reject.
+          const skillNames = new Set<string>();
+          for (const root of extraRoots) {
+            const entries = yield* fileSystem
+              .readDirectory(root)
+              .pipe(Effect.orElseSucceed(() => [] as string[]));
+            for (const entry of entries) {
+              const contents = yield* fileSystem
+                .readFileString(pathService.join(root, entry, "SKILL.md"))
+                .pipe(Effect.orElseSucceed(() => null));
+              const name = contents === null ? null : bridgedSkillFrontmatterName(contents);
+              if (name !== null) skillNames.add(name);
+            }
+          }
+          yield* Ref.set(bridgedSkillNames, skillNames);
+          const previous = yield* Ref.get(lastSyncedExtraRoots);
+          if (
+            previous !== null &&
+            previous.length === extraRoots.length &&
+            previous.every((root, index) => root === extraRoots[index])
+          ) {
+            return;
+          }
+          const unsupported = yield* Ref.get(extraRootsUnsupported);
+          if (unsupported) return;
+          yield* client.request("skills/extraRoots/set", { extraRoots }).pipe(
+            Effect.tap(() => Ref.set(lastSyncedExtraRoots, extraRoots)),
+            // Every failure fails soft: never propagate into ensureThread or
+            // a turn. Latch only a permanent protocol rejection (method not
+            // found / invalid params); transient RPC errors stay fail-open
+            // and retry on a later sync.
+            Effect.catch((cause) =>
+              Effect.logWarning("orchestration-v2.codex-extra-roots-set-failed", { cause }).pipe(
+                Effect.andThen(
+                  cause._tag === "CodexAppServerRequestError" &&
+                    (cause.code === -32601 || cause.code === -32602)
+                    ? Ref.set(extraRootsUnsupported, true)
+                    : Effect.void,
+                ),
+              ),
+            ),
+          );
+        });
         const now = yield* DateTime.now;
         const session = providerSession({
           providerSessionId: input.providerSessionId,
@@ -6361,9 +6490,28 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             turnInput: ProviderAdapter.ProviderAdapterV2TurnInput,
             codexInput: ReadonlyArray<CodexSchema.V2TurnStartParams__UserInput>,
           ) {
+            yield* syncBridgedSkillRoots(turnInput.runtimePolicy.cwd);
+            const isUnsupported = yield* Ref.get(extraRootsUnsupported);
+            if (isUnsupported) {
+              const bridgedNames = yield* Ref.get(bridgedSkillNames);
+              const mentions =
+                bridgedNames === null
+                  ? []
+                  : [...turnInput.message.text.matchAll(SKILL_MENTION_PATTERN)].flatMap((match) =>
+                      bridgedNames.has(match[2] ?? "") ? [match[2]!] : [],
+                    );
+              if (mentions.length > 0) {
+                return yield* toProtocolError(
+                  `Codex app-server cannot register external skill roots (skills/extraRoots/set), and this turn mentions bridged skill(s): ${mentions.join(
+                    ", ",
+                  )}.`,
+                );
+              }
+            }
             const threadId = yield* getNativeThreadId(turnInput.providerThread);
             const mcpSession = yield* mcpSessions.read(turnInput.threadId);
             const bridgedContext = yield* bridgedInstructionsForTurn({
+              host,
               targetDriver: CODEX_DRIVER_KIND,
               cwd: turnInput.runtimePolicy.cwd,
             });
@@ -6651,6 +6799,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           }),
           ensureThread: (threadInput) =>
             ensureInitialized.pipe(
+              Effect.andThen(syncBridgedSkillRoots(threadInput.runtimePolicy?.cwd)),
               Effect.andThen(mcpSessions.read(threadInput.threadId)),
               Effect.flatMap((mcpSession) =>
                 client.request(

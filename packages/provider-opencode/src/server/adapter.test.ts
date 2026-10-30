@@ -1,3 +1,8 @@
+// @effect-diagnostics nodeBuiltinImport:off
+import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
+
 import { assert, describe, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import type { OpencodeClient, ToolPart } from "@opencode-ai/sdk/v2";
@@ -36,6 +41,12 @@ import * as OpenCodeRuntime from "./OpenCodeRuntime.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 
+import {
+  bridgedSkillNames,
+  scanBridgedSkillRoots,
+  skillsNamed,
+  syncBridgedOpenCodeSkills,
+} from "./v2/adapter.ts";
 import {
   advanceOpenCodePromptAdmission,
   cancelOpenCodePromptAdmission,
@@ -164,6 +175,7 @@ const makeOpenCodeRuntimeHarness = Effect.fn("makeOpenCodeRuntimeHarness")(funct
     } as unknown as OpenCodeRuntime.OpenCodeRuntime["Service"]),
     Effect.provideService(ProviderHost.ProviderHost, {
       paths: { cwd: "/workspace" },
+      settings: { get: Effect.succeed({} as any) },
       resolveAttachmentPath: () => null,
     } as unknown as ProviderHost.ProviderHost["Service"]),
   );
@@ -1390,6 +1402,7 @@ describe("OpenCodeAdapterV2", () => {
         } as unknown as OpenCodeRuntime.OpenCodeRuntime["Service"]),
         Effect.provideService(ProviderHost.ProviderHost, {
           paths: { cwd: "/workspace" },
+          settings: { get: Effect.succeed({} as any) },
           resolveAttachmentPath: () => null,
         } as unknown as ProviderHost.ProviderHost["Service"]),
       );
@@ -1687,6 +1700,7 @@ describe("OpenCodeAdapterV2", () => {
         } as unknown as OpenCodeRuntime.OpenCodeRuntime["Service"]),
         Effect.provideService(ProviderHost.ProviderHost, {
           paths: { cwd: "/workspace" },
+          settings: { get: Effect.succeed({} as any) },
           resolveAttachmentPath: () => null,
         } as unknown as ProviderHost.ProviderHost["Service"]),
       );
@@ -2365,3 +2379,369 @@ it.effect.each([false, true])(
       Effect.scoped,
     ),
 );
+
+describe("OpenCode2Adapter bridged skill discovery", () => {
+  const withTempHome = <A>(use: (home: string) => A): A => {
+    const home = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-opencode-bridged-"));
+    try {
+      return use(home);
+    } finally {
+      NodeFS.rmSync(home, { recursive: true, force: true });
+    }
+  };
+  const writeSkill = (root: string, name: string) => {
+    const directory = NodePath.join(root, name);
+    NodeFS.mkdirSync(directory, { recursive: true });
+    NodeFS.writeFileSync(NodePath.join(directory, "SKILL.md"), `---\nname: ${name}\n---\n`);
+  };
+  const tryLinkDirectory = (target: string, linkPath: string): boolean => {
+    NodeFS.mkdirSync(NodePath.dirname(linkPath), { recursive: true });
+    try {
+      NodeFS.symlinkSync(target, linkPath, "junction");
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const junctionLinkCreatesDirectoryEntries = (home: string): boolean => {
+    const probeSource = NodePath.join(home, "junction-probe", "source");
+    const probeLink = NodePath.join(home, "junction-probe", "link");
+    NodeFS.mkdirSync(probeSource, { recursive: true });
+    NodeFS.writeFileSync(NodePath.join(probeSource, "marker"), "probe");
+    if (!tryLinkDirectory(probeSource, probeLink)) return false;
+    return NodeFS.readdirSync(probeLink).includes("marker");
+  };
+  const bridgeSettings = (skills?: string) => ({
+    enabled: true,
+    defaultSource: "claudeAgent",
+    routes: { opencode: skills === undefined ? {} : { skills } },
+  });
+
+  it("discovers a Claude global skill through the default bridge route", () =>
+    withTempHome((home) => {
+      writeSkill(NodePath.join(home, ".claude", "skills"), "voice");
+      const names = bridgedSkillNames({
+        settings: bridgeSettings("default"),
+        cwd: undefined,
+        userHome: home,
+      });
+      assert.deepStrictEqual([...names], ["voice"]);
+      // The structured reference the adapter sends for a `$voice` mention.
+      assert.deepStrictEqual(
+        [...names].map((id) => ({ id })),
+        [{ id: "voice" }],
+      );
+    }));
+
+  it("discovers project skills from the claudeAgent source relative to the cwd", () =>
+    withTempHome((home) => {
+      const project = NodePath.join(home, "project");
+      writeSkill(NodePath.join(project, ".claude", "skills"), "review");
+      NodeFS.mkdirSync(NodePath.join(project, ".claude", "skills", "not-a-skill"), {
+        recursive: true,
+      });
+      const names = bridgedSkillNames({
+        settings: bridgeSettings("claudeAgent"),
+        cwd: project,
+        userHome: home,
+      });
+      assert.deepStrictEqual([...names], ["review"]);
+    }));
+
+  it("stays native when the skills route is native or the source is the target", () =>
+    withTempHome((home) => {
+      writeSkill(NodePath.join(home, ".claude", "skills"), "voice");
+      for (const skills of [undefined, "native", "opencode"] as const) {
+        const names = bridgedSkillNames({
+          settings: bridgeSettings(skills),
+          cwd: undefined,
+          userHome: home,
+        });
+        assert.deepStrictEqual([...names], []);
+      }
+      const disabled = bridgedSkillNames({
+        settings: { enabled: false, defaultSource: "claudeAgent", routes: {} },
+        cwd: undefined,
+        userHome: home,
+      });
+      assert.deepStrictEqual([...disabled], []);
+    }));
+
+  it("tolerates missing roots and non-skill entries", () =>
+    withTempHome((home) => {
+      const root = NodePath.join(home, "skills");
+      NodeFS.mkdirSync(root, { recursive: true });
+      NodeFS.writeFileSync(NodePath.join(root, "README.md"), "not a skill");
+      assert.deepStrictEqual(
+        [
+          ...scanBridgedSkillRoots({
+            global: [NodePath.join(home, "missing"), root],
+            project: [],
+          }),
+        ],
+        [],
+      );
+    }));
+
+  it("resolves $voice into structured native skill references without modifying text", () =>
+    withTempHome((home) => {
+      writeSkill(NodePath.join(home, ".claude", "skills"), "voice");
+      const names = bridgedSkillNames({
+        settings: bridgeSettings("default"),
+        cwd: undefined,
+        userHome: home,
+      });
+      const text = "Please run $voice to check speech";
+      const referenced = skillsNamed(text, names);
+      assert.deepStrictEqual(referenced, ["voice"]);
+      assert.deepStrictEqual(
+        referenced.map((id) => ({ id })),
+        [{ id: "voice" }],
+      );
+    }));
+
+  it("ignores unknown or unbridged $skill mentions", () => {
+    const known = new Set<string>();
+    const text = "Please run $voice to check speech";
+    const referenced = skillsNamed(text, known);
+    assert.deepStrictEqual(referenced, []);
+  });
+
+  it("synchronizes global Claude skills into OpenCode's native discovery home with ownership tracking", () =>
+    withTempHome((home) => {
+      writeSkill(NodePath.join(home, ".claude", "skills"), "voice");
+      const result = syncBridgedOpenCodeSkills({
+        settings: bridgeSettings("default"),
+        cwd: undefined,
+        userHome: home,
+      });
+      assert.deepStrictEqual([...result.synchronizedGlobal], ["voice"]);
+      const targetSkillFile = NodePath.join(
+        home,
+        ".config",
+        "opencode",
+        "skills",
+        "voice",
+        "SKILL.md",
+      );
+      assert.isTrue(NodeFS.existsSync(targetSkillFile));
+      assert.include(NodeFS.readFileSync(targetSkillFile, "utf8"), "name: voice");
+
+      const markerFile = NodePath.join(
+        home,
+        ".config",
+        "opencode",
+        "skills",
+        ".t3-context-bridge.json",
+      );
+      assert.isTrue(NodeFS.existsSync(markerFile));
+      const marker = JSON.parse(NodeFS.readFileSync(markerFile, "utf8"));
+      assert.deepStrictEqual(marker, { owned: ["voice"] });
+    }));
+
+  it("synchronizes project Claude skills into OpenCode project discovery home", () =>
+    withTempHome((home) => {
+      const project = NodePath.join(home, "project");
+      writeSkill(NodePath.join(project, ".claude", "skills"), "review");
+      const result = syncBridgedOpenCodeSkills({
+        settings: bridgeSettings("claudeAgent"),
+        cwd: project,
+        userHome: home,
+      });
+      assert.deepStrictEqual([...result.synchronizedProject], ["review"]);
+      const targetSkillFile = NodePath.join(project, ".opencode", "skills", "review", "SKILL.md");
+      assert.isTrue(NodeFS.existsSync(targetSkillFile));
+
+      const markerFile = NodePath.join(project, ".opencode", "skills", ".t3-context-bridge.json");
+      assert.isTrue(NodeFS.existsSync(markerFile));
+      const marker = JSON.parse(NodeFS.readFileSync(markerFile, "utf8"));
+      assert.deepStrictEqual(marker, { owned: ["review"] });
+    }));
+
+  it("preserves pre-existing user-owned skills without overwriting or deleting them", () =>
+    withTempHome((home) => {
+      const userSkillsDir = NodePath.join(home, ".config", "opencode", "skills", "user-custom");
+      NodeFS.mkdirSync(userSkillsDir, { recursive: true });
+      NodeFS.writeFileSync(NodePath.join(userSkillsDir, "SKILL.md"), "user owned content");
+
+      writeSkill(NodePath.join(home, ".claude", "skills"), "voice");
+      const result = syncBridgedOpenCodeSkills({
+        settings: bridgeSettings("default"),
+        cwd: undefined,
+        userHome: home,
+      });
+      assert.deepStrictEqual([...result.synchronizedGlobal], ["voice"]);
+
+      // Both user custom skill and bridged skill exist
+      assert.isTrue(NodeFS.existsSync(NodePath.join(userSkillsDir, "SKILL.md")));
+      assert.equal(
+        NodeFS.readFileSync(NodePath.join(userSkillsDir, "SKILL.md"), "utf8"),
+        "user owned content",
+      );
+      assert.isTrue(
+        NodeFS.existsSync(
+          NodePath.join(home, ".config", "opencode", "skills", "voice", "SKILL.md"),
+        ),
+      );
+
+      // Marker file only tracks the bridge-owned skill
+      const markerFile = NodePath.join(
+        home,
+        ".config",
+        "opencode",
+        "skills",
+        ".t3-context-bridge.json",
+      );
+      const marker = JSON.parse(NodeFS.readFileSync(markerFile, "utf8"));
+      assert.deepStrictEqual(marker, { owned: ["voice"] });
+    }));
+
+  it("reverts only bridge-owned skills when route is native or disabled", () =>
+    withTempHome((home) => {
+      const userSkillsDir = NodePath.join(home, ".config", "opencode", "skills", "user-custom");
+      NodeFS.mkdirSync(userSkillsDir, { recursive: true });
+      NodeFS.writeFileSync(NodePath.join(userSkillsDir, "SKILL.md"), "user owned content");
+
+      writeSkill(NodePath.join(home, ".claude", "skills"), "voice");
+      syncBridgedOpenCodeSkills({
+        settings: bridgeSettings("default"),
+        cwd: undefined,
+        userHome: home,
+      });
+
+      // Now revert by setting route to native
+      syncBridgedOpenCodeSkills({
+        settings: bridgeSettings("native"),
+        cwd: undefined,
+        userHome: home,
+      });
+
+      // Bridged skill is removed
+      assert.isFalse(
+        NodeFS.existsSync(NodePath.join(home, ".config", "opencode", "skills", "voice")),
+      );
+      // User skill is preserved untouched
+      assert.isTrue(NodeFS.existsSync(NodePath.join(userSkillsDir, "SKILL.md")));
+      // Marker file was removed because no bridge-owned skills remain
+      assert.isFalse(
+        NodeFS.existsSync(
+          NodePath.join(home, ".config", "opencode", "skills", ".t3-context-bridge.json"),
+        ),
+      );
+    }));
+
+  it("copies a symlinked source skill into a real owned destination and reverts only the copy", () =>
+    withTempHome((home) => {
+      if (!junctionLinkCreatesDirectoryEntries(home)) return;
+      const claudeSkills = NodePath.join(home, ".claude", "skills");
+      writeSkill(claudeSkills, "linked");
+      if (
+        !tryLinkDirectory(
+          NodePath.join(claudeSkills, "linked"),
+          NodePath.join(claudeSkills, "voice"),
+        )
+      ) {
+        return;
+      }
+
+      const result = syncBridgedOpenCodeSkills({
+        settings: bridgeSettings("default"),
+        cwd: undefined,
+        userHome: home,
+      });
+      assert.deepStrictEqual([...result.synchronizedGlobal], ["linked"]);
+
+      const destination = NodePath.join(home, ".config", "opencode", "skills", "linked");
+      assert.isFalse(NodeFS.lstatSync(destination).isSymbolicLink());
+      assert.isTrue(NodeFS.statSync(destination).isDirectory());
+      assert.include(NodeFS.readFileSync(NodePath.join(destination, "SKILL.md"), "utf8"), "linked");
+      assert.include([...result.synchronizedGlobal], "linked");
+
+      const userSkillDir = NodePath.join(home, ".config", "opencode", "skills", "user-custom");
+      NodeFS.mkdirSync(userSkillDir, { recursive: true });
+      NodeFS.writeFileSync(NodePath.join(userSkillDir, "SKILL.md"), "user owned content");
+
+      syncBridgedOpenCodeSkills({
+        settings: bridgeSettings("native"),
+        cwd: undefined,
+        userHome: home,
+      });
+      assert.isFalse(NodeFS.existsSync(destination));
+      assert.isTrue(NodeFS.statSync(NodePath.join(claudeSkills, "linked")).isDirectory());
+      assert.equal(
+        NodeFS.readFileSync(NodePath.join(userSkillDir, "SKILL.md"), "utf8"),
+        "user owned content",
+      );
+    }));
+
+  it("leaves a pre-existing symlinked target skills directory untouched", () =>
+    withTempHome((home) => {
+      const skillsDir = NodePath.join(home, ".config", "opencode", "skills");
+      const realSkills = NodePath.join(home, "real-skills");
+      NodeFS.mkdirSync(realSkills, { recursive: true });
+      NodeFS.writeFileSync(NodePath.join(realSkills, "SKILL.md"), "pre-existing user content");
+      if (!tryLinkDirectory(realSkills, skillsDir)) return;
+
+      writeSkill(NodePath.join(home, ".claude", "skills"), "voice");
+      const result = syncBridgedOpenCodeSkills({
+        settings: bridgeSettings("default"),
+        cwd: undefined,
+        userHome: home,
+      });
+
+      assert.deepStrictEqual([...result.synchronizedGlobal], []);
+      assert.isTrue(
+        result.warnings.some((warning) => warning.includes("is a link or non-directory")),
+      );
+      assert.isTrue(NodeFS.lstatSync(skillsDir).isSymbolicLink());
+      assert.deepStrictEqual(NodeFS.readdirSync(realSkills), ["SKILL.md"]);
+      assert.equal(
+        NodeFS.readFileSync(NodePath.join(realSkills, "SKILL.md"), "utf8"),
+        "pre-existing user content",
+      );
+
+      const reverted = syncBridgedOpenCodeSkills({
+        settings: bridgeSettings("native"),
+        cwd: undefined,
+        userHome: home,
+      });
+      assert.deepStrictEqual([...reverted.synchronizedGlobal], []);
+      assert.isTrue(NodeFS.lstatSync(skillsDir).isSymbolicLink());
+      assert.deepStrictEqual(NodeFS.readdirSync(realSkills), ["SKILL.md"]);
+      assert.equal(
+        NodeFS.readFileSync(NodePath.join(realSkills, "SKILL.md"), "utf8"),
+        "pre-existing user content",
+      );
+    }));
+
+  it("proves daemon-visible catalog discovery sees synchronized skills", () =>
+    withTempHome((home) => {
+      writeSkill(NodePath.join(home, ".claude", "skills"), "voice");
+      syncBridgedOpenCodeSkills({
+        settings: bridgeSettings("default"),
+        cwd: undefined,
+        userHome: home,
+      });
+
+      // OpenCode daemon scans its discovery home (~/.config/opencode/skills)
+      const daemonSkillsDir = NodePath.join(home, ".config", "opencode", "skills");
+      const entries = NodeFS.readdirSync(daemonSkillsDir, { withFileTypes: true });
+      const daemonCatalog = entries
+        .filter(
+          (e) =>
+            e.isDirectory() &&
+            NodeFS.existsSync(NodePath.join(daemonSkillsDir, e.name, "SKILL.md")),
+        )
+        .map((e) => ({ id: e.name, path: NodePath.join(daemonSkillsDir, e.name, "SKILL.md") }));
+
+      assert.deepStrictEqual(daemonCatalog, [
+        { id: "voice", path: NodePath.join(daemonSkillsDir, "voice", "SKILL.md") },
+      ]);
+      const referenced = skillsNamed("Please run $voice", new Set(daemonCatalog.map((s) => s.id)));
+      assert.deepStrictEqual(referenced, ["voice"]);
+      assert.deepStrictEqual(
+        referenced.map((id) => ({ id })),
+        [{ id: "voice" }],
+      );
+    }));
+});

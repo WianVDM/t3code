@@ -18,8 +18,9 @@ import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import { ProviderAdapterDriverCreateError } from "@t3tools/provider-core/server/adapterDriver";
 import * as ProviderAdapterRegistry from "../ProviderAdapterRegistry.ts";
-import type { OrchestratorV2ProviderReplayHarness } from "../testkit/ProviderReplayHarness.ts";
+import * as TestProviderHost from "@t3tools/provider-testing/TestProviderHost";
 import type { ProviderReplayGate } from "@t3tools/provider-testing/replayGate";
+import type { OrchestratorV2ProviderReplayHarness } from "../testkit/ProviderReplayHarness.ts";
 import * as CodexAdapterV2 from "./CodexAdapterV2.ts";
 
 export class CodexReplayTranscriptDecodeError extends Schema.TaggedError<CodexReplayTranscriptDecodeError>()(
@@ -226,6 +227,7 @@ export function layer(input: {
         layerServerConfig,
         NodeServices.layer,
         IdAllocator.layer,
+        TestProviderHost.layer().pipe(Layer.provide(NodeServices.layer)),
       ),
     ),
   );

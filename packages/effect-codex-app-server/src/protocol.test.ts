@@ -11,6 +11,8 @@ import { assert, it } from "@effect/vitest";
 
 import * as CodexError from "./errors.ts";
 import * as CodexProtocol from "./protocol.ts";
+import * as CodexRpc from "./rpc.ts";
+import * as CodexSchema from "./schema.ts";
 import { makeInMemoryStdio } from "./_internal/stdio.ts";
 const encodeUnknownJsonString = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 
@@ -19,8 +21,85 @@ const encoder = new TextEncoder();
 const encodeJsonl = (value: unknown) => encoder.encode(`${encodeUnknownJsonString(value)}\n`);
 
 const decodeJson = Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown));
+const decodeSkillsExtraRootsSetParams = Schema.decodeUnknownEffect(
+  CodexRpc.CLIENT_REQUEST_PARAMS["skills/extraRoots/set"],
+);
+const decodeSkillsExtraRootsSetResponse = Schema.decodeUnknownEffect(
+  CodexRpc.CLIENT_REQUEST_RESPONSES["skills/extraRoots/set"],
+);
+const decodeSkillsListParams = Schema.decodeUnknownEffect(
+  CodexRpc.CLIENT_REQUEST_PARAMS["skills/list"],
+);
+const decodeSkillsListResponse = Schema.decodeUnknownEffect(
+  CodexRpc.CLIENT_REQUEST_RESPONSES["skills/list"],
+);
 
 it.layer(NodeServices.layer)("effect-codex-app-server protocol", (it) => {
+  it.effect("validates contract-level schemas for skills/extraRoots/set and skills/list", () =>
+    Effect.gen(function* () {
+      assert.strictEqual(
+        CodexRpc.CLIENT_REQUEST_METHODS["skills/extraRoots/set"],
+        "skills/extraRoots/set",
+      );
+      assert.strictEqual(
+        CodexRpc.CLIENT_REQUEST_PARAMS["skills/extraRoots/set"],
+        CodexSchema.V2SkillsExtraRootsSetParams,
+      );
+      assert.strictEqual(
+        CodexRpc.CLIENT_REQUEST_RESPONSES["skills/extraRoots/set"],
+        CodexSchema.V2SkillsExtraRootsSetResponse,
+      );
+
+      const validRootsParams = {
+        extraRoots: ["/home/user/.claude/skills", "/workspace/.claude/skills"],
+      };
+      assert.deepEqual(yield* decodeSkillsExtraRootsSetParams(validRootsParams), validRootsParams);
+
+      const invalidRootsFailure = yield* decodeSkillsExtraRootsSetParams({
+        extraRoots: "not-an-array" as any,
+      }).pipe(Effect.flip);
+      assert.exists(invalidRootsFailure);
+
+      const validRootsResponse = {};
+      assert.deepEqual(
+        yield* decodeSkillsExtraRootsSetResponse(validRootsResponse),
+        validRootsResponse,
+      );
+
+      assert.strictEqual(CodexRpc.CLIENT_REQUEST_METHODS["skills/list"], "skills/list");
+      assert.strictEqual(
+        CodexRpc.CLIENT_REQUEST_PARAMS["skills/list"],
+        CodexSchema.V2SkillsListParams,
+      );
+      assert.strictEqual(
+        CodexRpc.CLIENT_REQUEST_RESPONSES["skills/list"],
+        CodexSchema.V2SkillsListResponse,
+      );
+
+      const validListParams = { cwds: ["/workspace"], forceReload: true };
+      assert.deepEqual(yield* decodeSkillsListParams(validListParams), validListParams);
+
+      const validListResponse = {
+        data: [
+          {
+            cwd: "/workspace",
+            errors: [],
+            skills: [
+              {
+                name: "voice",
+                path: "/home/user/.claude/skills/voice/SKILL.md",
+                enabled: true,
+                description: "Voice skill",
+                scope: "user" as const,
+              },
+            ],
+          },
+        ],
+      };
+      assert.deepEqual(yield* decodeSkillsListResponse(validListResponse), validListResponse);
+    }),
+  );
+
   it.effect(
     "encodes requests without a jsonrpc field and routes inbound requests and notifications",
     () =>

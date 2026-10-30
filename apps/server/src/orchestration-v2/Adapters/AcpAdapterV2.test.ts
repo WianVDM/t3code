@@ -56,6 +56,11 @@ import type * as EffectAcpProtocol from "effect-acp/protocol";
 import type * as EffectAcpSchema from "effect-acp/compat";
 
 import * as TestProviderHost from "@t3tools/provider-testing/TestProviderHost";
+import * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
+import * as ServerConfig from "../../config.ts";
+import * as ServerSettings from "../../serverSettings.ts";
+import * as ServerSecretStore from "../../auth/ServerSecretStore.ts";
+import * as ProviderHostLive from "../../provider/ProviderHostLive.ts";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as AcpSessionRuntime from "@t3tools/provider-acp/server/AcpSessionRuntime";
 import {
@@ -1008,6 +1013,120 @@ describe("AcpAdapterV2", () => {
       assert.notInclude(restoredPrompt, "<!-- t3-context-bridge -->");
     }).pipe(
       Effect.provide(layerTest),
+      Effect.scoped,
+      Effect.provideService(HostProcess.HomeDirectory, NodePath.join("/nonexistent", "home")),
+    ),
+  );
+
+  it.live("bridges instructions when ProviderHost is only in the construction context", () =>
+    Effect.gen(function* () {
+      const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const path = yield* Path.Path;
+      const mockAgentPath = yield* path.fromFileUrl(
+        new URL("../../../scripts/acp-mock-agent.ts", import.meta.url),
+      );
+      const protocolEvents = yield* Queue.unbounded<EffectAcpProtocol.AcpProtocolLogEvent>();
+      const fileSystem = yield* FileSystem.FileSystem;
+      const tempRoot = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "acp-context-bridge-host-",
+      });
+      const cwd = NodePath.join(tempRoot, "project");
+      yield* fileSystem.makeDirectory(cwd, { recursive: true });
+      yield* fileSystem.writeFileString(NodePath.join(cwd, "CLAUDE.md"), "bridged acp rules");
+
+      // Production layering: the adapter is constructed with the real
+      // ProviderHostLive over a real ServerSettingsService, then turns run
+      // without ProviderHost in the ambient context — the shape that made
+      // the bridge silently no-op when the settings were read through
+      // Effect.serviceOption at turn time.
+      const layerBridgeHost = ProviderHostLive.layer.pipe(
+        Layer.provideMerge(ServerSecretStore.layer),
+        Layer.provideMerge(
+          ServerSettings.layerTest({ contextBridge: ACP_BRIDGE_SETTINGS.contextBridge }),
+        ),
+        Layer.provideMerge(
+          ServerConfig.layerTest(process.cwd(), { prefix: "t3-acp-bridge-config-" }),
+        ),
+        Layer.provideMerge(
+          Layer.mock(BackgroundPolicy.BackgroundPolicy)({
+            shouldRunScopeWork: () => Effect.succeed(false),
+          }),
+        ),
+        Layer.provideMerge(NodeServices.layer),
+      );
+      const instanceId = ProviderInstanceId.make("acp-test-context-bridge-host");
+      const threadId = ThreadId.make("thread-acp-context-bridge-host");
+      const adapter = yield* makeAcpAdapterV2({
+        instanceId,
+        flavor: {
+          driver: ProviderDriverKind.make("antigravity"),
+          capabilities: AcpProviderCapabilitiesV2,
+          makeRuntime: makeMockRuntime({ childProcessSpawner, mockAgentPath, protocolEvents }),
+        },
+        selfInvocation: yield* resolveSelfInvocation(),
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            NodeServices.layer,
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            layerBridgeHost,
+          ),
+        ),
+      );
+      const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        cwd,
+      });
+      const modelSelection = { instanceId, model: "default" } as const;
+      const runtime = yield* adapter.openSession({
+        threadId,
+        providerSessionId: ProviderSessionId.make("provider-session-acp-context-bridge-host"),
+        modelSelection,
+        runtimePolicy,
+      });
+      const providerThread = yield* runtime.ensureThread({
+        threadId,
+        modelSelection,
+        runtimePolicy,
+      });
+      const now = yield* DateTime.now;
+      yield* runtime.startTurn(
+        makeTurnInput({
+          threadId,
+          providerThread,
+          instanceId,
+          runtimePolicy,
+          now,
+          ordinal: 0,
+          messageText: "Bridged request.",
+        }),
+      );
+      yield* runtime.events.pipe(
+        Stream.takeUntil((event) => event.type === "turn.terminal"),
+        Stream.runDrain,
+      );
+      const promptEvent = yield* Effect.gen(function* () {
+        while (true) {
+          const event = yield* Queue.take(protocolEvents);
+          if (event.direction !== "outgoing") continue;
+          if (rawProtocolMethod(event) === "session/prompt") return event;
+        }
+      });
+      assert.isDefined(promptEvent);
+      const bridgedPrompt = rawProtocolPromptTextBlocks(promptEvent)
+        .map((block) => block.text)
+        .join("\n");
+      assert.include(bridgedPrompt, "<!-- t3-context-bridge -->");
+      assert.include(bridgedPrompt, 'source="claudeAgent" target="antigravity"');
+      assert.include(bridgedPrompt, "bridged acp rules");
+    }).pipe(
+      // No ProviderHost here on purpose: turn-time effects must use the host
+      // captured at construction.
+      Effect.provide(
+        Layer.mergeAll(NodeServices.layer, IdAllocator.layer, McpProviderSessions.layer),
+      ),
       Effect.scoped,
       Effect.provideService(HostProcess.HomeDirectory, NodePath.join("/nonexistent", "home")),
     ),

@@ -1,3 +1,4 @@
+// @effect-diagnostics nodeBuiltinImport:off
 import * as NodeURL from "node:url";
 
 import {
@@ -58,10 +59,19 @@ import * as OpenCode2Client from "./OpenCode2Client.ts";
 import * as OpenCode2Server from "./OpenCode2Server.ts";
 import * as OpenCodeRuntime from "../OpenCodeRuntime.ts";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
-import { bridgedInstructionsForTurn } from "@t3tools/provider-core/server/contextBridgeRuntime";
+import {
+  bridgedInstructionsForTurn,
+  currentContextBridgeSettings,
+} from "@t3tools/provider-core/server/contextBridgeRuntime";
+import {
+  bridgedSkillNames,
+  skillsNamed,
+  syncBridgedOpenCodeSkills,
+} from "../openCodeContextBridge.ts";
 import { buildRuntimeInstructions } from "@t3tools/provider-core/server/runtimeInstructions";
 import { t3OrchestrationSystemPrompt } from "@t3tools/provider-core/server/orchestrationInstructions";
 import { SKILL_MENTION_PATTERN } from "@t3tools/shared/composerInlineTokens";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import { getModelSelectionStringOptionValue, modelSelectionsEqual } from "@t3tools/shared/model";
 import { causeErrorTag } from "@t3tools/shared/observability";
@@ -654,13 +664,14 @@ const commandOf = (text: string) => {
 
 const SKILL_MENTION = new RegExp(SKILL_MENTION_PATTERN.source, "u");
 
-const skillsNamed = (text: string, known: ReadonlySet<string>) => [
-  ...new Set(
-    [...text.matchAll(SKILL_MENTION_PATTERN)].flatMap((match) =>
-      known.has(match[2] ?? "") ? [match[2]!] : [],
-    ),
-  ),
-];
+export {
+  skillsNamed,
+  scanBridgedSkillRoots,
+  bridgedSkillNames,
+  syncBridgedOpenCodeSkills,
+  type SyncBridgedOpenCodeSkillsInput,
+  type SyncBridgedOpenCodeSkillsResult,
+} from "../openCodeContextBridge.ts";
 
 const turnTokenUsage = (turn: ActiveTurn, status: OrchestrationV2ProviderTurn["status"]) =>
   turn.steps === 0
@@ -3137,10 +3148,32 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
           );
         if (mcpAvailable) state.mcp = wanted;
       }
+      // Skills sync runs only for skill mentions; this warning path is every turn.
       const bridgedContext = yield* bridgedInstructionsForTurn({
+        host,
         targetDriver: OPENCODE_PROVIDER,
         cwd: directory,
       });
+      const contextBridge = yield* currentContextBridgeSettings(host);
+      if (contextBridge !== undefined) {
+        const userHome = yield* HostProcess.HomeDirectory;
+        yield* Effect.sync(() =>
+          syncBridgedOpenCodeSkills({
+            settings: contextBridge,
+            cwd: directory,
+            userHome,
+          }),
+        ).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("context-bridge.skills-sync-failed", { cause }),
+          ),
+          Effect.tap((result) =>
+            Effect.forEach(result?.warnings ?? [], (warning) =>
+              Effect.logWarning("context-bridge.skills-sync", { warning }),
+            ),
+          ),
+        );
+      }
       const instructions = [
         buildRuntimeInstructions({
           harness: "OpenCode",
@@ -3416,11 +3449,47 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
       const skills = SKILL_MENTION.test(text)
         ? skillsNamed(
             text,
-            yield* client.skill.list({ location }).pipe(
-              Effect.timeout(INVENTORY_TIMEOUT),
-              Effect.map((list) => new Set(list.data.map((skill) => skill.id))),
-              Effect.orElseSucceed(() => new Set<string>()),
-            ),
+            yield* Effect.gen(function* () {
+              const contextBridge = yield* currentContextBridgeSettings(host);
+              if (contextBridge !== undefined) {
+                const userHome = yield* HostProcess.HomeDirectory;
+                yield* Effect.sync(() =>
+                  syncBridgedOpenCodeSkills({
+                    settings: contextBridge,
+                    cwd: location.directory,
+                    userHome,
+                  }),
+                ).pipe(
+                  Effect.catchCause((cause) =>
+                    Effect.logWarning("context-bridge.skills-sync-failed", { cause }),
+                  ),
+                  Effect.tap((result) =>
+                    Effect.forEach(result?.warnings ?? [], (warning) =>
+                      Effect.logWarning("context-bridge.skills-sync", { warning }),
+                    ),
+                  ),
+                );
+              }
+              const native = yield* client.skill.list({ location }).pipe(
+                Effect.timeout(INVENTORY_TIMEOUT),
+                Effect.map((list) => new Set(list.data.map((skill) => skill.id))),
+                Effect.orElseSucceed(() => new Set<string>()),
+              );
+              if (contextBridge === undefined) return native;
+              const userHome = yield* HostProcess.HomeDirectory;
+              const bridged = yield* Effect.sync(() =>
+                bridgedSkillNames({ settings: contextBridge, cwd: location.directory, userHome }),
+              ).pipe(
+                Effect.catchCause((cause) =>
+                  Effect.logWarning("context-bridge.skills-resolve-failed", { cause }).pipe(
+                    Effect.as(new Set<string>()),
+                  ),
+                ),
+              );
+              return bridged.size === 0
+                ? (native as ReadonlySet<string>)
+                : new Set([...native, ...bridged]);
+            }),
           )
         : [];
       const files = yield* promptFiles(turnInput.message.attachments);

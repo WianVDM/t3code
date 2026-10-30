@@ -1,4 +1,8 @@
-import type { ClaudeSettings, ServerProviderSkill } from "@t3tools/contracts";
+import type {
+  ClaudeSettings,
+  ContextBridgeSettings,
+  ServerProviderSkill,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -11,7 +15,6 @@ import { SKILL_MENTION_PATTERN } from "@t3tools/shared/composerInlineTokens";
 import { parse as parseYamlDocument } from "yaml";
 
 import { resolveBridgedSkillRoots } from "@t3tools/provider-core/server/contextBridge";
-import { currentContextBridgeSettings } from "@t3tools/provider-core/server/contextBridgeRuntime";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 
 type ClaudeSkillScope = "user" | "project";
@@ -429,8 +432,7 @@ const resolveClaudeConfigDirPath = Effect.fn("resolveClaudeConfigDirPath")(funct
   // No tilde expansion here: the spawned CLI receives this env var verbatim
   // (env vars are never shell-expanded), so a literal `~` must stay literal
   // for discovery to scan the same directory the runtime would. A relative
-  // value is resolved against the workspace cwd — the subprocess's own cwd —
-  // for the same reason.
+  // value resolves against the workspace cwd, which is also the subprocess cwd.
   const environmentConfigDir = environment.CLAUDE_CONFIG_DIR?.trim() ?? "";
   if (environmentConfigDir.length > 0) {
     return cwd ? path.resolve(cwd, environmentConfigDir) : path.resolve(environmentConfigDir);
@@ -451,6 +453,9 @@ export const discoverClaudeSkills = Effect.fn("discoverClaudeSkills")(function* 
   config: Pick<ClaudeSettings, "homePath"> & Partial<Pick<ClaudeSettings, "launchArgs">>,
   cwd?: string,
   environment?: NodeJS.ProcessEnv,
+  // Resolved by the caller from the host captured at construction; undefined
+  // means no bridge applies. Read per call so a settings change applies without a restart.
+  contextBridge?: ContextBridgeSettings,
 ): Effect.fn.Return<ReadonlyArray<ServerProviderSkill>, never, FileSystem.FileSystem | Path.Path> {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -463,7 +468,6 @@ export const discoverClaudeSkills = Effect.fn("discoverClaudeSkills")(function* 
 
   // Use the session's argument parser so discovery sees the same --add-dir value.
   const additionalDirectory = parseCliArgs(config.launchArgs ?? "").flags["add-dir"];
-  const contextBridge = yield* currentContextBridgeSettings();
   const bridgedRoots =
     contextBridge === undefined
       ? null

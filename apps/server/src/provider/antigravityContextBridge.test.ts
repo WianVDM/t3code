@@ -208,6 +208,19 @@ describe("syncAntigravityContextBridgeProfile", () => {
       NodeFS.existsSync(NodePath.join(configSkillsDir, "skill-a", "SKILL.md")),
       "skill link resolves into the source directory",
     ).toBe(true);
+    // existsSync would pass for a plain symlink that Antigravity's
+    // lstat-based loader cannot see. Sync always writes a real
+    // directory via cpSync, so lstat must report a directory.
+    const bridgedLstat = NodeFS.lstatSync(NodePath.join(configSkillsDir, "skill-a"));
+    expect(
+      bridgedLstat.isSymbolicLink(),
+      "bridged skill is a real copied directory, never a symlink",
+    ).toBe(false);
+    expect(bridgedLstat.isDirectory(), "bridged skill is a copied directory").toBe(true);
+    expect(
+      NodeFS.readFileSync(NodePath.join(configSkillsDir, "skill-a", "SKILL.md"), "utf8"),
+      "copied directory carries readable skill content",
+    ).toContain("name: skill-a");
 
     const hooksFile = NodePath.join(geminiHome, "config", "hooks.json");
     const hooks = JSON.parse(NodeFS.readFileSync(hooksFile, "utf8")) as Record<string, unknown>;
@@ -259,6 +272,132 @@ describe("syncAntigravityContextBridgeProfile", () => {
     expect(NodeFS.realpathSync(configSkillsDir)).toBe(
       NodeFS.realpathSync(NodePath.join(userHome, ".gemini", "config", "skills")),
     );
+  });
+
+  it("reverts a skills directory that holds only an empty ownership marker by restoring the native link", () => {
+    // A failed sync leaves a bridge-written directory holding only
+    // the ownership marker. Revert must remove it: an empty `owned`
+    // list previously returned early, leaving the dead directory.
+    const configSkillsDir = NodePath.join(geminiHome, "config", "skills");
+    NodeFS.mkdirSync(configSkillsDir, { recursive: true });
+    writeFixture(
+      NodePath.join("config", "skills", ".t3-context-bridge.json"),
+      JSON.stringify({ owned: [] }),
+      geminiHome,
+    );
+    NodeFS.mkdirSync(NodePath.join(userHome, ".gemini", "config", "skills"), { recursive: true });
+
+    expect(
+      needsAntigravityContextBridgeSync({ geminiHome, contextBridge: NATIVE_SETTINGS }),
+      "the marker keeps the cleanup gate open",
+    ).toBe(true);
+
+    const reverted = syncAntigravityContextBridgeProfile(syncInput(NATIVE_SETTINGS));
+    expect(reverted.warnings).toEqual([]);
+    const lstat = NodeFS.lstatSync(configSkillsDir);
+    expect(lstat.isSymbolicLink(), "native skills link is restored").toBe(true);
+    expect(NodeFS.realpathSync(configSkillsDir)).toBe(
+      NodeFS.realpathSync(NodePath.join(userHome, ".gemini", "config", "skills")),
+    );
+    expect(
+      needsAntigravityContextBridgeSync({ geminiHome, contextBridge: NATIVE_SETTINGS }),
+      "cleanup done: the gate closes again",
+    ).toBe(false);
+  });
+
+  it("leaves a skills directory with user content and no marker untouched on revert", () => {
+    // Without a marker the same shape is the user's content, not
+    // bridge state, so revert must leave it.
+    const configSkillsDir = NodePath.join(geminiHome, "config", "skills");
+    writeFixture(NodePath.join("config", "skills", "mine", "SKILL.md"), "mine", geminiHome);
+
+    const reverted = syncAntigravityContextBridgeProfile(syncInput(NATIVE_SETTINGS));
+    expect(reverted.warnings).toEqual([]);
+    expect(
+      NodeFS.lstatSync(NodePath.join(configSkillsDir, "mine")).isDirectory(),
+      "user content is left alone",
+    ).toBe(true);
+  });
+
+  it("resolves routes.antigravity.hooks='default' to the configured default source and writes the shim artifacts", () => {
+    const defaultSourceSettings = decodeContextBridge({
+      enabled: true,
+      defaultSource: "claudeAgent",
+      routes: { antigravity: { hooks: "default" } },
+    });
+
+    const bridged = syncAntigravityContextBridgeProfile(syncInput(defaultSourceSettings));
+    expect(bridged.warnings).toEqual([]);
+
+    const shimDirectory = NodePath.join(geminiHome, "config", ANTIGRAVITY_HOOK_SHIM_DIRECTORY);
+    expect(NodeFS.existsSync(NodePath.join(shimDirectory, ANTIGRAVITY_HOOK_SHIM_FILENAME))).toBe(
+      true,
+    );
+    const shimConfig = JSON.parse(
+      NodeFS.readFileSync(
+        NodePath.join(shimDirectory, ANTIGRAVITY_HOOK_SHIM_CONFIG_FILENAME),
+        "utf8",
+      ),
+    ) as { source: string; hookFiles: string[] };
+    expect(shimConfig.source).toBe("claudeAgent");
+    expect(shimConfig.hookFiles).toContain("~/.claude/settings.json");
+
+    const hooks = JSON.parse(
+      NodeFS.readFileSync(NodePath.join(geminiHome, "config", "hooks.json"), "utf8"),
+    ) as Record<string, unknown>;
+    expect(Object.keys(hooks)).toEqual(["t3-context-bridge"]);
+    const bridgeHooks = hooks["t3-context-bridge"] as {
+      PreToolUse: Array<{ hooks: Array<{ command: string }> }>;
+    };
+    expect(bridgeHooks.PreToolUse[0]?.hooks[0]?.command).toContain(ANTIGRAVITY_HOOK_SHIM_FILENAME);
+
+    const reverted = syncAntigravityContextBridgeProfile(syncInput(NATIVE_SETTINGS));
+    expect(reverted.warnings).toEqual([]);
+    expect(NodeFS.existsSync(NodePath.join(geminiHome, "config", "hooks.json"))).toBe(false);
+    expect(NodeFS.existsSync(shimDirectory)).toBe(false);
+  });
+
+  it("preserves a user-owned hooks.json with other keys through sync and revert while cleaning up shim artifacts", () => {
+    const hooksFile = writeFixture(
+      NodePath.join("config", "hooks.json"),
+      JSON.stringify({ "user-hooks": { enabled: true }, "other-key": { matcher: "*" } }),
+      geminiHome,
+    );
+    const original = NodeFS.readFileSync(hooksFile, "utf8");
+
+    const bridged = syncAntigravityContextBridgeProfile(syncInput(BRIDGED_SETTINGS));
+    expect(bridged.warnings.some((warning) => warning.includes("not bridge-owned"))).toBe(true);
+    // The shim is written, but the user's file is left byte-for-byte intact.
+    const shimDirectory = NodePath.join(geminiHome, "config", ANTIGRAVITY_HOOK_SHIM_DIRECTORY);
+    expect(NodeFS.existsSync(NodePath.join(shimDirectory, ANTIGRAVITY_HOOK_SHIM_FILENAME))).toBe(
+      true,
+    );
+    expect(NodeFS.readFileSync(hooksFile, "utf8")).toBe(original);
+
+    const reverted = syncAntigravityContextBridgeProfile(syncInput(NATIVE_SETTINGS));
+    expect(reverted.warnings).toEqual([]);
+    expect(NodeFS.readFileSync(hooksFile, "utf8")).toBe(original);
+    expect(NodeFS.existsSync(shimDirectory)).toBe(false);
+  });
+
+  it("preserves a corrupt hooks.json through sync and revert", () => {
+    const hooksFile = writeFixture(
+      NodePath.join("config", "hooks.json"),
+      "{ not valid json",
+      geminiHome,
+    );
+    const original = NodeFS.readFileSync(hooksFile, "utf8");
+
+    const bridged = syncAntigravityContextBridgeProfile(syncInput(BRIDGED_SETTINGS));
+    expect(bridged.warnings.some((warning) => warning.includes("not bridge-owned"))).toBe(true);
+    expect(NodeFS.readFileSync(hooksFile, "utf8")).toBe(original);
+
+    const reverted = syncAntigravityContextBridgeProfile(syncInput(NATIVE_SETTINGS));
+    expect(reverted.warnings).toEqual([]);
+    expect(NodeFS.readFileSync(hooksFile, "utf8")).toBe(original);
+    expect(
+      NodeFS.existsSync(NodePath.join(geminiHome, "config", ANTIGRAVITY_HOOK_SHIM_DIRECTORY)),
+    ).toBe(false);
   });
 
   it("never clobbers a hooks.json the bridge did not write", () => {

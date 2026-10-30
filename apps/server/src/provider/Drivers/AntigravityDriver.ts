@@ -205,7 +205,7 @@ export const AntigravityDriver: ProviderDriver<
       // Context bridge settings are read per runtime so a change applies
       // to the next session without a server restart. An unreadable
       // snapshot skips bridging; it must never cost the session.
-      const contextBridge = yield* currentContextBridgeSettings();
+      const contextBridge = yield* currentContextBridgeSettings(host);
       const bridgeSkills =
         contextBridge !== undefined &&
         resolveContextBridgeSource(contextBridge, DRIVER, "skills") !== null;
@@ -247,10 +247,7 @@ export const AntigravityDriver: ProviderDriver<
         // environment's ELECTRON_RUN_AS_NODE=1 runs the T3 executable as
         // Node instead (the prototype's invocation).
         const hostExecutable = yield* HostProcess.ExecutablePath;
-        const nodeExecutable = yield* resolveNodeExecutable(
-          "Antigravity",
-          processEnvironment,
-        ).pipe(
+        const nodeExecutable = yield* resolveNodeExecutable("Antigravity", processEnvironment).pipe(
           Effect.provideService(FileSystem.FileSystem, fileSystem),
           Effect.provideService(Path.Path, path),
           Effect.catch((error) =>
@@ -570,9 +567,13 @@ export const AntigravityDriver: ProviderDriver<
       snapshotForCwd: (cwd) =>
         !enabled
           ? provider.snapshot.getSnapshot
-          : discoverAntigravitySkills({ cwd, userHome }).pipe(
-              Effect.provideService(FileSystem.FileSystem, fileSystem),
-              Effect.provideService(Path.Path, path),
+          : currentContextBridgeSettings(host).pipe(
+              Effect.flatMap((contextBridge) =>
+                discoverAntigravitySkills({ cwd, userHome, contextBridge }).pipe(
+                  Effect.provideService(FileSystem.FileSystem, fileSystem),
+                  Effect.provideService(Path.Path, path),
+                ),
+              ),
               Effect.flatMap((skills) => provider.snapshotForCwd(cwd, skills)),
               Effect.mapError(
                 (cause) =>
