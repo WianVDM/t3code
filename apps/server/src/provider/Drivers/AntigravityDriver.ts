@@ -206,7 +206,7 @@ export const AntigravityDriver: ProviderDriver<
       // Context bridge settings are read per runtime so a change applies
       // to the next session without a server restart. An unreadable
       // snapshot skips bridging; it must never cost the session.
-      const contextBridge = yield* currentContextBridgeSettings();
+      const contextBridge = yield* currentContextBridgeSettings(host);
       const bridgeSkills =
         contextBridge !== undefined &&
         resolveContextBridgeSource(contextBridge, DRIVER, "skills") !== null;
@@ -575,9 +575,13 @@ export const AntigravityDriver: ProviderDriver<
       snapshotForCwd: (cwd) =>
         !enabled
           ? provider.snapshot.getSnapshot
-          : discoverAntigravitySkills({ cwd, userHome }).pipe(
-              Effect.provideService(FileSystem.FileSystem, fileSystem),
-              Effect.provideService(Path.Path, path),
+          : currentContextBridgeSettings(host).pipe(
+              Effect.flatMap((contextBridge) =>
+                discoverAntigravitySkills({ cwd, userHome, contextBridge }).pipe(
+                  Effect.provideService(FileSystem.FileSystem, fileSystem),
+                  Effect.provideService(Path.Path, path),
+                ),
+              ),
               Effect.flatMap((skills) => provider.snapshotForCwd(cwd, skills)),
               Effect.mapError(
                 (cause) =>

@@ -53,7 +53,10 @@ import {
   rewriteCursorSkillMentions,
 } from "./skills.ts";
 import { t3OrchestrationPrompt } from "@t3tools/provider-core/server/orchestrationInstructions";
-import { bridgedInstructionsForTurn } from "@t3tools/provider-core/server/contextBridgeRuntime";
+import {
+  bridgedInstructionsForTurn,
+  currentContextBridgeSettings,
+} from "@t3tools/provider-core/server/contextBridgeRuntime";
 import { buildRuntimeInstructions } from "@t3tools/provider-core/server/runtimeInstructions";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
@@ -2282,6 +2285,7 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
             const skills = yield* discoverCursorSkills(
               turnInput.runtimePolicy.cwd ?? undefined,
               adapterOptions.environment,
+              yield* currentContextBridgeSettings(host),
             ).pipe(
               Effect.provideService(FileSystem.FileSystem, fileSystem),
               Effect.provideService(Path.Path, path),
@@ -2343,6 +2347,7 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
             });
           }
           const bridgedContext = yield* bridgedInstructionsForTurn({
+            host,
             targetDriver: CursorAgentSdk.CURSOR_PROVIDER,
             cwd: turnInput.runtimePolicy.cwd,
           });

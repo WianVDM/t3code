@@ -2,6 +2,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import {
   ANTIGRAVITY_DEFAULT_MODEL,
+  ContextBridgeSettings,
   ProviderInstanceId,
   type AntigravitySettings,
 } from "@t3tools/contracts";
@@ -52,7 +53,11 @@ function shellQuote(value: string): string {
 }
 
 const makeHarness = Effect.fn("makeAntigravityDriverHarness")(function* (
-  options: { readonly config?: Partial<AntigravitySettings>; readonly enabled?: boolean } = {},
+  options: {
+    readonly config?: Partial<AntigravitySettings>;
+    readonly enabled?: boolean;
+    readonly environment?: ReadonlyArray<{ name: string; value: string; sensitive: boolean }>;
+  } = {},
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -195,6 +200,7 @@ const makeHarness = Effect.fn("makeAntigravityDriverHarness")(function* (
       { name: "GEMINI_HOME", value: "/must-not-be-used" },
       { name: "ANTIGRAVITY_HARNESS_PATH", value: "/must-not-be-used" },
       { name: "BROWSER", value: "must-not-run" },
+      ...(options.environment ?? []),
     ].map((variable) => ({ ...variable, sensitive: false })),
   }).pipe(
     Effect.provide(layerInstallation),
@@ -237,35 +243,47 @@ const makeHarness = Effect.fn("makeAntigravityDriverHarness")(function* (
   };
 });
 
-const layerDeps = ServerConfig.layerTest(process.cwd(), {
-  prefix: "t3-antigravity-driver-config-",
-}).pipe(
-  Layer.provideMerge(NodeServices.layer),
-  Layer.provideMerge(
-    Layer.succeed(
-      HttpClient.HttpClient,
-      HttpClient.make(() => Effect.die("Unexpected quota request")),
+const makeLayerDeps = (settingsOverrides?: Parameters<typeof ServerSettings.layerTest>[0]) =>
+  ServerConfig.layerTest(process.cwd(), {
+    prefix: "t3-antigravity-driver-config-",
+  }).pipe(
+    Layer.provideMerge(NodeServices.layer),
+    Layer.provideMerge(
+      Layer.succeed(
+        HttpClient.HttpClient,
+        HttpClient.make(() => Effect.die("Unexpected quota request")),
+      ),
     ),
-  ),
-  Layer.provideMerge(ServerSettings.layerTest()),
-  Layer.provideMerge(
-    Layer.mock(BackgroundPolicy.BackgroundPolicy)({
-      shouldRunScopeWork: () => Effect.succeed(false),
-    }),
-  ),
-  Layer.provideMerge(
-    Layer.succeed(
-      ProviderEventLoggers.ProviderEventLoggers,
-      ProviderEventLoggers.NoOpProviderEventLoggers,
+    Layer.provideMerge(ServerSettings.layerTest(settingsOverrides)),
+    Layer.provideMerge(
+      Layer.mock(BackgroundPolicy.BackgroundPolicy)({
+        shouldRunScopeWork: () => Effect.succeed(false),
+      }),
     ),
-  ),
-  Layer.provideMerge(ModelManifest.layerTest),
-  Layer.provideMerge(IdAllocator.layer),
-  Layer.provideMerge(McpProviderSessions.layer),
-);
+    Layer.provideMerge(
+      Layer.succeed(
+        ProviderEventLoggers.ProviderEventLoggers,
+        ProviderEventLoggers.NoOpProviderEventLoggers,
+      ),
+    ),
+    Layer.provideMerge(ModelManifest.layerTest),
+    Layer.provideMerge(IdAllocator.layer),
+    Layer.provideMerge(McpProviderSessions.layer),
+  );
 const layerTest = ProviderHostLive.layer.pipe(
   Layer.provideMerge(ServerSecretStore.layer),
-  Layer.provideMerge(layerDeps),
+  Layer.provideMerge(makeLayerDeps()),
+);
+const layerTestBridged = ProviderHostLive.layer.pipe(
+  Layer.provideMerge(ServerSecretStore.layer),
+  Layer.provideMerge(
+    makeLayerDeps({
+      contextBridge: Schema.decodeSync(ContextBridgeSettings)({
+        enabled: true,
+        routes: { antigravity: { skills: "claudeAgent" } },
+      }),
+    }),
+  ),
 );
 
 it.layer(layerTest)("AntigravityDriver", (it) => {
@@ -405,6 +423,39 @@ it.layer(layerTest)("AntigravityDriver", (it) => {
         );
         expect(yield* fs.exists(directories.runtimeTemp)).toBe(false);
         expect(yield* fs.exists(legacyRoot)).toBe(false);
+      }).pipe(Effect.scoped),
+  );
+});
+
+it.layer(NodeServices.layer)("AntigravityDriver context bridge", (it) => {
+  it.effect.skipIf(windowsHost)(
+    "syncs bridged skills into the profile without ProviderHost in the runtime context",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const userHome = yield* fs.makeTempDirectoryScoped({
+          prefix: "t3-antigravity-bridge-home-",
+        });
+        const skillDir = path.join(userHome, ".claude", "skills", "bridge-skill");
+        yield* fs.makeDirectory(skillDir, { recursive: true });
+        yield* fs.writeFileString(
+          path.join(skillDir, "SKILL.md"),
+          "---\nname: bridge-skill\ndescription: Bridged skill.\n---\n",
+        );
+        // Construction sees the real ProviderHostLive (as in production);
+        // the runtime/turn context — this block's layer — does not.
+        const h = yield* makeHarness({
+          environment: [{ name: "HOME", value: userHome, sensitive: false }],
+        }).pipe(Effect.provide(layerTestBridged));
+        yield* h.refresh();
+        const configSkills = path.join(h.profileDirectory, "config", "skills");
+        expect(yield* fs.exists(path.join(configSkills, "bridge-skill", "SKILL.md"))).toBe(true);
+        const marker = JSON.parse(
+          yield* fs.readFileString(path.join(configSkills, ".t3-context-bridge.json")),
+        );
+        expect(marker.owned).toEqual(["bridge-skill"]);
+        yield* h.assertClosed;
       }).pipe(Effect.scoped),
   );
 });

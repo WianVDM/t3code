@@ -17,6 +17,7 @@ import {
   makeReplayServerConfig,
   type OrchestratorV2ProviderReplayHarness,
 } from "../testkit/ProviderReplayHarness.ts";
+import * as TestProviderHost from "@t3tools/provider-testing/TestProviderHost";
 import type { ProviderReplayGate } from "@t3tools/provider-testing/replayGate";
 import * as CodexAdapterV2 from "./CodexAdapterV2.ts";
 
@@ -140,6 +141,7 @@ export function layer(input: {
         layerServerConfig,
         NodeServices.layer,
         IdAllocator.layer,
+        TestProviderHost.layer().pipe(Layer.provide(NodeServices.layer)),
       ),
     ),
   );

@@ -1,6 +1,6 @@
 // Scan skills without opening an ACP session and starting its MCP servers.
 
-import type { ServerProviderSkill } from "@t3tools/contracts";
+import type { ContextBridgeSettings, ServerProviderSkill } from "@t3tools/contracts";
 import * as ByteSize from "effect/ByteSize";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -11,7 +11,6 @@ import { parse as parseYamlDocument } from "yaml";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 
 import { resolveBridgedSkillRoots } from "@t3tools/provider-core/server/contextBridge";
-import { currentContextBridgeSettings } from "@t3tools/provider-core/server/contextBridgeRuntime";
 
 const FRONTMATTER_PATTERN = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/;
 const SKILL_MENTION_PATTERN =
@@ -214,6 +213,10 @@ const discoverSkillsInRoot = Effect.fn("discoverCursorSkillsInRoot")(function* (
 const inspectCursorSkills = Effect.fn("inspectCursorSkills")(function* (
   cwd?: string,
   environment: NodeJS.ProcessEnv = process.env,
+  // Resolved by the caller from the host captured at construction; undefined
+  // means no bridge applies. Read per call so a settings change applies to
+  // the next snapshot without a restart.
+  contextBridge?: ContextBridgeSettings,
 ) {
   const path = yield* Path.Path;
   const userHome =
@@ -226,7 +229,6 @@ const inspectCursorSkills = Effect.fn("inspectCursorSkills")(function* (
     { directory: path.join(base, ".codex", "skills"), scope },
     { directory: path.join(base, ".claude", "skills"), scope },
   ];
-  const contextBridge = yield* currentContextBridgeSettings();
   const bridgedRoots =
     contextBridge === undefined
       ? null
@@ -283,15 +285,17 @@ const inspectCursorSkills = Effect.fn("inspectCursorSkills")(function* (
 export const discoverCursorSkills = Effect.fn("discoverCursorSkills")(function* (
   cwd?: string,
   environment: NodeJS.ProcessEnv = process.env,
+  contextBridge?: ContextBridgeSettings,
 ) {
-  return (yield* inspectCursorSkills(cwd, environment)).skills;
+  return (yield* inspectCursorSkills(cwd, environment, contextBridge)).skills;
 });
 
 export const probeCursorSkills = Effect.fn("probeCursorSkills")(function* (
   cwd?: string,
   environment: NodeJS.ProcessEnv = process.env,
+  contextBridge?: ContextBridgeSettings,
 ) {
-  const inspection = yield* inspectCursorSkills(cwd, environment);
+  const inspection = yield* inspectCursorSkills(cwd, environment, contextBridge);
   if (inspection.failureReason) {
     return yield* new CursorSkillsProbeError({
       reason: inspection.failureReason,

@@ -14,6 +14,7 @@ import {
   deriveAvailableDrivers,
   resolveDriverLabel,
   supportsContextBridgeHooks,
+  supportsContextBridgeSkills,
 } from "./contextBridgeSettings.logic";
 
 function makeMockInstanceEntry(
@@ -104,6 +105,27 @@ describe("contextBridgeSettings.logic", () => {
       expect(supportsContextBridgeHooks("claudeAgent")).toBe(false);
       expect(supportsContextBridgeHooks("pi")).toBe(false);
     });
+    it.each(["cursor", "grok", "opencode", "unknownDriver"])(
+      "returns false for non-antigravity driver %s",
+      (driver) => {
+        expect(supportsContextBridgeHooks(driver)).toBe(false);
+      },
+    );
+  });
+
+  describe("supportsContextBridgeSkills", () => {
+    it.each(["antigravity", "codex", "claudeAgent", "pi", "cursor", "opencode"])(
+      "returns true for allowlisted driver %s",
+      (driver) => {
+        expect(supportsContextBridgeSkills(driver)).toBe(true);
+      },
+    );
+    it.each(["muse", "grok", "unknownDriver"])(
+      "returns false for non-allowlisted driver %s",
+      (driver) => {
+        expect(supportsContextBridgeSkills(driver)).toBe(false);
+      },
+    );
   });
 
   describe("buildDefaultSourceOptions", () => {
