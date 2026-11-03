@@ -20,6 +20,7 @@ import {
   NonNegativeInt,
   ProjectId,
 } from "@t3tools/contracts";
+import * as Digest from "effect/crypto/Digest";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Schema from "effect/Schema";
 import { Tool, Toolkit } from "effect/ai";
@@ -257,7 +258,11 @@ const ThreadHandoverTool = Tool.make("t3_thread_handover", {
     link: Schema.optional(Schema.String),
     settlesWhenTurnEnds: Schema.Boolean,
   }),
-  dependencies: [...commandTool.dependencies, ThreadHandoverService.ThreadHandoverService],
+  dependencies: [
+    ...commandTool.dependencies,
+    ThreadHandoverService.ThreadHandoverService,
+    Digest.Digest,
+  ],
 })
   .annotate(Tool.Title, "Hand thread to a new top-level continuation")
   .annotate(Tool.Destructive, true)
