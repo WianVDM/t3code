@@ -43,6 +43,15 @@ vi.mock(import("./office/WordDocument"), async () => {
   };
 });
 
+// Vite serves the worker module through its transform with an inline source map, which dominated
+// this test under CPU contention. A blob of the raw file is the same code without that cost.
+vi.mock(import("pdfjs-dist/build/pdf.worker.min.mjs?url"), async () => {
+  const { default: source } = await import("pdfjs-dist/build/pdf.worker.min.mjs?raw");
+  return {
+    default: URL.createObjectURL(new Blob([source], { type: "text/javascript" })),
+  };
+});
+
 import { getClientSettings } from "~/hooks/useSettings";
 import { AttachmentFilePreview } from "./AttachmentFilePreview";
 import LargeTextViewer from "./LargeTextViewer";
