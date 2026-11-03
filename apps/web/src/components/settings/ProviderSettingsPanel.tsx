@@ -92,6 +92,7 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { AddProviderInstanceDialog } from "./AddProviderInstanceDialog";
 import { useManagedPolicy } from "~/state/managedPolicy";
+import { ContextBridgeSettingsSection } from "./ContextBridgeSettings";
 import { ExpandableText } from "./ExpandableText";
 import { IntervalSecondsField } from "./IntervalSecondsField";
 import { ProviderInstanceCard } from "./ProviderInstanceCard";
@@ -988,6 +989,11 @@ export function EnvironmentProviderSettings({
 
   return (
     <>
+      <ContextBridgeSettingsSection
+        environmentId={environmentId}
+        readOnly={readOnly || !canWriteSettings}
+      />
+
       <SettingsSection
         {...searchableSetting("providers")}
         variant="plain"

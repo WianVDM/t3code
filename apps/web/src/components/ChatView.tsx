@@ -251,6 +251,7 @@ import {
   useThreadUpdatedAt,
   useThreadLastVisitedAt,
   useQuietThreadVisibleTurnItems,
+  useThreadVisibleTurnItems,
   useThreadStatus,
   useThreadHistory,
   useQuietThreadShell,
@@ -264,6 +265,7 @@ import {
   BranchRestoreConfirmHost,
   DeviceSetupDialogHost,
   openBranchRestoreConfirm,
+  ProcessDetailsDialogHost,
   PullRequestThreadDialogHost,
   RevertConfirmHost,
 } from "./chat/ChatOverlayHosts";
@@ -529,6 +531,7 @@ export default function ChatView(props: ChatViewProps) {
     activeProviderThread,
   );
   const serverVisibleTurnItems = useQuietThreadVisibleTurnItems(routeThreadDetailRef);
+  const fullServerVisibleTurnItems = useThreadVisibleTurnItems(routeThreadDetailRef);
   const serverThreadHistory = useThreadHistory(routeThreadDetailRef);
   const threadHistoryControls = (() => {
     if (routeThreadDetailRef === null || !shouldShowLoadEarlierControl(serverThreadHistory)) {
@@ -2395,8 +2398,10 @@ export default function ChatView(props: ChatViewProps) {
     childInputNow,
     goalNow,
     handleSwitchCheckoutToThread,
+    handleStopBackgroundWorkStable,
     handleSwitchCheckoutToThreadStable,
     isRestoringThreadBranch,
+    isStoppingBackgroundWork,
     onOpenRelatedThreadStable,
     sendStandaloneCommand,
     setBranchMismatchDismissTick,
@@ -3904,6 +3909,8 @@ export default function ChatView(props: ChatViewProps) {
                   onAddProjectScript={saveProjectScriptStable}
                   onUpdateProjectScript={updateProjectScriptStable}
                   onDeleteProjectScript={deleteProjectScriptStable}
+                  isStoppingBackgroundWork={isStoppingBackgroundWork}
+                  onStopBackgroundWork={handleStopBackgroundWorkStable}
                   usage={{
                     providerInstanceId: activeProviderInstanceId,
                     providers: providerStatuses,
@@ -3918,6 +3925,15 @@ export default function ChatView(props: ChatViewProps) {
                   threadId={activeThread.id}
                   cwd={activeProject?.workspaceRoot ?? null}
                   onPrepared={handlePreparedPullRequestThreadStable}
+                />
+
+                <ProcessDetailsDialogHost
+                  threadKey={activeThreadKey}
+                  environmentId={activeThread.environmentId}
+                  visibleTurnItems={fullServerVisibleTurnItems}
+                  cwd={gitCwd ?? undefined}
+                  workspaceRoot={activeProject?.workspaceRoot}
+                  onOpenToolDiff={onOpenToolDiffStable}
                 />
               </>
             )}

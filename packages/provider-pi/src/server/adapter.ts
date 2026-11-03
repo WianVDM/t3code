@@ -56,6 +56,7 @@ import {
   makeProviderRetryTurnItem,
 } from "@t3tools/provider-core/server/failure";
 import { turnScopedSelectionTransition } from "@t3tools/provider-core/server/selectionTransition";
+import { bridgedContextForTurn } from "@t3tools/provider-core/server/contextBridgeRuntime";
 import {
   makePiRpcConnection,
   parsePiModelSlug,
@@ -68,9 +69,14 @@ import {
 import {
   buildPiRpcLaunch,
   materializePiT3McpExtension,
+  piT3ContextBridgeReportPath,
+  removePiT3SessionScopedFiles,
   resolvePiLaunchArgs,
 } from "./mcpInjection.ts";
-import { PI_FILE_CHANGE_TOOLS } from "./mcpExtensionSource.ts";
+import {
+  PI_FILE_CHANGE_TOOLS,
+  type PiContextBridgeExtensionPayload,
+} from "./mcpExtensionSource.ts";
 
 export const PI_PROVIDER = ProviderDriverKind.make("pi");
 const PI_DRIVER_KIND = PI_PROVIDER;
@@ -462,9 +468,30 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
               }),
           ),
         );
-      // Always inject the permission hook even without MCP credentials; otherwise Supervised becomes unrestricted.
+      // Materialize the extension even when this session has no MCP credential so Supervised
+      // never silently degrades to unrestricted tool execution. A bridged context route embeds
+      // into a session-specific extension file; resolution failures log a context-bridge warning
+      // and yield stock pi.
+      const bridgedContext = yield* bridgedContextForTurn({
+        targetDriver: PI_PROVIDER,
+        cwd,
+      });
+      const contextBridge: PiContextBridgeExtensionPayload | undefined =
+        bridgedContext.instructions === null && bridgedContext.skillRoots === null
+          ? undefined
+          : {
+              instructions: bridgedContext.instructions,
+              skillRoots: [
+                ...(bridgedContext.skillRoots?.global ?? []),
+                ...(bridgedContext.skillRoots?.project ?? []),
+              ],
+            };
+
       const extensionPath = yield* provideCacheFs(
-        materializePiT3McpExtension(host.paths.providerStatusCacheDir),
+        materializePiT3McpExtension(host.paths.providerStatusCacheDir, {
+          contextBridge,
+          sessionId: input.providerSessionId,
+        }),
       );
       const resolvedLaunchArgs = resolvePiLaunchArgs(options.settings.launchArgs);
       if (!resolvedLaunchArgs.ok) {
@@ -476,6 +503,13 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
         mcpSession,
         extensionPath,
         runtimeMode: input.runtimePolicy.runtimeMode,
+        contextBridgeReportPath:
+          contextBridge === undefined
+            ? undefined
+            : piT3ContextBridgeReportPath(
+                host.paths.providerStatusCacheDir,
+                input.providerSessionId,
+              ),
       });
       const scopedLaunch = yield* agentScope.wrap({
         command: options.settings.binaryPath || "pi",
@@ -553,6 +587,13 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
               rollbackBarrier,
               protocolError("Pi session closed during rollback"),
             );
+          // Unbridged sessions share the static extension file; only a
+          // bridged session owns files to remove.
+          if (contextBridge !== undefined)
+            yield* removePiT3SessionScopedFiles(
+              host.paths.providerStatusCacheDir,
+              input.providerSessionId,
+            ).pipe(Effect.provideService(FileSystem.FileSystem, fileSystem));
         }),
       );
       let appliedModel: string | null = null;

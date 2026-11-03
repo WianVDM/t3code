@@ -30,6 +30,7 @@ import {
   discoverPiCommandsForCwd,
   enrichPiSnapshot,
 } from "./status.ts";
+import { readKimiCodeAccount } from "./usageLimits.ts";
 import { makeManagedServerProvider } from "@t3tools/provider-core/server/managedProvider";
 import {
   defaultProviderContinuationIdentity,
@@ -195,11 +196,21 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv, Path.Path> = {
           if (!draft.enabled || !draft.installed || draft.auth.status !== "authenticated") {
             return draft;
           }
-          const usageAccounts = yield* upstreamUsageAccounts;
-          return usageAccounts.length > 0 ? { ...draft, usageAccounts } : draft;
+          const [{ usageLimits }, usageAccounts] = yield* Effect.all([
+            readKimiCodeAccount(processEnv),
+            upstreamUsageAccounts,
+          ]);
+          return {
+            ...draft,
+            usageLimits,
+            ...(usageAccounts.length > 0 ? { usageAccounts } : {}),
+          };
         }),
       ),
       Effect.map(stampIdentity),
+      Effect.provideService(HttpClient.HttpClient, httpClient),
+      Effect.provideService(FileSystem.FileSystem, fileSystem),
+      Effect.provideService(Path.Path, pathService),
       Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
     );
 

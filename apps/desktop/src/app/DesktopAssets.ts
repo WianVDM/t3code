@@ -6,6 +6,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
+import { FORK_DESKTOP_APP } from "./DesktopVariant.ts";
 
 export interface DesktopIconPaths {
   readonly ico: Option.Option<string>;
@@ -79,6 +80,18 @@ function resolveSourceTreeIconPath(
   ext: keyof DesktopIconPaths,
 ): string | undefined {
   if (environment.isPackaged || ext === "icns") return undefined;
+  // Fork artwork ships as a Windows .ico only; other formats fall through to
+  // resource probing and simply resolve to none in the source tree.
+  if (environment.desktopVariant === "fork") {
+    return ext === "ico"
+      ? environment.path.join(
+          environment.rootDir,
+          "assets",
+          "fork",
+          FORK_DESKTOP_APP.windowsIconFileName,
+        )
+      : undefined;
+  }
   const brand = environment.isDevelopment ? "dev" : "prod";
   const fileNames = sourceTreeIconFileNames[brand];
   const fileName =

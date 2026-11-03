@@ -44,6 +44,8 @@ import { SidebarBrandWidthProbe } from "./sidebar/SidebarChrome";
 import { isAppModalPage } from "./sidebar/mainAppLocation";
 import type { SidebarRouteReveal } from "./sidebar/routeReveal";
 import { useSidebarStageBackdropVariant } from "./SidebarStageBackdrop";
+import { registerNewThreadRunner } from "../state/upstreamRelease";
+import { useNewThreadHandler } from "../hooks/useHandleNewThread";
 import {
   clampThreadSidebarWidth,
   resolveInitialThreadSidebarWidth,
@@ -431,6 +433,13 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
     subscribeToWindowFullscreen,
     readWindowFullscreen,
   );
+  // This layout stays mounted across chat and Settings, so it owns the runner
+  // both surfaces' toast actions invoke.
+  const handleNewThread = useNewThreadHandler();
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- holds the new-thread runner registration while mounted
+  useEffect(() => {
+    return registerNewThreadRunner(handleNewThread);
+  }, [handleNewThread]);
   const windowControlsInsetStyle = (
     isMacosDesktop && !isWindowFullscreen
       ? { "--workspace-controls-left": MACOS_TRAFFIC_LIGHTS_LEFT_INSET }

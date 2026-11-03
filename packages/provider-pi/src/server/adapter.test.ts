@@ -2,6 +2,7 @@ import { assert, describe, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   CheckpointId,
+  DEFAULT_SERVER_SETTINGS,
   ChatAttachmentId,
   EnvironmentId,
   NodeId,
@@ -30,6 +31,7 @@ import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
+import * as Scope from "effect/Scope";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import * as ChildProcess from "effect/process/ChildProcess";
@@ -52,6 +54,8 @@ import {
   type PiAdapterV2Options,
 } from "./adapter.ts";
 import { makePiRpcConnection, type PiRpcRecord } from "./rpc.ts";
+import { piT3ContextBridgeReportPath } from "./mcpInjection.ts";
+import { PI_T3_MCP_EXTENSION_FILENAME } from "./mcpExtensionSource.ts";
 import { loadMcpBridge } from "./mcpBridge.testkit.ts";
 import { turnItemOutputText } from "../../../client-runtime/src/work-log/itemDetail.ts";
 
@@ -550,6 +554,51 @@ const startTurn = Effect.fnUntraced(function* (
 });
 
 describe("PiAdapterV2", () => {
+  it.effect("removes the session-scoped bridge files when the session closes", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const hostSettings = yield* TestProviderHost.TestProviderHostSettings;
+      yield* hostSettings.set({
+        ...DEFAULT_SERVER_SETTINGS,
+        contextBridge: {
+          enabled: true,
+          defaultSource: "claudeAgent",
+          routes: { pi: { instructions: "claudeAgent" } },
+        },
+      });
+      const host = yield* ProviderHost.ProviderHost;
+      const cacheDir = host.paths.providerStatusCacheDir.replace(/\\/g, "/");
+      const providerSessionId = ProviderSessionId.make("provider-session-pi-bridge-cleanup");
+      const fake = yield* makeFakePi;
+      const adapter = yield* makeAdapter(fake);
+
+      const sessionScope = yield* Scope.make();
+      yield* adapter
+        .openSession({
+          threadId: THREAD_ID,
+          providerSessionId,
+          modelSelection: modelSelection("default"),
+          runtimePolicy,
+        })
+        .pipe(Effect.provideService(Scope.Scope, sessionScope));
+
+      const sessionExtensionPath = `${cacheDir}/pi-t3-mcp-extension.${providerSessionId}.ts`;
+      const sharedExtensionPath = `${cacheDir}/${PI_T3_MCP_EXTENSION_FILENAME}`;
+      const reportPath = piT3ContextBridgeReportPath(cacheDir, providerSessionId);
+      assert.isTrue(yield* fs.exists(sessionExtensionPath));
+      // The generated extension inside pi writes the report; stand in for it.
+      yield* fs.makeDirectory(`${cacheDir}/context-bridge`);
+      yield* fs.writeFileString(reportPath, "{}");
+      yield* fs.writeFileString(sharedExtensionPath, "// shared extension");
+
+      yield* Scope.close(sessionScope, Exit.void);
+
+      assert.isFalse(yield* fs.exists(sessionExtensionPath));
+      assert.isFalse(yield* fs.exists(reportPath));
+      assert.isTrue(yield* fs.exists(sharedExtensionPath));
+    }).pipe(Effect.scoped, Effect.provide(layerTest)),
+  );
+
   it.effect("keeps native image bytes and the saved path in the prompt", () =>
     Effect.gen(function* () {
       const host = yield* ProviderHost.ProviderHost;

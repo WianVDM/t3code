@@ -10,6 +10,9 @@ import * as Schema from "effect/Schema";
 import { parse as parseYamlDocument } from "yaml";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 
+import { resolveBridgedSkillRoots } from "@t3tools/provider-core/server/contextBridge";
+import { currentContextBridgeSettings } from "@t3tools/provider-core/server/contextBridgeRuntime";
+
 const FRONTMATTER_PATTERN = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/;
 const SKILL_MENTION_PATTERN =
   /(^|\s)\p{Sc}(?![0-9][0-9_]*(?:[kKmMbBtT]|[eE][0-9]+)?(?:\s|$))(?=[a-zA-Z0-9:_-]*[a-zA-Z])([a-zA-Z0-9][a-zA-Z0-9:_-]*)(?=\s|$)/gu;
@@ -238,7 +241,29 @@ const inspectCursorSkills = Effect.fn("inspectCursorSkills")(function* (
     { directory: path.join(base, ".codex", "skills"), scope },
     { directory: path.join(base, ".claude", "skills"), scope },
   ];
+  const contextBridge = yield* currentContextBridgeSettings();
+  const bridgedRoots =
+    contextBridge === undefined
+      ? null
+      : resolveBridgedSkillRoots({
+          settings: contextBridge,
+          targetDriver: "cursor",
+          cwd,
+          userHome,
+        });
   const roots = [
+    ...(bridgedRoots === null
+      ? []
+      : [
+          ...bridgedRoots.global.map((directory) => ({
+            directory,
+            scope: "user" as const,
+          })),
+          ...bridgedRoots.project.map((directory) => ({
+            directory,
+            scope: "project" as const,
+          })),
+        ]),
     ...(cwd ? rootsBelow(cwd, "project") : []),
     ...rootsBelow(userHome, "user"),
     // Cursor syncs its built-in skills here; same-named user and project skills win.

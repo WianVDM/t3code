@@ -259,6 +259,8 @@ overrides:
   "@react-native-menu/menu": 2.0.0
   "@react-navigation/native-stack": 7.21.0
   dbus-next: 0.10.2
+  # Keep on the patched version. A fresh resolution would take a newer release and
+  # fail on the unused patch. Move this with patches/node-pty@*.patch.
   node-pty: 1.2.0-beta.15
   react-native-gesture-handler: 3.3.0
   react-native-reanimated: 4.7.1

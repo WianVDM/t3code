@@ -15,6 +15,7 @@ import {
   remainingPercent,
 } from "@t3tools/shared/usageLimits";
 import { formatUsd } from "@t3tools/shared/usageFormat";
+import type { ProviderDriverKind } from "@t3tools/contracts";
 import type { Popover as PopoverPrimitive } from "@base-ui/react/popover";
 import { normalizeProviderAccentColor } from "@t3tools/client-runtime/state/provider-instance-display";
 import { AlertTriangleIcon, ExternalLinkIcon, TicketIcon } from "lucide-react";
@@ -48,6 +49,7 @@ import {
   resetCreditsSummary,
   useResetCredit,
 } from "./UsageLimits";
+import { ModelVendorIcon, usesModelVendorIcon } from "./modelVendorIcon";
 
 function accountInitials(email: string): string {
   const [local = "", domain = ""] = email.split("@");
@@ -565,12 +567,14 @@ function PoolBar({
 }
 
 function PoolWindowCard({
+  driver,
   pool,
   color,
   now,
   label,
   description,
 }: {
+  readonly driver: ProviderDriverKind;
   readonly pool: LimitPoolWindow;
   readonly color: string;
   readonly now: number;
@@ -581,7 +585,12 @@ function PoolWindowCard({
   return (
     <div className="grid items-center gap-x-6 gap-y-3 rounded-lg border border-border/60 p-4 md:grid-cols-[11rem_minmax(0,1fr)]">
       <div className="flex flex-col gap-1">
-        <span className="text-sm font-medium text-foreground">{label ?? pool.label}</span>
+        <span className="flex items-center gap-2 text-sm font-medium text-foreground">
+          {usesModelVendorIcon(driver) ? (
+            <ModelVendorIcon name={pool.label} className="size-4 shrink-0" />
+          ) : null}
+          {label ?? pool.label}
+        </span>
         <span className="flex items-baseline gap-2">
           <span className="text-3xl font-semibold text-foreground tabular-nums">
             {pool.remainingPercent}%
@@ -654,6 +663,7 @@ function PoolSection({ pool, now }: { readonly pool: LimitPool; readonly now: nu
         const details = pool.driver === "cursor" ? cursorUsageWindowDetails(window.id) : undefined;
         return (
           <PoolWindowCard
+            driver={pool.driver}
             key={`${window.kind}:${window.id}`}
             pool={window}
             color={color}

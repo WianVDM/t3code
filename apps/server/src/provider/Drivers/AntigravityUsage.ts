@@ -17,6 +17,8 @@ import * as Path from "effect/Path";
 import { resolveAntigravityInstanceDirectories } from "../antigravityAuthSupport.ts";
 import { makeAntigravityUsageCache, readAntigravityUsage } from "./antigravityUsageReader.ts";
 
+const ANTIGRAVITY_ACP_DIR = "antigravity-acp";
+
 export class AntigravityUsage extends Context.Service<
   AntigravityUsage,
   {
@@ -62,8 +64,12 @@ const make = Effect.gen(function* () {
     instances,
     windowStartMs,
   }) {
-    const roots: Array<string> = [];
-    for (const instance of instances) roots.push(...(yield* dataRoots(instance.environment)));
+    const roots = new Set<string>();
+    for (const instance of instances) {
+      for (const root of yield* dataRoots(instance.environment)) {
+        roots.add(root);
+      }
+    }
     for (const { instanceId } of instances.filter((instance) => instance.configured)) {
       const directories = yield* resolveAntigravityInstanceDirectories(
         host.paths.stateDir,
@@ -80,7 +86,24 @@ const make = Effect.gen(function* () {
             }),
         ),
       );
-      roots.push(path.join(directories.profile, "antigravity-acp"));
+      roots.add(path.join(directories.profile, ANTIGRAVITY_ACP_DIR));
+    }
+    // Profile conversations persist under <stateDir>/providers/antigravity/<key>/antigravity-acp
+    // even when instances are unconfigured or were created under another state directory.
+    const providersDir = path.join(host.paths.stateDir, "providers", "antigravity");
+    const profileEntries = yield* fileSystem.readDirectory(providersDir).pipe(
+      Effect.catchReason("PlatformError", "NotFound", () => Effect.succeed([])),
+      Effect.mapError(
+        (cause) =>
+          new UsageReadError({
+            reason: "scanFailed",
+            detail: "Antigravity providers directory could not be read.",
+            cause,
+          }),
+      ),
+    );
+    for (const entry of profileEntries) {
+      roots.add(path.join(providersDir, entry, ANTIGRAVITY_ACP_DIR));
     }
     const conversationDirs = new Set<string>();
     for (const root of roots) {

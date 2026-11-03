@@ -100,6 +100,7 @@ import {
   resolveUsageShortcut,
   type UsageMetric,
 } from "./usageShortcuts";
+import { ModelVendorIcon, usesModelVendorIcon } from "./modelVendorIcon";
 import { PROVIDER_ORDER, PROVIDER_PRESENTATION, providersWithUsage } from "./usageProviders";
 import {
   readUsagePagePreferences,
@@ -956,7 +957,17 @@ function UsageOverview({
                             !hasBar && "py-1",
                           )}
                         >
-                          <ProviderMark provider={model.provider} className="size-3.5" />
+                          {usesModelVendorIcon(PROVIDER_PRESENTATION[model.provider].driverKind) ? (
+                            <ModelVendorIcon
+                              name={model.model}
+                              className="size-3.5"
+                              fallback={
+                                <ProviderMark provider={model.provider} className="size-3.5" />
+                              }
+                            />
+                          ) : (
+                            <ProviderMark provider={model.provider} className="size-3.5" />
+                          )}
                           {model.model}
                         </button>
                         {hasBar ? (

@@ -10,6 +10,8 @@ import { fromLenientJson } from "@t3tools/shared/schemaJson";
 import { SKILL_MENTION_PATTERN } from "@t3tools/shared/composerInlineTokens";
 import { parse as parseYamlDocument } from "yaml";
 
+import { resolveBridgedSkillRoots } from "@t3tools/provider-core/server/contextBridge";
+import { currentContextBridgeSettings } from "@t3tools/provider-core/server/contextBridgeRuntime";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 
 type ClaudeSkillScope = "user" | "project";
@@ -484,7 +486,7 @@ export function claudeLaunchArgDirectories(launchArgs?: string): ReadonlyArray<s
   return directories;
 }
 
-/** First name wins, matching Claude Code's precedence of user skills over project skills. */
+/** First name wins, including bridged source roots, matching Claude Code's precedence. */
 export const discoverClaudeSkills = Effect.fn("discoverClaudeSkills")(function* (
   config: Pick<ClaudeSettings, "homePath"> & Partial<Pick<ClaudeSettings, "launchArgs">>,
   cwd?: string,
@@ -499,7 +501,27 @@ export const discoverClaudeSkills = Effect.fn("discoverClaudeSkills")(function* 
     environment ?? process.env,
   );
 
+  const contextBridge = yield* currentContextBridgeSettings();
+  const bridgedRoots =
+    contextBridge === undefined
+      ? null
+      : resolveBridgedSkillRoots({
+          settings: contextBridge,
+          targetDriver: "claudeAgent",
+          cwd,
+          userHome: yield* HostProcess.HomeDirectory,
+        });
+
   const roots: ReadonlyArray<ClaudeSkillRoot> = [
+    ...(bridgedRoots === null
+      ? []
+      : [
+          ...bridgedRoots.global.map((directory) => ({ directory, scope: "user" as const })),
+          ...bridgedRoots.project.map((directory) => ({
+            directory,
+            scope: "project" as const,
+          })),
+        ]),
     { directory: path.join(configDirPath, "skills"), scope: "user" },
     ...(cwd ? [{ directory: path.join(cwd, ".claude", "skills"), scope: "project" as const }] : []),
     ...claudeLaunchArgDirectories(config.launchArgs)

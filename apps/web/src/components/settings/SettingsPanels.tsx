@@ -63,6 +63,8 @@ import { ThreadTitleInstructionsSettings } from "./ThreadTitleInstructionsSettin
 import { SnoozePresetsRow } from "./SnoozePresetsSettings";
 import { useDesktopUpdateState } from "../../state/desktopUpdate";
 import { managedTelemetryOffMessage, usePrimaryManagedPolicy } from "../../state/managedPolicy";
+import { runManualUpstreamCheck } from "../../state/upstreamRelease";
+import { UpstreamReleaseRow } from "./UpstreamReleaseRow";
 import {
   getCustomModelOptionsByInstance,
   resolveAppModelSelectionState,
@@ -145,6 +147,7 @@ const QUIT_CONFIRMATION_MODE_LABELS: Record<QuitConfirmationMode, string> = {
 };
 
 const DEFAULT_DRIVER_KIND = ProviderDriverKind.make("codex");
+
 function AboutVersionSection() {
   const updateState = useDesktopUpdateState();
   const [switchChannel, setSwitchChannel] = useState<DesktopUpdateChannel | null>(null);
@@ -247,6 +250,7 @@ function AboutVersionSection() {
     }
 
     if (typeof bridge.checkForUpdate !== "function") return;
+    void runManualUpstreamCheck();
     void bridge
       .checkForUpdate()
       .then((result) => {
@@ -321,6 +325,7 @@ function AboutVersionSection() {
           </Tooltip>
         }
       />
+      <UpstreamReleaseRow />
       {hasDesktopBridge ? (
         <SettingsRow
           {...searchableSetting("update-track")}

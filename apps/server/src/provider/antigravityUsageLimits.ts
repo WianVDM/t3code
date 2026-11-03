@@ -19,6 +19,9 @@ const ENDPOINTS = [
   "https://daily-cloudcode-pa.googleapis.com",
   "https://cloudcode-pa.googleapis.com",
 ];
+// The quota endpoint gates its groups by client version: 1.x only returns the
+// Claude/GPT group, 2.x adds Gemini, and the hub build adds Gemini 4 Argon.
+const USER_AGENT_VERSION = "2.25.0";
 const SUMMARY_WINDOW_MINS = new Map([
   ["5h", 5 * 60],
   ["weekly", 7 * 24 * 60],
@@ -287,7 +290,7 @@ export const makeAntigravityUsageProbe = Effect.fn("makeAntigravityUsageProbe")(
               HttpClientRequest.post(`${endpoint}/v1internal:${operation}`).pipe(
                 HttpClientRequest.setHeaders({
                   Authorization: `Bearer ${accessToken}`,
-                  "User-Agent": `antigravity/hub/2.24.0 (aidev_client; os_type=${platform}; arch=${architecture}; cl=963137146)`,
+                  "User-Agent": `antigravity/hub/${USER_AGENT_VERSION} (aidev_client; os_type=${platform}; arch=${architecture})`,
                 }),
                 HttpClientRequest.bodyJsonUnsafe(
                   token.project_id ? { project: token.project_id } : {},

@@ -2,6 +2,7 @@ import { useRef } from "react";
 
 import { APP_VERSION } from "../../branding";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
+import { isForkDesktopBuild } from "../upstreamRelease.logic";
 import { showAnchoredCopySuccessToast } from "../ui/anchoredCopyToast";
 import { InlineButton } from "../ui/button";
 import { stackedThreadToast, toastManager } from "../ui/toast";
@@ -25,7 +26,7 @@ export function AboutVersionTitle() {
 
   return (
     <span className="inline-flex items-baseline gap-2">
-      <span>Version</span>
+      <span>{isForkDesktopBuild ? "Fork version" : "Version"}</span>
       <code className="text-2xs font-medium">
         <Tooltip>
           <TooltipTrigger

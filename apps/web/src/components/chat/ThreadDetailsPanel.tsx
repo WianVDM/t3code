@@ -22,6 +22,7 @@ import { OpenInPicker } from "./OpenInPicker";
 import { ThreadDetailsSection } from "./ThreadDetailsSection";
 import { ThreadAutomationsPanel } from "./ThreadAutomationsPanel";
 import { ThreadRelationshipsPanel } from "./ThreadRelationshipsControl";
+import { ThreadProcessesPanel } from "./ThreadProcessesPanel";
 import { ThreadServersPanel } from "./ThreadServersPanel";
 import {
   ThreadDetailsContext,
@@ -83,6 +84,8 @@ interface ThreadDetailsPanelProps extends Pick<
     input: NewProjectScriptInput,
   ) => Promise<ProjectScriptActionResult>;
   onDeleteProjectScript: (scriptId: string) => Promise<ProjectScriptActionResult>;
+  isStoppingBackgroundWork: boolean;
+  onStopBackgroundWork: () => void;
   usage: ThreadDetailsUsageInput;
 }
 
@@ -255,6 +258,15 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
                   threadId={props.threadId}
                   showLineage={visible.lineage}
                   showSideChats={visible.sideChats}
+                />
+              ) : null}
+
+              {density === "full" && !props.draftId ? (
+                <ThreadProcessesPanel
+                  environmentId={props.environmentId}
+                  threadId={props.threadId}
+                  isStoppingBackgroundWork={props.isStoppingBackgroundWork}
+                  onStopBackgroundWork={props.onStopBackgroundWork}
                 />
               ) : null}
 

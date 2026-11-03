@@ -63,6 +63,7 @@ import {
 } from "@t3tools/provider-core/server/nativeProtocolLogging";
 import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/instanceEnvironment";
 import { t3OrchestrationSystemPrompt } from "@t3tools/provider-core/server/orchestrationInstructions";
+import { bridgedInstructionsForTurn } from "@t3tools/provider-core/server/contextBridgeRuntime";
 import { buildRuntimeInstructions } from "@t3tools/provider-core/server/runtimeInstructions";
 import * as OpenCodeRuntime from "./OpenCodeRuntime.ts";
 import { readableProviderErrorMessage } from "./providerErrorMessage.ts";
@@ -2945,7 +2946,7 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
 
         // OpenCode runs each step with the agent and system prompt of the latest
         // user message, so every prompt in a turn, steers included, repeats them.
-        const turnPromptOptions = (turn: ActiveOpenCodeTurn) => {
+        const turnPromptOptions = (turn: ActiveOpenCodeTurn, bridgedContext?: string) => {
           const agent =
             getModelSelectionStringOptionValue(turn.modelSelection, "agent") ??
             (turn.runtimePolicy.interactionMode === "plan" ? "plan" : undefined);
@@ -2955,7 +2956,11 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
             ...(variant === undefined ? {} : { variant }),
             system: [
               orchestrationSystemPrompt,
-              buildRuntimeInstructions({ harness: "OpenCode", model: turn.modelSelection.model }),
+              buildRuntimeInstructions({
+                harness: "OpenCode",
+                model: turn.modelSelection.model,
+                bridgedContext,
+              }),
             ]
               .filter(Boolean)
               .join("\n\n"),
@@ -3284,6 +3289,10 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
                 );
                 return;
               }
+              const bridgedContext = yield* bridgedInstructionsForTurn({
+                targetDriver: OPENCODE_PROVIDER,
+                cwd: turnInput.runtimePolicy.cwd,
+              });
               yield* submitPrompt(
                 state,
                 turn,
@@ -3291,7 +3300,7 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
                   sessionID: sessionId,
                   messageID: turn.admissionMessageId!,
                   model: parsedModel,
-                  ...turnPromptOptions(turn),
+                  ...turnPromptOptions(turn, bridgedContext),
                   parts,
                 },
                 admissionAbortController!,
@@ -3395,6 +3404,10 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
                 turn.usage.promptMessageIds.add(turn.admissionMessageId);
               const admissionSettled = turn.admissionSettled;
               const admissionAbortController = turn.admissionAbortController;
+              const bridgedContext = yield* bridgedInstructionsForTurn({
+                targetDriver: OPENCODE_PROVIDER,
+                cwd: turn.runtimePolicy.cwd,
+              });
               yield* submitPrompt(
                 state,
                 turn,
@@ -3402,7 +3415,7 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
                   sessionID: sessionId,
                   messageID: turn.admissionMessageId,
                   model: parsedModel,
-                  ...turnPromptOptions(turn),
+                  ...turnPromptOptions(turn, bridgedContext),
                   parts,
                 },
                 admissionAbortController!,

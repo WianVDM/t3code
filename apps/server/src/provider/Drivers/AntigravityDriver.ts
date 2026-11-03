@@ -5,6 +5,7 @@ import { resolveSelfInvocation } from "@t3tools/shared/nodeRuntime";
 import {
   NodeRuntimeUnavailableError,
   nodeRuntimeUnavailableMessage,
+  resolveNodeExecutable,
 } from "@t3tools/shared/nodeRuntime";
 import * as Digest from "effect/crypto/Digest";
 import * as SecureRandom from "effect/crypto/SecureRandom";
@@ -21,6 +22,8 @@ import { HttpClient } from "effect/http";
 import type { AcpError } from "effect-acp/errors";
 
 import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
+import { resolveContextBridgeSource } from "@t3tools/provider-core/server/contextBridge";
+import { currentContextBridgeSettings } from "@t3tools/provider-core/server/contextBridgeRuntime";
 import {
   isAntigravityTextGenerationAvailable,
   makeAntigravityTextGeneration,
@@ -67,6 +70,11 @@ import {
 import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/instanceEnvironment";
 import { withInstanceIdentity } from "@t3tools/provider-core/server/instanceIdentity";
 import { discoverAntigravitySkills, resolveAntigravityUserHome } from "./AntigravitySkills.ts";
+import {
+  needsAntigravityContextBridgeSync,
+  syncAntigravityContextBridgeProfile,
+  type AntigravityContextBridgeSyncInput,
+} from "../antigravityContextBridge.ts";
 
 const DRIVER = ProviderDriverKind.make("antigravity");
 const decodeSettings = Schema.decodeSync(AntigravitySettings);
@@ -200,12 +208,20 @@ export const AntigravityDriver: ProviderDriver<
             }),
         ),
       );
+      // Context bridge settings are read per runtime so a change applies
+      // to the next session without a server restart. An unreadable
+      // snapshot skips bridging; it must never cost the session.
+      const contextBridge = yield* currentContextBridgeSettings();
+      const bridgeSkills =
+        contextBridge !== undefined &&
+        resolveContextBridgeSource(contextBridge, DRIVER, "skills") !== null;
       const profile = yield* prepareAntigravityProfile({
         profileDirectory,
         baseEnv: processEnvironment,
         auth,
         userHome,
         tempDirectory: directories.runtimeTemp,
+        linkUserSkills: !bridgeSkills,
       }).pipe(
         Effect.provideService(FileSystem.FileSystem, fileSystem),
         Effect.provideService(Path.Path, path),
@@ -221,6 +237,52 @@ export const AntigravityDriver: ProviderDriver<
             : cause,
         ),
       );
+      // Sync only when a bridged route can change the profile or a
+      // previous bridge run left an ownership marker to clean up;
+      // otherwise the profile is already what stock T3 Code would leave,
+      // and no Node binary is resolved for the hook shim.
+      if (
+        contextBridge !== undefined &&
+        needsAntigravityContextBridgeSync({
+          geminiHome: profile.geminiHome,
+          contextBridge,
+        })
+      ) {
+        // The hook shim is an external process, so it needs a real Node.
+        // Packaged builds resolve one from PATH; without one, the agent
+        // environment's ELECTRON_RUN_AS_NODE=1 runs the T3 executable as
+        // Node instead (the prototype's invocation).
+        const hostExecutable = yield* HostProcess.ExecutablePath;
+        const nodeExecutable = yield* resolveNodeExecutable("Antigravity", processEnvironment).pipe(
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
+          Effect.provideService(Path.Path, path),
+          Effect.catch((error) =>
+            Effect.logWarning("context-bridge.node-resolve-failed", { cause: error }).pipe(
+              Effect.as(hostExecutable),
+            ),
+          ),
+        );
+        const syncInput: AntigravityContextBridgeSyncInput = {
+          geminiHome: profile.geminiHome,
+          cwd: input.cwd,
+          userHome,
+          platform: profile.platform,
+          contextBridge,
+          nodeExecutable,
+        };
+        // Defensive net on top of the sync's own never-throw contract:
+        // bridging must never fail a session.
+        const syncResult = yield* Effect.sync(() => {
+          try {
+            return syncAntigravityContextBridgeProfile(syncInput);
+          } catch (cause) {
+            return { warnings: [`context-bridge: profile sync defect: ${String(cause)}`] };
+          }
+        });
+        for (const warning of syncResult.warnings) {
+          yield* Effect.logWarning(warning);
+        }
+      }
       // Use one directory per process; shared cleanup could delete files another session still reads.
       // Remove after the child dies, best-effort on Windows where handles may outlive the kill;
       // the next driver start sweeps leftovers.

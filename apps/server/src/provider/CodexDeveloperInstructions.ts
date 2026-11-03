@@ -35,6 +35,8 @@ export interface CodexRuntimeInfo {
   readonly model: string;
   readonly modelName?: string | undefined;
   readonly reasoningEffort?: string | undefined;
+  /** Context bridge block resolved for this turn; appended to the runtime instructions. */
+  readonly bridgedContext?: string | undefined;
 }
 
 /** Keep this outside collaboration mode; model-catalog mode text overrides client developer_instructions. */

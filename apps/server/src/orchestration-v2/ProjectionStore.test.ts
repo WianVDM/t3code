@@ -893,7 +893,13 @@ it.effect("SQL shells use the latest subagent owner for duplicate provider-threa
       }
     });
     const owned = [
-      { taskId: nativeTaskId, description: item.title, kind: "subagent", providerInstanceId },
+      {
+        taskId: nativeTaskId,
+        description: item.title,
+        startedAt: DateTime.formatIso(item.startedAt!),
+        kind: "subagent",
+        providerInstanceId,
+      },
     ];
     yield* assertOwners(threadId, owned);
     yield* assertOwners(otherThreadId, owned);
@@ -7734,6 +7740,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
           taskId: "pull-request-watch:github.com/pingdotgg/t3code#7",
           description: "Watching pull request #7",
           kind: "monitor",
+          startedAt: DateTime.formatIso(at),
           awaited: true,
         },
       ]);

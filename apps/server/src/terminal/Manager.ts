@@ -293,6 +293,11 @@ interface TerminalSessionState {
   exitCode: number | null;
   exitSignal: number | null;
   updatedAt: string;
+  /**
+   * When the session's current PTY was spawned. Null until the spawn succeeds; only
+   * startSession sets it, so activity, resize, and attach never move it and a restart does.
+   */
+  startedAt: string | null;
   eventSequence: number;
   inputCount: number;
   cols: number;
@@ -415,6 +420,7 @@ function summary(session: TerminalSessionState): TerminalSummary {
     hasRunningSubprocess: session.hasRunningSubprocess,
     label: terminalWireLabel(session),
     updatedAt: session.updatedAt,
+    ...(session.startedAt === null ? {} : { startedAt: session.startedAt }),
   };
 }
 
@@ -2459,6 +2465,9 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       session.pendingProcessEvents = [];
       session.pendingProcessEventIndex = 0;
       session.processEventDrainRunning = false;
+      // A (re)start owns no PTY until a spawn succeeds; the previous process's start must
+      // not survive into a restart that is still starting or goes on to fail.
+      session.startedAt = null;
       session.updatedAt = startingAt;
       return [undefined, state] as const;
     });
@@ -2512,6 +2521,9 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
             const spawnResult = yield* trySpawn(shellCandidates, terminalEnv, session);
             ptyProcess = spawnResult.process;
             startedShell = spawnResult.shellLabel;
+            // The only truthful process start. startingAt predates shell resolution and
+            // spawn retries and remains startup metadata; it is never a PTY start.
+            const spawnedAt = yield* nowIso;
 
             const processPid = ptyProcess.pid;
             let eventsActivated = false;
@@ -2525,6 +2537,8 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
               session.shell = spawnResult.shell;
               session.pid = processPid;
               session.status = "running";
+              // Stamped only once the spawn succeeded, so a failed start reports no uptime.
+              session.startedAt = spawnedAt;
               // onExit may replay an exit immediately; accept it before subscribing.
               session.unsubscribeData = spawnResult.process.onData((data) => {
                 if (!enqueueProcessEvent(session, processPid, { type: "output", data })) {
@@ -2894,6 +2908,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         exitCode: null,
         exitSignal: null,
         updatedAt: yield* nowIso,
+        startedAt: null,
         eventSequence: 0,
         inputCount: 0,
         cols,
