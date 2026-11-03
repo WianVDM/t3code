@@ -152,11 +152,8 @@ const readSkill = Effect.fn("readAntigravitySkill")(function* (
 
 /**
  * Read failures remain typed so workspace snapshots do not cache partial results.
- *
- * When the context bridge routes this driver's skills to another provider, the
- * source provider's roots are scanned first (global, then project) and win name
- * collisions, followed by the native roots — the same merge the prototype
- * monkey-patch performed.
+ * When routed to another provider, the source's roots are scanned first (global, then
+ * project) and win name collisions, followed by the native roots.
  */
 export const discoverAntigravitySkills = Effect.fn("discoverAntigravitySkills")(function* (input: {
   readonly cwd: string;

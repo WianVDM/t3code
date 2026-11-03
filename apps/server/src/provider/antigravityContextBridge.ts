@@ -17,21 +17,9 @@ import {
 } from "./antigravityHookShimSource.ts";
 
 /**
- * Antigravity context bridge profile sync. Runs before each ACP runtime
- * spawns and reconciles the private profile
- * (`GEMINI_HOME`) with the current routes: bridged skills are linked into
- * `config/skills`, a bridged hooks route installs the hook shim and
- * `hooks.json`, and a native route restores exactly what T3 would have
- * created without the bridge.
- *
- * Only files the bridge wrote are ever removed. Skill links it created are
- * recorded in a marker file inside `config/skills`; a `hooks.json` is
- * bridge-owned only when its sole top-level key is `t3-context-bridge`.
- * Anything else at those paths is the user's own content and is left alone.
- *
- * Everything is best effort and synchronous (the prototype's shape): the
- * caller logs the returned warnings and continues; a sync failure must never
- * cost the session.
+ * Antigravity context bridge profile sync: reconciles the private profile (`GEMINI_HOME`)
+ * with the current routes. Only files the bridge wrote are ever removed. Everything is best
+ * effort and synchronous; a sync failure must never cost the session.
  *
  * @module provider/antigravityContextBridge
  */
@@ -386,12 +374,10 @@ export interface AntigravityContextBridgeSyncGateInput {
 }
 
 /**
- * Whether the profile needs a sync pass at all. A bridged skills or hooks
- * route always syncs. Otherwise the gate stays closed and the profile keeps
- * exactly what stock T3 Code left — unless a previous bridge run left one of
- * its ownership records (the skills marker, a bridge-owned `hooks.json`, or
- * the hook shim directory), in which case the sync still runs so turning the
- * bridge off cleans up what it wrote.
+ * A bridged skills or hooks route always syncs. Otherwise the gate stays closed and the
+ * profile keeps what stock T3 Code left, unless a previous bridge run left an ownership
+ * record (the skills marker, a bridge-owned `hooks.json`, or the hook shim directory), in
+ * which case the sync still runs so turning the bridge off cleans up what it wrote.
  */
 export function needsAntigravityContextBridgeSync(
   input: AntigravityContextBridgeSyncGateInput,

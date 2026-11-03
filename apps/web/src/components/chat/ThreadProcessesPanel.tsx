@@ -142,7 +142,7 @@ function ProcessGroupLabel(props: { readonly children: ReactNode }) {
 
 /**
  * Row-level elapsed for a live process. Every listed process is active by construction, so the
- * elapsed always ticks. An unknown start renders an em dash — never a fabricated 0m and never
+ * elapsed always ticks. An unknown start renders a dash, never a fabricated 0m and never
  * a proxy like updatedAt.
  */
 function ProcessRowElapsed(props: { readonly startedAt: string | null }) {
@@ -152,7 +152,7 @@ function ProcessRowElapsed(props: { readonly startedAt: string | null }) {
         className="shrink-0 text-2xs text-muted-foreground"
         aria-label="Elapsed time unavailable"
       >
-        —
+        –
       </span>
     );
   }

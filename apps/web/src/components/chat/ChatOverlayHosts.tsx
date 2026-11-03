@@ -3,13 +3,11 @@ import type {
   EnvironmentId,
   MessageId,
   OrchestrationV2ProjectedTurnItem,
-  RunId,
   ScopedThreadRef,
   ThreadId,
 } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import { Atom } from "effect/reactivity";
-import { useEffect } from "react";
 
 import { appAtomRegistry } from "~/rpc/atomRegistry";
 import { useRightPanelStore } from "~/rightPanelStore";
@@ -28,20 +26,27 @@ import { Button } from "../ui/button";
 import { Dialog, DialogHeader, DialogPanel, DialogPopup, DialogTitle } from "../ui/dialog";
 import { WizardPopup } from "../ui/wizard";
 import { V2ItemInspector } from "./V2ItemInspector";
+import type { ToolCallDiffTarget } from "../../diffPanelStore";
+import { registerThreadOverlay } from "./threadOverlayRetention";
 
 /**
  * Open state for overlays the chat view hosts. It lives in atoms rather than
  * ChatView state so opening or closing one renders only its host, not the
  * whole chat chrome. Each entry carries the thread it was opened for; a host
- * shows only its own thread's entry and drops it when the thread changes.
+ * shows only its own thread's entry, and leaving that thread's route drops it.
  */
 type ThreadOverlayAtom<T> = Atom.Writable<{ readonly threadKey: string; readonly value: T } | null>;
 
 function makeThreadOverlayAtom<T>(label: string): ThreadOverlayAtom<T> {
-  return Atom.make<{ readonly threadKey: string; readonly value: T } | null>(null).pipe(
+  const atom = Atom.make<{ readonly threadKey: string; readonly value: T } | null>(null).pipe(
     Atom.keepAlive,
     Atom.withLabel(`chat:${label}`),
   );
+  registerThreadOverlay((threadKey) => {
+    const entry = appAtomRegistry.get(atom);
+    if (entry !== null && entry.threadKey !== threadKey) closeThreadOverlay(atom);
+  });
+  return atom;
 }
 
 function closeThreadOverlay<T>(atom: ThreadOverlayAtom<T>): void {
@@ -50,12 +55,6 @@ function closeThreadOverlay<T>(atom: ThreadOverlayAtom<T>): void {
 
 function useThreadOverlay<T>(atom: ThreadOverlayAtom<T>, threadKey: string | null): T | null {
   const entry = useAtomValue(atom);
-  useEffect(
-    () => () => {
-      if (appAtomRegistry.get(atom)?.threadKey === threadKey) closeThreadOverlay(atom);
-    },
-    [atom, threadKey],
-  );
   return threadKey !== null && entry?.threadKey === threadKey ? entry.value : null;
 }
 
@@ -255,8 +254,7 @@ export function ProcessDetailsDialogHost(props: {
   readonly visibleTurnItems: ReadonlyArray<OrchestrationV2ProjectedTurnItem>;
   readonly cwd: string | undefined;
   readonly workspaceRoot: string | undefined;
-  readonly onOpenThread: (threadId: ThreadId) => void;
-  readonly onOpenTurnDiff: (runId: RunId, filePath?: string) => void;
+  readonly onOpenToolDiff: (target: ToolCallDiffTarget) => void;
 }) {
   const state = useThreadOverlay(processDetailsDialogAtom, props.threadKey);
   const live =
@@ -286,8 +284,7 @@ export function ProcessDetailsDialogHost(props: {
               environmentId={props.environmentId}
               cwd={props.cwd}
               workspaceRoot={props.workspaceRoot}
-              onOpenThread={props.onOpenThread}
-              onOpenTurnDiff={props.onOpenTurnDiff}
+              onOpenToolDiff={props.onOpenToolDiff}
             />
           ) : null}
         </DialogPanel>

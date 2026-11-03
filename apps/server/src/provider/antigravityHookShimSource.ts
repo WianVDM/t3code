@@ -1,14 +1,7 @@
 /**
- * Source of the Antigravity hook shim, written into the private profile at
- * sync time (`<geminiHome>/config/t3-context-bridge/agy-hook-shim.mjs`).
- *
- * The server ships inside an asar/SEA bundle, so an external process cannot
- * execute a file out of it; the shim travels as a string and lands on disk
- * next to its `shim.config.json`. It is self-contained: the route resolution
- * is precomputed by the sync and carried by the sibling config file.
- *
- * Authored without template literals so this `String.raw` embedding is
- * byte-exact: no backticks and no `${` may appear in the source below.
+ * Source of the Antigravity hook shim, written into the private profile at sync time. The
+ * server ships in an asar/SEA bundle so the shim travels as a string. No backticks or `${`
+ * may appear below so the `String.raw` embedding stays byte-exact.
  *
  * @module provider/antigravityHookShimSource
  */

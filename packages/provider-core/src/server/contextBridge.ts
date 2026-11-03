@@ -5,13 +5,10 @@ import * as NodePath from "node:path";
 import type { ContextBridgeSettings } from "@t3tools/contracts";
 
 /**
- * Context bridge: lets one provider harness run with another provider's
- * instruction files and skill roots. The catalog below is the behavioural
- * spec this module follows.
- *
- * File reads use synchronous `node:fs` because the call sites (adapter prompt
- * assembly, `buildRuntimeInstructions`) are synchronous; routing them through
- * Effect's FileSystem would force those signatures to change.
+ * Context bridge: lets one provider harness run with another provider's instruction
+ * files and skill roots. File reads use synchronous `node:fs` because the call sites
+ * (adapter prompt assembly, `buildRuntimeInstructions`) are synchronous; routing them
+ * through Effect's FileSystem would force those signatures to change.
  */
 
 export interface ContextBridgeCatalogEntry {
@@ -347,7 +344,7 @@ export function resolveBridgedInstructions(
 
   if (globals.length > 0) {
     sections.push(
-      "Global user instructions bridged by T3 Context Bridge (weakest tier — overridden by project and local instructions below):\n\n" +
+      "Global user instructions bridged by T3 Context Bridge (weakest tier, overridden by project and local instructions below):\n\n" +
         renderTier(globals, source),
     );
   }
@@ -359,7 +356,7 @@ export function resolveBridgedInstructions(
   }
   if (locals.length > 0) {
     sections.push(
-      "Local override instructions (*.local.md) bridged by T3 Context Bridge (highest precedence — override both global and project instructions above where they conflict):\n\n" +
+      "Local override instructions (*.local.md) bridged by T3 Context Bridge (highest precedence: override both global and project instructions above where they conflict):\n\n" +
         renderTier(locals, source),
     );
   }
@@ -384,11 +381,10 @@ export interface BridgedSkillRoots {
 }
 
 /**
- * Resolves the source provider's skill directories for a target driver.
- * Returns null when skills are native for the target; the caller then uses
- * only the target's own roots. Roots the target already loads natively (for
- * example `~/.claude/skills` when pi is the target) are filtered out so a
- * bridged skill never registers twice.
+ * Resolves the source provider's skill directories for a target driver. Returns null
+ * when skills are native for the target; the caller then uses only the target's own
+ * roots. Roots the target loads natively are filtered out so a bridged skill never
+ * registers twice.
  */
 export function resolveBridgedSkillRoots(input: ContextBridgeInput): BridgedSkillRoots | null {
   const { settings, targetDriver, cwd, userHome } = input;

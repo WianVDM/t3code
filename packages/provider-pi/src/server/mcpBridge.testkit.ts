@@ -64,7 +64,7 @@ export async function loadMcpBridge(
 ) {
   const handlerMap = new Map<string, Array<AgentStartHook>>();
   const handlers = {
-    get: (name: string) => handlerMap.get(name)?.[0],
+    get: (name: string) => handlerMap.get(name)?.at(-1),
     getAll: (name: string) => handlerMap.get(name) ?? [],
   };
   const tools: RegisteredTool[] = [];
@@ -102,6 +102,7 @@ export async function loadMcpBridge(
   );
   await NodeVM.runInNewContext(`${source}\nt3McpExtension(pi)`, {
     process: {
+      argv: [],
       env: {
         T3_MCP_URL: "http://fixture.invalid/mcp",
         T3_MCP_BEARER_TOKEN: "fixture-token",
