@@ -2292,7 +2292,12 @@ describe("AcpAdapterV2", () => {
       // No ProviderHost here on purpose: turn-time effects must use the host
       // captured at construction.
       Effect.provide(
-        Layer.mergeAll(NodeServices.layer, IdAllocator.layer, McpProviderSessions.layer),
+        Layer.mergeAll(
+          NodeServices.layer,
+          NodeCrypto.layer,
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+        ),
       ),
       Effect.scoped,
       Effect.provideService(HostProcess.HomeDirectory, NodePath.join("/nonexistent", "home")),
