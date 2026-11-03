@@ -171,16 +171,36 @@ export function collectExternalUsageLinks(presentations: LimitPresentations) {
       readonly accounts: readonly string[];
     }
   >();
+  const add = (
+    external: { readonly label: string; readonly url: string } | undefined,
+    message: string | undefined,
+    account: string,
+  ) => {
+    if (!external) return;
+    links.set(external.url, {
+      ...external,
+      message,
+      accounts: [...new Set([...(links.get(external.url)?.accounts ?? []), account])],
+    });
+  };
   for (const presentation of presentations.values()) {
+    const on = presentation.entry.target.label;
     for (const provider of providersWithLimits(presentation.serverConfig?.providers ?? [])) {
-      const external = provider.usageLimits?.externalUsage;
-      if (external && provider.auth.status === "authenticated") {
-        const account = `${provider.displayName ?? provider.instanceId} on ${presentation.entry.target.label}`;
-        links.set(external.url, {
-          ...external,
-          message: provider.usageLimits?.unavailable?.message,
-          accounts: [...new Set([...(links.get(external.url)?.accounts ?? []), account])],
-        });
+      if (provider.auth.status !== "authenticated") continue;
+      const name = provider.displayName ?? provider.instanceId;
+      add(
+        provider.usageLimits?.externalUsage,
+        provider.usageLimits?.unavailable?.message,
+        `${name} on ${on}`,
+      );
+      // Upstream accounts (e.g. OpenRouter) hang the same destination off each account entry.
+      for (const account of provider.usageAccounts ?? []) {
+        const accountName = account.email?.trim() || account.id.replace(/\.json$/i, "");
+        add(
+          account.usageLimits.externalUsage,
+          account.usageLimits.unavailable?.message,
+          `${name} · ${accountName} on ${on}`,
+        );
       }
     }
   }
@@ -397,24 +417,33 @@ export function collectLimitAccounts(presentations: LimitPresentations): readonl
 export function collectLimitNotices(presentations: LimitPresentations): readonly string[] {
   const label = (environmentLabel: string, subject: string) =>
     presentations.size > 1 ? `${environmentLabel} · ${subject}` : subject;
-  const notices: string[] = [];
+  const notices = new Set<string>();
   for (const presentation of presentations.values()) {
     const environmentLabel = presentation.entry.target.label;
     for (const provider of providersWithLimits(presentation.serverConfig?.providers ?? [])) {
-      if (provider.usageLimits?.unavailable?.reason === "unsupported") continue;
-      const notice = provider.usageLimits ? limitsNotice(provider.usageLimits) : null;
       const name = provider.displayName?.trim() || String(provider.driver);
-      if (notice) notices.push(`${label(environmentLabel, name)}: ${notice}`);
+      if (provider.usageLimits && provider.usageLimits.unavailable?.reason !== "unsupported") {
+        const notice = limitsNotice(provider.usageLimits);
+        if (notice) notices.add(`${label(environmentLabel, name)}: ${notice}`);
+      }
+      // A failed upstream account is skipped from the account list, so its notice is its only report.
+      for (const account of provider.usageAccounts ?? []) {
+        if (account.usageLimits.unavailable?.reason === "unsupported") continue;
+        const notice = limitsNotice(account.usageLimits);
+        if (!notice) continue;
+        const accountName = account.email?.trim() || account.id.replace(/\.json$/i, "");
+        notices.add(`${label(environmentLabel, `${name} · ${accountName}`)}: ${notice}`);
+      }
     }
     for (const source of presentation.serverConfig?.usageLimitSources ?? []) {
       if (source.error) {
-        notices.push(`${label(environmentLabel, source.label)}: ${source.error}`);
+        notices.add(`${label(environmentLabel, source.label)}: ${source.error}`);
       } else if (source.accounts.length === 0) {
-        notices.push(`${label(environmentLabel, source.label)}: No accounts reported.`);
+        notices.add(`${label(environmentLabel, source.label)}: No accounts reported.`);
       }
     }
   }
-  return notices;
+  return [...notices];
 }
 
 export interface LimitPoolMember {

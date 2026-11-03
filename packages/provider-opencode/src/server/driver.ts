@@ -104,11 +104,15 @@ const upstreamUsageReaders = {
 
 const readUpstreamUsageAccounts = Effect.fn("readUpstreamUsageAccounts")(function* (input: {
   readonly enabled: boolean;
+  readonly installed: boolean;
+  readonly authenticated: boolean;
   readonly serverUrl: string;
   readonly environment: NodeJS.ProcessEnv;
 }) {
-  // External OpenCode servers own their credentials.
-  if (!input.enabled || input.serverUrl.trim()) return [];
+  // External servers own their credentials; an uninstalled or signed-out CLI has none to probe.
+  if (!input.enabled || !input.installed || !input.authenticated || input.serverUrl.trim()) {
+    return [];
+  }
   // A malformed or unreadable auth file must not break provider status.
   return yield* Effect.gen(function* () {
     const path = yield* Path.Path;
@@ -416,18 +420,23 @@ export const OpenCodeDriver: ProviderDriver<
           Effect.annotateSpans({ providerInstanceId: instanceId }),
         ),
         usageLimits: checkUsageLimits,
-        usageAccounts: readUpstreamUsageAccounts({
+      },
+      { concurrency: "unbounded" },
+    ).pipe(
+      Effect.flatMap(({ provider, usageLimits }) =>
+        readUpstreamUsageAccounts({
           enabled: effectiveConfig.enabled,
+          installed: provider.installed,
+          authenticated: provider.auth.status === "authenticated",
           serverUrl: effectiveConfig.serverUrl,
           environment: processEnv,
         }).pipe(
           Effect.provideService(FileSystem.FileSystem, fileSystem),
           Effect.provideService(Path.Path, pathService),
           Effect.provideService(HttpClient.HttpClient, httpClient),
+          Effect.map((usageAccounts) => ({ provider, usageLimits, usageAccounts })),
         ),
-      },
-      { concurrency: "unbounded" },
-    ).pipe(
+      ),
       Effect.map(({ provider, usageLimits, usageAccounts }) => ({
         ...provider,
         usageLimits,

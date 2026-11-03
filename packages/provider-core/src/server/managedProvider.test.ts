@@ -770,4 +770,50 @@ describe("makeManagedServerProvider", () => {
       }),
     ).pipe(Effect.provide(layerAlwaysRunTest)),
   );
+
+  it.effect("retains last-good usage accounts across a failed discovery", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const account = (usedPercent: number) => ({
+          id: "kimi",
+          driver: ProviderDriverKind.make("pi"),
+          usageLimits: {
+            checkedAt: "2026-04-10T00:00:01.000Z",
+            windows: [{ id: "credits", kind: "other" as const, label: "Credits", usedPercent }],
+          },
+        });
+        const probeSnapshot = yield* Ref.make<ServerProvider>({
+          ...refreshedSnapshot,
+          usageAccounts: [account(10)],
+        });
+        const provider = yield* makeManagedServerProvider<TestSettings>({
+          resolveMaintenance: () => Effect.succeed(maintenanceCapabilities),
+          getSettings: Effect.succeed({ enabled: true }),
+          streamSettings: Stream.empty,
+          haveSettingsChanged: (previous, next) => previous.enabled !== next.enabled,
+          initialSnapshot: () => Effect.succeed(initialSnapshot),
+          checkProvider: Ref.get(probeSnapshot),
+          refreshOnInterval: false,
+        });
+        yield* Stream.take(provider.streamChanges, 1).pipe(Stream.runDrain);
+        assert.deepStrictEqual((yield* provider.getSnapshot).usageAccounts, [account(10)]);
+
+        // A malformed or unreadable auth file folds to an empty discovery while the
+        // provider stays authenticated; the last-good accounts must survive.
+        yield* Ref.set(probeSnapshot, refreshedSnapshot);
+        assert.deepStrictEqual((yield* provider.refresh).usageAccounts, [account(10)]);
+
+        // A later successful discovery replaces the retained accounts.
+        yield* Ref.set(probeSnapshot, { ...refreshedSnapshot, usageAccounts: [account(40)] });
+        assert.deepStrictEqual((yield* provider.refresh).usageAccounts, [account(40)]);
+
+        // Signing out is a genuine state change, not a transient failure: accounts clear.
+        yield* Ref.set(probeSnapshot, {
+          ...refreshedSnapshot,
+          auth: { status: "unauthenticated" },
+        });
+        assert.strictEqual((yield* provider.refresh).usageAccounts, undefined);
+      }),
+    ).pipe(Effect.provide(layerAlwaysRunTest)),
+  );
 });

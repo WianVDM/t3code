@@ -41,7 +41,9 @@ import { usageProviderKind, useProviderColors } from "./usageProviders";
 
 const PACE_LABEL = { ahead: "ahead of pace", on: "on pace", under: "under pace" } as const;
 
-function monetaryUsageText(monetary: ServerProviderMonetaryUsage | undefined): string | null {
+export function monetaryUsageText(
+  monetary: ServerProviderMonetaryUsage | undefined,
+): string | null {
   if (!monetary) return null;
   const text = [
     monetary.usedUsd !== undefined ? `${formatUsd(monetary.usedUsd)} used` : null,

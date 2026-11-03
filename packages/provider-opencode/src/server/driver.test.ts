@@ -12,6 +12,7 @@ import {
   ProviderSessionId,
   ThreadId,
 } from "@t3tools/contracts";
+import type { ResolvedProviderInstanceEnvironment } from "@t3tools/contracts";
 import type { OpenCodeSettings } from "../settings.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Deferred from "effect/Deferred";
@@ -67,14 +68,40 @@ const layer = Layer.mergeAll(
   Layer.succeed(OpenCodeRuntime.OpenCodeRuntime, openCode2Runtime),
 ).pipe(Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)));
 
-const create = (config: Partial<OpenCodeSettings>, http: HttpClient.HttpClient) =>
+const create = (
+  config: Partial<OpenCodeSettings>,
+  http: HttpClient.HttpClient,
+  environment: ResolvedProviderInstanceEnvironment = [],
+) =>
   OpenCodeDriver.create({
     instanceId: ProviderInstanceId.make("opencode-test"),
     displayName: undefined,
-    environment: [],
+    environment,
     enabled: true,
     config: { ...OpenCodeDriver.defaultConfig(), ...config },
   }).pipe(Effect.provideService(HttpClient.HttpClient, http));
+
+const upstreamAuthHome = (
+  entries: Record<string, { readonly type: "api"; readonly key: string }>,
+) => {
+  const root = NodeFS.realpathSync(
+    NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-opencode-usage-")),
+  );
+  NodeFS.mkdirSync(NodePath.join(root, "opencode"), { recursive: true });
+  NodeFS.writeFileSync(NodePath.join(root, "opencode", "auth.json"), JSON.stringify(entries));
+  return root;
+};
+
+const countingHttp = (urls: Array<string>) =>
+  HttpClient.make((request) =>
+    Effect.sync(() => urls.push(request.url)).pipe(
+      Effect.andThen(
+        Effect.succeed(
+          HttpClientResponse.fromWeb(request, Response.json({ data: { usage: 1, limit: 10 } })),
+        ),
+      ),
+    ),
+  );
 
 const noHttp = HttpClient.make(() => Effect.die("A local binary must not be probed over HTTP"));
 
@@ -440,6 +467,143 @@ it.layer(layer)("OpenCodeDriver runtime selection", (it) => {
       assert.strictEqual(usageReads, expectedReads);
       assert.strictEqual(modelReads, catalogReads);
       assert.strictEqual(serverStarts, starts);
+    }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
+  );
+
+  it.effect("skips upstream account probes when OpenCode is not installed", () =>
+    Effect.gen(function* () {
+      const home = upstreamAuthHome({ openrouter: { type: "api", key: "sk-or-test" } });
+      const urls: Array<string> = [];
+      const uninstalled = {
+        ...openCode2Runtime,
+        runOpenCodeCommand: () =>
+          Effect.fail(
+            new OpenCodeRuntime.OpenCodeRuntimeError({
+              operation: "probeOpenCodeBinary",
+              detail: "spawn opencode ENOENT",
+            }),
+          ),
+      } as unknown as OpenCodeRuntime.OpenCodeRuntime["Service"];
+      const instance = yield* OpenCodeDriver.create({
+        instanceId: ProviderInstanceId.make("opencode-uninstalled"),
+        displayName: undefined,
+        environment: [{ name: "XDG_DATA_HOME", value: home, sensitive: true }],
+        enabled: true,
+        config: OpenCodeDriver.defaultConfig(),
+      }).pipe(
+        Effect.provideService(HttpClient.HttpClient, countingHttp(urls)),
+        Effect.provideService(OpenCodeRuntime.OpenCodeRuntime, uninstalled),
+      );
+
+      yield* instance.snapshot.refresh;
+      const snapshot = yield* instance.snapshot.getSnapshot;
+      assert.strictEqual(snapshot.installed, false);
+      assert.deepStrictEqual(snapshot.usageAccounts, []);
+      assert.deepStrictEqual(urls, []);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("skips upstream account probes when OpenCode is not authenticated", () =>
+    Effect.gen(function* () {
+      const home = upstreamAuthHome({ openrouter: { type: "api", key: "sk-or-test" } });
+      const urls: Array<string> = [];
+      const instance = yield* create({}, countingHttp(urls), [
+        { name: "XDG_DATA_HOME", value: home, sensitive: true },
+      ]);
+
+      yield* instance.snapshot.refresh;
+      const snapshot = yield* instance.snapshot.getSnapshot;
+      assert.strictEqual(snapshot.installed, true);
+      assert.strictEqual(snapshot.auth.status, "unknown");
+      assert.deepStrictEqual(snapshot.usageAccounts, []);
+      assert.deepStrictEqual(urls, []);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("probes stored upstream accounts once OpenCode is installed and authenticated", () =>
+    Effect.gen(function* () {
+      const home = upstreamAuthHome({
+        openrouter: { type: "api", key: "sk-or-test" },
+        "opencode-go": { type: "api", key: "test-go-key" },
+      });
+      const probed: Array<string> = [];
+      const server = HttpClient.make((request) => {
+        const url = new URL(request.url);
+        if (url.hostname === "openrouter.ai") {
+          probed.push(url.hostname);
+          return Effect.succeed(
+            HttpClientResponse.fromWeb(request, Response.json({ data: { usage: 1, limit: 10 } })),
+          );
+        }
+        const body =
+          url.pathname === "/api/info"
+            ? JSON.parse(OPENCODE_2_RESPONSES["/api/info"].body)
+            : url.pathname === "/api/model"
+              ? {
+                  location: { directory: "/work" },
+                  data: [
+                    {
+                      id: "big-pickle",
+                      modelID: "big-pickle",
+                      providerID: "opencode",
+                      name: "Big Pickle",
+                      package: "@opencode/ai/providers/openai-compatible",
+                      settings: {},
+                      compatibility: {},
+                      capabilities: { tools: true, input: ["text"], output: ["text"] },
+                      variants: [],
+                      time: { released: 1789516800000 },
+                      cost: [{ input: 0, output: 0, cache: { read: 0, write: 0 } }],
+                      status: "active",
+                      enabled: true,
+                      limit: { context: 1000000, output: 65536 },
+                    },
+                  ],
+                }
+              : { location: { directory: "/work" }, data: [] };
+        return Effect.succeed(HttpClientResponse.fromWeb(request, Response.json(body)));
+      });
+      const runtime = {
+        ...openCode2Runtime,
+        startOpenCodeServerProcess: ({
+          verify,
+        }: Parameters<
+          OpenCodeRuntime.OpenCodeRuntime["Service"]["startOpenCodeServerProcess"]
+        >[0]) =>
+          Effect.gen(function* () {
+            const url = "http://127.0.0.1:4096";
+            const version = verify ? yield* verify(url) : "2.0.18";
+            return { url, version, isRunning: Effect.succeed(true), exitCode: Effect.never };
+          }),
+      };
+      const instance = yield* OpenCodeDriver.create({
+        instanceId: ProviderInstanceId.make("opencode-authenticated"),
+        displayName: undefined,
+        environment: [{ name: "XDG_DATA_HOME", value: home, sensitive: true }],
+        enabled: true,
+        config: OpenCodeDriver.defaultConfig(),
+      }).pipe(
+        Effect.provideService(HttpClient.HttpClient, server),
+        Effect.provideService(
+          OpenCodeRuntime.OpenCodeRuntime,
+          runtime as unknown as OpenCodeRuntime.OpenCodeRuntime["Service"],
+        ),
+      );
+
+      const checked = yield* instance.snapshot.streamChanges.pipe(
+        Stream.filter((snapshot) => snapshot.auth.status === "authenticated"),
+        Stream.take(1),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      yield* Effect.yieldNow;
+      yield* TestClock.adjust("5 seconds");
+      const [snapshot] = Array.from(yield* Fiber.join(checked));
+      assert.deepStrictEqual(
+        snapshot?.usageAccounts?.map((account) => account.id),
+        ["openrouter"],
+      );
+      assert.deepStrictEqual(probed, ["openrouter.ai"]);
     }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
   );
 });

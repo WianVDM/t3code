@@ -3,6 +3,7 @@ import {
   type ProviderDriverKind,
   type UsageLimitSourceAccount,
 } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -86,28 +87,37 @@ export const probeUpstreamUsage = Effect.fn("probeUpstreamUsage")(function* <R>(
   readonly readers: Readonly<Record<string, UpstreamUsageReader<R>>>;
 }): Effect.fn.Return<ReadonlyArray<UsageLimitSourceAccount>, never, R> {
   const checkedAt = DateTime.formatIso(yield* DateTime.now);
-  return yield* Effect.forEach(input.credentials, (credential) =>
-    Effect.suspend(() => {
-      const context: UpstreamUsageReaderContext = {
-        driver: input.driver,
-        credential,
-        checkedAt,
-      };
-      const reader = input.readers[credential.providerId];
-      if (reader === undefined) {
-        return Effect.succeed(unavailableAccount(context, "unsupported"));
-      }
-      return reader(context).pipe(
-        Effect.catchCause(() =>
-          Effect.succeed(
-            unavailableAccount(
-              context,
-              "probeFailed",
-              `${credential.providerId} could not read usage.`,
-            ),
+  return yield* Effect.forEach(
+    input.credentials,
+    (credential) =>
+      Effect.suspend(() => {
+        const context: UpstreamUsageReaderContext = {
+          driver: input.driver,
+          credential,
+          checkedAt,
+        };
+        const reader = input.readers[credential.providerId];
+        // A keyless entry can only come back as a fake 401, so never spend a probe on it.
+        if (reader === undefined || !credential.secret?.trim()) {
+          return Effect.succeed(unavailableAccount(context, "unsupported"));
+        }
+        return reader(context).pipe(
+          Effect.catchCause((cause) =>
+            Cause.hasInterrupts(cause)
+              ? Effect.failCause(
+                  Cause.fromReasons<never>(cause.reasons.filter(Cause.isInterruptReason)),
+                )
+              : Effect.succeed(
+                  unavailableAccount(
+                    context,
+                    "probeFailed",
+                    `${credential.providerId} could not read usage.`,
+                  ),
+                ),
           ),
-        ),
-      );
-    }),
+        );
+      }),
+    // One stalled reader must not serialize the rest behind its timeout.
+    { concurrency: 4 },
   );
 });

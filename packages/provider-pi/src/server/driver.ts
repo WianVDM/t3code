@@ -75,6 +75,12 @@ const UPSTREAM_USAGE_READERS: Readonly<Record<string, UpstreamUsageReader<HttpCl
       }),
   };
 
+// Pi reports this entry through readKimiCodeAccount, so additive discovery would duplicate it.
+const isNativelyReportedCredential = (credential: StoredUpstreamCredential) =>
+  credential.providerId === "kimi-coding" &&
+  credential.authType === "api_key" &&
+  credential.secret !== undefined;
+
 const DRIVER_KIND = ProviderDriverKind.make("pi");
 const UPDATE = makePackageManagedProviderMaintenanceResolver({
   provider: DRIVER_KIND,
@@ -184,7 +190,13 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv, Path.Path> = {
       // A malformed or unreadable auth file must not affect provider health.
       Effect.orElseSucceed((): StoredUpstreamCredential[] => []),
       Effect.flatMap((credentials) =>
-        probeUpstreamUsage({ driver: DRIVER_KIND, credentials, readers: UPSTREAM_USAGE_READERS }),
+        probeUpstreamUsage({
+          driver: DRIVER_KIND,
+          credentials: credentials.filter(
+            (credential) => !isNativelyReportedCredential(credential),
+          ),
+          readers: UPSTREAM_USAGE_READERS,
+        }),
       ),
       Effect.provideService(FileSystem.FileSystem, fileSystem),
       Effect.provideService(HttpClient.HttpClient, httpClient),

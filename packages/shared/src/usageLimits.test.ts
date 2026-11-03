@@ -722,6 +722,64 @@ describe("pools", () => {
     });
   });
 
+  it("reports a failed upstream account probe without inventing limits", () => {
+    const multi = provider({
+      driver: claude,
+      instanceId: ProviderInstanceId.make("claude"),
+      displayName: "Claude",
+      auth: { status: "authenticated", email: "main@example.com" },
+      usageLimits: { checkedAt, windows: [window] },
+      usageAccounts: [
+        {
+          id: "metered@example.com.json",
+          driver: claude,
+          email: "metered@example.com",
+          usageLimits: { checkedAt, windows: [], monetaryUsage: { usedUsd: 1.25 } },
+        },
+        {
+          id: "broken@example.com.json",
+          driver: claude,
+          email: "broken@example.com",
+          usageLimits: {
+            checkedAt,
+            windows: [{ ...window, usedPercent: 99 }],
+            unavailable: { reason: "probeFailed" as const, message: "401 unauthorized" },
+          },
+        },
+        {
+          id: "unreadable.json",
+          driver: claude,
+          usageLimits: {
+            checkedAt,
+            windows: [],
+            unavailable: { reason: "probeFailed" as const },
+          },
+        },
+        {
+          id: "unsupported@example.com.json",
+          driver: claude,
+          email: "unsupported@example.com",
+          usageLimits: {
+            checkedAt,
+            windows: [],
+            unavailable: { reason: "unsupported" as const },
+          },
+        },
+      ],
+    });
+    const input = new Map([
+      [EnvironmentId.make("env-a"), { ...laptop, serverConfig: { providers: [multi] } }],
+    ]);
+    expect(collectLimitAccounts(input).map((account) => account.email)).toEqual([
+      "main@example.com",
+      "metered@example.com",
+    ]);
+    expect(collectLimitNotices(input)).toEqual([
+      "Claude · broken@example.com: 401 unauthorized",
+      "Claude · unreadable: Could not read limits.",
+    ]);
+  });
+
   it("keys a hub account without an email by hub, so two environments on one hub share it", () => {
     const seat = {
       id: "claude-team-seat.json",
@@ -1562,6 +1620,43 @@ describe("external usage settings", () => {
     ]);
     expect(collectLimitAccounts(presentations)).toEqual([]);
     expect(collectLimitNotices(presentations)).toEqual([]);
+  });
+  it("collects an upstream account destination alongside native provider links", () => {
+    const activityUrl = "https://openrouter.ai/activity";
+    const openRouter = ProviderDriverKind.make("openrouter");
+    const pool = provider({
+      driver: openRouter,
+      instanceId: ProviderInstanceId.make("openrouter"),
+      usageLimits: { checkedAt: "2026-09-03T11:00:00.000Z", windows: [] },
+      usageAccounts: [
+        {
+          id: "openrouter",
+          driver: openRouter,
+          email: "pool@example.com",
+          usageLimits: {
+            checkedAt: "2026-09-03T11:00:00.000Z",
+            windows: [],
+            unavailable: { reason: "unsupported", message: "No credit limit set." },
+            externalUsage: { label: "OpenRouter activity", url: activityUrl },
+          },
+        },
+      ],
+    });
+    const presentations = new Map([
+      [
+        EnvironmentId.make("a"),
+        { entry: { target: { label: "A" } }, serverConfig: { providers: [pool] } },
+      ],
+    ]);
+    expect(collectExternalUsageLinks(presentations)).toEqual([
+      {
+        label: "OpenRouter activity",
+        url: activityUrl,
+        message: "No credit limit set.",
+        accounts: ["openrouter · pool@example.com on A"],
+      },
+    ]);
+    expect(collectLimitAccounts(presentations)).toEqual([]);
   });
 });
 

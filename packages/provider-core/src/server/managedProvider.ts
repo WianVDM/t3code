@@ -173,10 +173,23 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
             });
         const workspaceId =
           usageLimits === probedSnapshot.usageLimits ? undefined : state.snapshot.auth.workspaceId;
-        const snapshot = withUsageLimits(
+        // Drivers fold auth-file read failures into empty account lists, so an empty
+        // probe means "no fresh data", not "cleared" (as in applyUsageLimitsUpdate).
+        // Sign-out, uninstall, and account switches still drop the retained accounts.
+        const retainedAccounts =
+          !switchedAccount &&
+          probedSnapshot.installed &&
+          probedSnapshot.auth.status === "authenticated" &&
+          !probedSnapshot.usageAccounts?.length &&
+          state.snapshot.usageAccounts?.length
+            ? state.snapshot.usageAccounts
+            : undefined;
+        const based =
           workspaceId && !probedSnapshot.auth.workspaceId
             ? { ...probedSnapshot, auth: { ...probedSnapshot.auth, workspaceId } }
-            : probedSnapshot,
+            : probedSnapshot;
+        const snapshot = withUsageLimits(
+          retainedAccounts ? { ...based, usageAccounts: retainedAccounts } : based,
           usageLimits,
         );
         return [
