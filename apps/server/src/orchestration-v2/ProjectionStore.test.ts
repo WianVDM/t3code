@@ -574,7 +574,7 @@ it.effect("SQL shells use the latest subagent owner for duplicate provider-threa
       {
         taskId: nativeTaskId,
         description: item.title,
-        startedAt: DateTime.formatIso(item.startedAt),
+        startedAt: DateTime.formatIso(item.startedAt!),
         kind: "subagent",
         providerInstanceId,
       },
