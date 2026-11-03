@@ -3267,6 +3267,7 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
                 return;
               }
               const bridgedContext = yield* bridgedInstructionsForTurn({
+                host,
                 targetDriver: OPENCODE_PROVIDER,
                 cwd: turnInput.runtimePolicy.cwd,
               });

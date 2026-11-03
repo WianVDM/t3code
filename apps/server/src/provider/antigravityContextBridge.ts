@@ -196,7 +196,6 @@ function isBridgeOwnedHooksFile(hooksFile: string): boolean {
 function syncBridgedSkills(
   configSkillsDir: string,
   skills: readonly BridgedSkill[],
-  platform: NodeJS.Platform,
   warnings: string[],
 ): void {
   try {
@@ -217,20 +216,10 @@ function syncBridgedSkills(
   for (const skill of skills) {
     const destination = NodePath.join(configSkillsDir, skill.name);
     try {
-      const existingTarget = NodeFS.readlinkSync(destination);
-      if (
-        NodePath.resolve(NodePath.dirname(destination), existingTarget).toLowerCase() ===
-        NodePath.resolve(skill.dir).toLowerCase()
-      ) {
-        owned.push(skill.name);
-        continue;
-      }
-      removeLinkOrDir(destination);
-    } catch {
-      // Not a symlink. A bridge-owned entry is replaced; anything else is the
-      // user's own content and stays, shadowing the link for this sync.
-      const wasOwned = readOwnedSkillNames(configSkillsDir).includes(skill.name);
-      if (wasOwned || !NodeFS.existsSync(destination)) {
+      NodeFS.lstatSync(destination);
+      // A bridge-owned entry is replaced; anything else is the user's own
+      // content and stays, shadowing the copy for this sync.
+      if (readOwnedSkillNames(configSkillsDir).includes(skill.name)) {
         removeLinkOrDir(destination);
       } else {
         warnings.push(
@@ -238,16 +227,15 @@ function syncBridgedSkills(
         );
         continue;
       }
-    }
+    } catch {}
+    // Always a real copied directory, never a symlink: Antigravity's
+    // lstat-based loader does not follow plain symlinks, and junction
+    // fallbacks made behavior platform-dependent.
     try {
-      NodeFS.symlinkSync(skill.dir, destination, platform === "win32" ? "junction" : "dir");
-    } catch {
-      try {
-        NodeFS.cpSync(skill.dir, destination, { recursive: true });
-      } catch (error) {
-        warnings.push(`context-bridge: could not link skill '${skill.name}': ${String(error)}`);
-        continue;
-      }
+      NodeFS.cpSync(skill.dir, destination, { recursive: true, dereference: true });
+    } catch (error) {
+      warnings.push(`context-bridge: could not copy skill '${skill.name}': ${String(error)}`);
+      continue;
     }
     owned.push(skill.name);
   }
@@ -272,8 +260,10 @@ function revertBridgedSkills(
     return;
   }
   if (!isRealDirectory) return;
+  // Without a marker nothing here is bridge-written, but an empty owned list
+  // still needs cleanup so a fully removed sync restores the native link.
+  if (!NodeFS.existsSync(NodePath.join(configSkillsDir, BRIDGE_SKILLS_MARKER))) return;
   const owned = readOwnedSkillNames(configSkillsDir);
-  if (owned.length === 0) return;
   for (const name of owned) {
     removeLinkOrDir(NodePath.join(configSkillsDir, name));
   }
@@ -422,7 +412,7 @@ export function syncAntigravityContextBridgeProfile(
         cwd: input.cwd,
         userHome: input.userHome,
       });
-      syncBridgedSkills(configSkillsDir, skills, input.platform, warnings);
+      syncBridgedSkills(configSkillsDir, skills, warnings);
     } else {
       revertBridgedSkills(
         configSkillsDir,

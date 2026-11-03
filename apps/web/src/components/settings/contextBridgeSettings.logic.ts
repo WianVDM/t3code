@@ -56,6 +56,10 @@ export function supportsContextBridgeHooks(driver: string): boolean {
   return driver === "antigravity";
 }
 
+export function supportsContextBridgeSkills(driver: string): boolean {
+  return ["antigravity", "codex", "claudeAgent", "pi", "cursor", "opencode"].includes(driver);
+}
+
 // A default source that is not an available driver (removed provider, fresh
 // install) stays selectable so the stored value survives until the user picks
 // a new one.
