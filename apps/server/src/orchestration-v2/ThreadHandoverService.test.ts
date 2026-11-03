@@ -364,6 +364,54 @@ it.layer(layerHandoverTest)("ThreadHandoverService", (it) => {
       }),
   );
 
+  it.effect("places handover artifacts where project deletion clears them for dotted ids", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const config = yield* ServerConfig.ServerConfig;
+      const projects = yield* ProjectService.ProjectService;
+      for (const [index, projectId] of [
+        ProjectId.make("project:handover:dotted.one"),
+        ProjectId.make(".."),
+      ].entries()) {
+        const threadId = ThreadId.make(`thread:handover:dotted:${index}`);
+        const projection = yield* seedSourceThread({
+          threadId,
+          projectId,
+          title: "Dotted source",
+          messageText: "Dotted ask",
+          branch: null,
+          worktreePath: null,
+        });
+        const result = yield* handover({
+          commandId: CommandId.make(`handover-test:dotted:${index}`),
+          projection,
+          message: "Continue from the dotted project",
+        });
+        const projectArtifactsDir = path.join(
+          config.stateDir,
+          "artifacts",
+          "projects",
+          encodeURIComponent(projectId).replaceAll(".", "%2E"),
+        );
+        const threadArtifactsDir = path.join(
+          projectArtifactsDir,
+          "threads",
+          encodeURIComponent(threadId),
+        );
+        assert.isTrue(
+          path.dirname(result.manifestPath).startsWith(`${threadArtifactsDir}${path.sep}`),
+        );
+        yield* projects.delete({
+          commandId: CommandId.make(`handover-test:dotted:delete:${index}`),
+          projectId,
+          force: true,
+        });
+        assert.isFalse(yield* fs.exists(projectArtifactsDir));
+      }
+    }),
+  );
+
   it.effect("chains each handover artifact to its predecessor in launch order", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -475,6 +523,80 @@ it.layer(layerHandoverTest)("ThreadHandoverService", (it) => {
         (thread) => thread.projectId === projectId,
       ).length;
       assert.equal(threadsAfter, threadsBefore);
+
+      // Concurrent retries of one command must converge on one recorded successor.
+      const driftOutbox = yield* EffectOutbox.EffectOutboxV2;
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        createdBy: "user",
+        creationSource: "web",
+        commandId: CommandId.make(`${threadId}:post-handover`),
+        threadId,
+        messageId: MessageId.make(`${threadId}:post-handover`),
+        text: "Work queued after finalization",
+        attachments: [],
+        modelSelection,
+        dispatchMode: { type: "start_immediately" },
+      });
+      yield* driftOutbox.cancelUnsettled({
+        threadId,
+        effectTypes: ["provider-turn.start"],
+        reason: "not under test",
+      });
+      const driftedProjection = yield* orchestrator.getThreadProjection(threadId);
+      const concurrentCommandId = CommandId.make("handover-test:retry:concurrent");
+      const concurrent = yield* Effect.all(
+        [
+          handover({
+            commandId: concurrentCommandId,
+            projection,
+            message: "Concurrent request",
+            byOwnAgent: true,
+          }),
+          handover({
+            commandId: concurrentCommandId,
+            projection: driftedProjection,
+            message: "Concurrent request",
+            byOwnAgent: true,
+          }),
+        ],
+        { concurrency: 2 },
+      );
+      assert.equal(concurrent[0]!.threadId, concurrent[1]!.threadId);
+      const concurrentManifest = JSON.parse(
+        yield* fs.readFileString(concurrent[0]!.manifestPath),
+      ) as { successorThreadId: string };
+      assert.equal(concurrentManifest.successorThreadId, concurrent[0]!.threadId);
+      const concurrentSuccessor = yield* orchestrator.getThreadProjection(concurrent[0]!.threadId);
+      const delivered = concurrentSuccessor.messages.find((message) => message.role === "user");
+      assert.include(
+        delivered!.text,
+        yield* fs.readFileString(capsulePath(concurrent[0]!.manifestPath)),
+      );
+
+      const replayWithActiveWork = yield* handover({
+        commandId,
+        projection: yield* orchestrator.getThreadProjection(threadId),
+        message: "Exact next request",
+      });
+      assert.equal(replayWithActiveWork.threadId, first.threadId);
+      const newHandoverError = yield* handover({
+        commandId: CommandId.make("handover-test:retry:new"),
+        projection: yield* orchestrator.getThreadProjection(threadId),
+        message: "New request",
+      }).pipe(Effect.flip);
+      assert.equal(newHandoverError._tag, "ThreadHandoverRejectedError");
+      yield* orchestrator.dispatch({
+        type: "thread.archive",
+        commandId: CommandId.make(`${threadId}:archive`),
+        threadId,
+      });
+      const replayArchived = yield* handover({
+        commandId,
+        projection: yield* orchestrator.getThreadProjection(threadId),
+        message: "Exact next request",
+      });
+      assert.equal(replayArchived.threadId, first.threadId);
     }),
   );
 

@@ -540,6 +540,25 @@ it.layer(layerTest)("ProjectService", (it) => {
 
       assert.isFalse(yield* fileSystem.exists(targetArtifacts));
       assert.equal(yield* fileSystem.readFileString(siblingFile), "sibling artifact");
+
+      const sharedFile = path.join(artifactsRoot, "shared.txt");
+      yield* fileSystem.writeFileString(sharedFile, "shared artifact");
+      for (const id of [".", ".."] as const) {
+        const projectId = ProjectId.make(id);
+        yield* service.create({
+          commandId: CommandId.make(`command:artifacts-traversal:${id}:create`),
+          projectId,
+          title: `Artifacts traversal ${id}`,
+          workspaceRoot: `/work/artifacts-traversal-${id.length}`,
+        });
+        yield* service.delete({
+          commandId: CommandId.make(`command:artifacts-traversal:${id}:delete`),
+          projectId,
+        });
+        assert.equal(yield* fileSystem.readFileString(sharedFile), "shared artifact");
+        assert.equal(yield* fileSystem.readFileString(siblingFile), "sibling artifact");
+        assert.isTrue(yield* fileSystem.exists(artifactsRoot));
+      }
     }).pipe(Effect.provide(layerTestExposingRuntimeFor(layerMetadata))),
   );
 

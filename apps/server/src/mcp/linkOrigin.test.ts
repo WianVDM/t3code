@@ -16,6 +16,7 @@ import {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Ref from "effect/Ref";
 import { McpSchema, McpServer } from "effect/ai";
 
 import * as ServerConfig from "../config.ts";
@@ -82,13 +83,17 @@ const layerLaunches = Layer.effect(
   ThreadLaunch.ThreadLaunchService,
   Effect.gen(function* () {
     const threads = yield* ThreadManagement.ThreadManagementService;
+    const launches = yield* Ref.make(0);
     return ThreadLaunch.ThreadLaunchService.of({
       launch: (input: ThreadLaunch.ThreadLaunchInput) =>
-        threads
-          .dispatch({
+        Effect.gen(function* () {
+          // The real service allocates a fresh id per launch; handovers never pass one.
+          const ordinal = yield* Ref.updateAndGet(launches, (count) => count + 1);
+          const threadId = input.threadId ?? ThreadId.make(`${input.commandId}:${ordinal}`);
+          yield* threads.dispatch({
             type: "thread.create",
             commandId: input.commandId,
-            threadId: input.threadId!,
+            threadId,
             projectId: input.projectId,
             title: input.title,
             modelSelection: input.modelSelection,
@@ -100,16 +105,10 @@ const layerLaunches = Layer.effect(
             ...(input.delegatedFrom === undefined ? {} : { delegatedFrom: input.delegatedFrom }),
             createdBy: input.createdBy,
             creationSource: input.creationSource,
-          })
-          .pipe(
-            Effect.flatMap(() => threads.getThreadProjection(input.threadId!)),
-            Effect.map((projection) => ({
-              threadId: input.threadId!,
-              projection,
-              resumed: false,
-            })),
-            Effect.orDie,
-          ),
+          });
+          const projection = yield* threads.getThreadProjection(threadId);
+          return { threadId, projection, resumed: false };
+        }).pipe(Effect.orDie),
     } as unknown as ThreadLaunch.ThreadLaunchService["Service"]);
   }),
 );
@@ -121,7 +120,6 @@ const layerTools = Layer.mergeAll(
 ).pipe(
   Layer.provide(DocumentText.layer.pipe(Layer.provideMerge(NodeServices.layer))),
   Layer.provideMerge(McpServer.McpServer.layer),
-  Layer.provide(layerLaunches),
   Layer.provide(NodeCrypto.layer),
   Layer.provide(
     Layer.mock(ProviderRegistry.ProviderRegistry)({ getProviders: Effect.succeed([]) }),
@@ -164,12 +162,7 @@ const layerTools = Layer.mergeAll(
   Layer.provide(Layer.mock(PeerForwarding.PeerForwarding)({})),
   Layer.provide(Layer.mock(PeerLinkRequests.PeerLinkRequests)({})),
   Layer.provide(Layer.mock(PeerLinks.PeerLinks)({})),
-  Layer.provide(
-    Layer.merge(
-      Layer.mock(ThreadSearch.ThreadSearch)({}),
-      Layer.mock(ThreadHandoverService.ThreadHandoverService)({}),
-    ),
-  ),
+  Layer.provide(Layer.mock(ThreadSearch.ThreadSearch)({})),
   Layer.provide(Layer.mock(RemoteDelegation.RemoteDelegation)({})),
   Layer.provide(
     Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({ namedProjectsRoot: "/p" }),
@@ -185,11 +178,17 @@ const layerTools = Layer.mergeAll(
         }),
     }),
   ),
-  Layer.provide(
-    ServerConfig.layerTest(process.cwd(), { prefix: "t3-link-origin-" }).pipe(
-      Layer.provide(NodeServices.layer),
-    ),
-  ),
+  Layer.provide(NodeServices.layer),
+);
+
+const layerServerConfig = ServerConfig.layerTest(process.cwd(), {
+  prefix: "t3-link-origin-",
+}).pipe(Layer.provide(NodeServices.layer));
+const layerApp = layerTools.pipe(
+  Layer.provideMerge(ThreadHandoverService.layer),
+  Layer.provideMerge(layerLaunches),
+  Layer.provideMerge(layerOrchestration),
+  Layer.provide(layerServerConfig),
   Layer.provide(NodeServices.layer),
 );
 
@@ -279,7 +278,7 @@ const usersOwnThread = Effect.gen(function* () {
   return threadId;
 });
 
-it.layer(Layer.provideMerge(layerTools, layerOrchestration))("work a link starts", (it) => {
+it.layer(layerApp)("work a link starts", (it) => {
   it.effect("is stamped, and so is the work it derives", () =>
     Effect.gen(function* () {
       const projections = yield* ProjectionStore.ProjectionStoreV2;
@@ -340,6 +339,47 @@ it.layer(Layer.provideMerge(layerTools, layerOrchestration))("work a link starts
       assert.deepEqual((yield* projections.getThreadShell(task))?.delegatedFrom, delegatedFrom);
       const claimed = yield* launch(claudeCode, "Claims a parent", { delegatedFrom });
       assert.equal((yield* projections.getThreadShell(claimed))?.delegatedFrom, undefined);
+    }),
+  );
+
+  it.effect("refuses a handover whose successor would outlive the fence", () =>
+    Effect.gen(function* () {
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const source = yield* launch(laptop, "Handed over from the laptop");
+
+      // A successor is a fresh top-level thread this environment runs, so it
+      // would not carry the laptop's link and would act with this environment's
+      // full access.
+      const result = yield* call(laptop, "t3_thread_handover", {
+        threadId: source,
+        message: "Continue the work.",
+        clientRequestId: "handover-1",
+      });
+      assert.equal(failureCode(result), "capability_denied");
+      assert.isNull((yield* threads.getThreadProjection(source)).thread.settledAt);
+    }),
+  );
+
+  // A full handover is unaffected: only a fenced link is refused.
+  it.effect("hands over for an unlinked caller, and replays the same successor", () =>
+    Effect.gen(function* () {
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const source = yield* launch(claudeCode, "Started by Claude Code");
+      const handover = (clientRequestId: string) =>
+        call(claudeCode, "t3_thread_handover", {
+          threadId: source,
+          message: "Continue the work.",
+          clientRequestId,
+        });
+
+      const first = yield* handover("handover-1");
+      assert.equal(first.isError, false, JSON.stringify(first.content));
+      const successor = (first.structuredContent as { threadId: ThreadId }).threadId;
+      assert.equal((yield* projections.getThreadShell(successor))?.linkOrigin, undefined);
+
+      const replayed = yield* handover("handover-1");
+      assert.equal(replayed.isError, false, JSON.stringify(replayed.content));
+      assert.equal((replayed.structuredContent as { threadId: ThreadId }).threadId, successor);
     }),
   );
 

@@ -13,6 +13,8 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
+import * as Semaphore from "effect/Semaphore";
+import * as SynchronizedRef from "effect/SynchronizedRef";
 
 import * as ServerConfig from "../config.ts";
 import { buildThreadHandoverTimeline } from "./ThreadHandoverTimeline.ts";
@@ -164,46 +166,39 @@ const make = Effect.gen(function* () {
   const launches = yield* ThreadLaunchService.ThreadLaunchService;
   const threads = yield* ThreadManagementService.ThreadManagementService;
 
+  // Same-command retries can arrive concurrently; serialize per artifact so a
+  // late actor cannot overwrite a finalized capsule or manifest.
+  const handoverLocks = yield* SynchronizedRef.make(new Map<string, Semaphore.Semaphore>());
+  const withHandoverLock = Effect.fn("ThreadHandoverService.withHandoverLock")(function* <A, E, R>(
+    key: string,
+    effect: Effect.Effect<A, E, R>,
+  ) {
+    const permit = yield* SynchronizedRef.modifyEffect(handoverLocks, (locks) => {
+      const existing = locks.get(key);
+      if (existing !== undefined) return Effect.succeed([existing, locks] as const);
+      return Effect.map(Semaphore.make(1), (created) => {
+        const next = new Map(locks);
+        next.set(key, created);
+        return [created, next] as const;
+      });
+    });
+    return yield* permit.withPermits(1)(effect);
+  });
+
   const handover: ThreadHandoverService["Service"]["handover"] = Effect.fn(
     "ThreadHandoverService.handover",
   )(function* (input) {
     const { thread } = input.projection;
-    const reject = (reason: string) =>
-      new ThreadHandoverRejectedError({ threadId: thread.id, reason });
-    if (thread.deletedAt !== null) return yield* reject("Deleted threads cannot be handed over.");
-    if (thread.archivedAt !== null)
-      return yield* reject("Archived threads cannot be handed over; unarchive the thread first.");
-    if (thread.lineage.relationshipToParent === "subagent" || thread.delegatedFrom !== undefined) {
-      return yield* reject("Subagent threads cannot be handed over.");
-    }
-    if (input.projection.runs.some((run) => run.status === "queued")) {
-      return yield* reject("Cancel or deliver queued work before handing over the thread.");
-    }
-    if (
-      input.projection.subagents.some(
-        (subagent) =>
-          subagent.status === "pending" ||
-          subagent.status === "running" ||
-          subagent.status === "waiting",
-      ) ||
-      input.projection.providerThreads.some(
-        (providerThread) => (providerThread.pendingBackgroundTasks?.length ?? 0) > 0,
-      )
-    ) {
-      return yield* reject("Wait for delegated and background work to finish before handing over.");
-    }
-    if (!input.byOwnAgent && input.projection.runs.some(ThreadManagementService.isActiveRun)) {
-      return yield* reject("An active run can be handed over only by its own agent.");
-    }
-
     const handoverId = `handover:${encodeURIComponent(input.commandId)}`;
     // T3 ids contain ':', which is illegal in Windows path segments; encode
-    // every dynamic segment while manifests keep the original ids.
+    // every dynamic segment while manifests keep the original ids. Dots are
+    // encoded too so "." and ".." project ids cannot escape the directory
+    // ProjectService.delete clears.
     const handoversDir = path.join(
       config.stateDir,
       "artifacts",
       "projects",
-      encodeURIComponent(thread.projectId),
+      encodeURIComponent(thread.projectId).replaceAll(".", "%2E"),
       "threads",
       encodeURIComponent(thread.id),
       "handovers",
@@ -214,172 +209,216 @@ const make = Effect.gen(function* () {
     const artifactError = (operation: "read-artifacts" | "write-artifacts") => (cause: unknown) =>
       new ThreadHandoverError({ commandId: input.commandId, operation, cause });
 
-    const existing = yield* fileSystem.readFileString(manifestPath).pipe(
-      Effect.map(parseManifest),
-      Effect.orElseSucceed((): HandoverManifest | null => null),
-    );
-    const entries = yield* fileSystem
-      .readDirectory(handoversDir)
-      .pipe(Effect.orElseSucceed((): ReadonlyArray<string> => []));
-    const manifests = yield* Effect.forEach(
-      entries.filter((entry) => entry !== encodeURIComponent(handoverId)),
-      (entry) =>
-        fileSystem
-          .readFileString(path.join(handoversDir, entry, "manifest.json"))
-          .pipe(Effect.option),
-      { concurrency: 8 },
-    ).pipe(
-      Effect.map((contents) =>
-        contents.flatMap((content) => {
-          if (content._tag === "None") return [];
-          const manifest = parseManifest(content.value);
-          return manifest?.sourceThreadId === thread.id ? [manifest] : [];
-        }),
-      ),
-      Effect.mapError(artifactError("read-artifacts")),
-    );
-    const previous = manifests.toSorted(
-      (left, right) =>
-        right.createdAt.localeCompare(left.createdAt) ||
-        right.handoverId.localeCompare(left.handoverId),
-    )[0];
-    const predecessor: PredecessorMetadata | null =
-      previous === undefined
-        ? null
-        : {
-            handoverId: previous.handoverId,
-            sourceThreadId: previous.sourceThreadId,
-            successorThreadId: previous.successorThreadId,
-            manifestPath: path.join(
-              handoversDir,
-              encodeURIComponent(previous.handoverId),
-              "manifest.json",
-            ),
-            createdAt: previous.createdAt,
-          };
-    const predecessorChain = [
-      ...(previous?.predecessorChain ?? []),
-      ...(predecessor === null ? [] : [predecessor]),
-    ];
-
-    const settleSource = threads
-      .settleThread({
-        threadId: thread.id,
-        commandId: CommandId.make(`${input.commandId}:settle`),
-        byOwnAgent: input.byOwnAgent,
-      })
-      .pipe(
-        Effect.mapError(
-          (cause) =>
-            new ThreadHandoverError({ commandId: input.commandId, operation: "settle", cause }),
-        ),
-      );
-
-    if (existing !== null && existing.successorThreadId !== null) {
-      // A finalized manifest makes the replay immutable: reuse the recorded
-      // successor, leave the artifacts untouched, and only finish settlement.
-      const settled = yield* settleSource;
-      return {
-        threadId: ThreadId.make(existing.successorThreadId),
-        handoverId,
-        manifestPath,
-        settlesWhenTurnEnds: "settlesWhenTurnEnds" in settled && settled.settlesWhenTurnEnds,
-      };
-    }
-
-    // Retries keep the original artifact contents even when the source
-    // projection has moved on; a missing capsule falls back to a rebuild for
-    // the prompt only and is never persisted here.
-    const capsule =
-      existing === null
-        ? buildThreadHandoverTimeline(input.projection).markdown
-        : yield* fileSystem
-            .readFileString(capsulePath)
-            .pipe(
-              Effect.orElseSucceed(() => buildThreadHandoverTimeline(input.projection).markdown),
-            );
-    const manifest: HandoverManifest = existing ?? {
-      version: 1,
-      handoverId,
-      commandId: input.commandId,
-      projectId: thread.projectId,
-      sourceThreadId: thread.id,
-      createdAt: DateTime.formatIso(yield* DateTime.now),
-      capsulePath,
-      predecessor,
-      predecessorChain,
-      successorThreadId: null,
-      launchedAt: null,
-    };
-    if (existing === null) {
-      yield* fileSystem
-        .makeDirectory(handoverDir, { recursive: true })
-        .pipe(
-          Effect.andThen(fileSystem.writeFileString(capsulePath, capsule)),
-          Effect.andThen(
-            fileSystem.writeFileString(manifestPath, `${stringifyManifest(manifest)}\n`),
-          ),
-          Effect.mapError(artifactError("write-artifacts")),
-        );
-    }
-
-    const workspaceStrategy: ThreadLaunchService.ThreadLaunchWorkspaceStrategy =
-      thread.worktreePath === null
-        ? {
-            type: "root",
-            ...(thread.branch === null ? {} : { branch: thread.branch }),
-          }
-        : {
-            type: "existing_worktree",
-            worktreePath: thread.worktreePath,
-            ...(thread.branch === null ? {} : { branch: thread.branch }),
-          };
-    const launched = yield* launches
-      .launch({
-        commandId: CommandId.make(`${input.commandId}:launch`),
-        projectId: thread.projectId,
-        title: input.title ?? `${thread.title} (handover)`,
-        modelSelection: input.modelSelection ?? thread.modelSelection,
-        runtimeMode: thread.runtimeMode,
-        interactionMode: thread.interactionMode,
-        workspaceStrategy,
-        initialMessage: {
-          text: initialPrompt({
-            sourceThreadId: thread.id,
-            capsule,
-            capsulePath,
-            manifestPath,
-            message: input.message,
-          }),
-          attachments: [],
-        },
-        createdBy: "agent",
-        creationSource: "mcp",
-      })
-      .pipe(
-        Effect.mapError(
-          (cause) =>
-            new ThreadHandoverError({ commandId: input.commandId, operation: "launch", cause }),
-        ),
-      );
-
-    const launchedAt = DateTime.formatIso(yield* DateTime.now);
-    const finalized: HandoverManifest = {
-      ...manifest,
-      successorThreadId: launched.threadId,
-      launchedAt: manifest.launchedAt ?? launchedAt,
-    };
-    yield* fileSystem
-      .writeFileString(manifestPath, `${stringifyManifest(finalized)}\n`)
-      .pipe(Effect.mapError(artifactError("write-artifacts")));
-
-    const settled = yield* settleSource;
-    return {
-      threadId: launched.threadId,
-      handoverId,
+    return yield* withHandoverLock(
       manifestPath,
-      settlesWhenTurnEnds: "settlesWhenTurnEnds" in settled && settled.settlesWhenTurnEnds,
-    };
+      Effect.gen(function* () {
+        const existing = yield* fileSystem.readFileString(manifestPath).pipe(
+          Effect.map(parseManifest),
+          Effect.orElseSucceed((): HandoverManifest | null => null),
+        );
+        const entries = yield* fileSystem
+          .readDirectory(handoversDir)
+          .pipe(Effect.orElseSucceed((): ReadonlyArray<string> => []));
+        const manifests = yield* Effect.forEach(
+          entries.filter((entry) => entry !== encodeURIComponent(handoverId)),
+          (entry) =>
+            fileSystem
+              .readFileString(path.join(handoversDir, entry, "manifest.json"))
+              .pipe(Effect.option),
+          { concurrency: 8 },
+        ).pipe(
+          Effect.map((contents) =>
+            contents.flatMap((content) => {
+              if (content._tag === "None") return [];
+              const manifest = parseManifest(content.value);
+              return manifest?.sourceThreadId === thread.id ? [manifest] : [];
+            }),
+          ),
+          Effect.mapError(artifactError("read-artifacts")),
+        );
+        const previous = manifests.toSorted(
+          (left, right) =>
+            right.createdAt.localeCompare(left.createdAt) ||
+            right.handoverId.localeCompare(left.handoverId),
+        )[0];
+        const predecessor: PredecessorMetadata | null =
+          previous === undefined
+            ? null
+            : {
+                handoverId: previous.handoverId,
+                sourceThreadId: previous.sourceThreadId,
+                successorThreadId: previous.successorThreadId,
+                manifestPath: path.join(
+                  handoversDir,
+                  encodeURIComponent(previous.handoverId),
+                  "manifest.json",
+                ),
+                createdAt: previous.createdAt,
+              };
+        const predecessorChain = [
+          ...(previous?.predecessorChain ?? []),
+          ...(predecessor === null ? [] : [predecessor]),
+        ];
+
+        const settleSource = threads
+          .settleThread({
+            threadId: thread.id,
+            commandId: CommandId.make(`${input.commandId}:settle`),
+            byOwnAgent: input.byOwnAgent,
+          })
+          .pipe(
+            Effect.mapError(
+              (cause) =>
+                new ThreadHandoverError({ commandId: input.commandId, operation: "settle", cause }),
+            ),
+          );
+
+        if (existing !== null && existing.successorThreadId !== null) {
+          // A finalized manifest makes the replay immutable and outranks the
+          // source-state guards: reuse the recorded successor, leave the
+          // artifacts untouched, and only finish settlement.
+          const settled = yield* settleSource;
+          return {
+            threadId: ThreadId.make(existing.successorThreadId),
+            handoverId,
+            manifestPath,
+            settlesWhenTurnEnds: "settlesWhenTurnEnds" in settled && settled.settlesWhenTurnEnds,
+          };
+        }
+
+        const reject = (reason: string) =>
+          new ThreadHandoverRejectedError({ threadId: thread.id, reason });
+        if (thread.deletedAt !== null)
+          return yield* reject("Deleted threads cannot be handed over.");
+        if (thread.archivedAt !== null)
+          return yield* reject(
+            "Archived threads cannot be handed over; unarchive the thread first.",
+          );
+        if (
+          thread.lineage.relationshipToParent === "subagent" ||
+          thread.delegatedFrom !== undefined
+        ) {
+          return yield* reject("Subagent threads cannot be handed over.");
+        }
+        if (input.projection.runs.some((run) => run.status === "queued")) {
+          return yield* reject("Cancel or deliver queued work before handing over the thread.");
+        }
+        if (
+          input.projection.subagents.some(
+            (subagent) =>
+              subagent.status === "pending" ||
+              subagent.status === "running" ||
+              subagent.status === "waiting",
+          ) ||
+          input.projection.providerThreads.some(
+            (providerThread) => (providerThread.pendingBackgroundTasks?.length ?? 0) > 0,
+          )
+        ) {
+          return yield* reject(
+            "Wait for delegated and background work to finish before handing over.",
+          );
+        }
+        if (!input.byOwnAgent && input.projection.runs.some(ThreadManagementService.isActiveRun)) {
+          return yield* reject("An active run can be handed over only by its own agent.");
+        }
+
+        // Retries keep the original artifact contents even when the source
+        // projection has moved on; a missing capsule falls back to a rebuild for
+        // the prompt only and is never persisted here.
+        const capsule =
+          existing === null
+            ? buildThreadHandoverTimeline(input.projection).markdown
+            : yield* fileSystem
+                .readFileString(capsulePath)
+                .pipe(
+                  Effect.orElseSucceed(
+                    () => buildThreadHandoverTimeline(input.projection).markdown,
+                  ),
+                );
+        const manifest: HandoverManifest = existing ?? {
+          version: 1,
+          handoverId,
+          commandId: input.commandId,
+          projectId: thread.projectId,
+          sourceThreadId: thread.id,
+          createdAt: DateTime.formatIso(yield* DateTime.now),
+          capsulePath,
+          predecessor,
+          predecessorChain,
+          successorThreadId: null,
+          launchedAt: null,
+        };
+        if (existing === null) {
+          yield* fileSystem
+            .makeDirectory(handoverDir, { recursive: true })
+            .pipe(
+              Effect.andThen(fileSystem.writeFileString(capsulePath, capsule)),
+              Effect.andThen(
+                fileSystem.writeFileString(manifestPath, `${stringifyManifest(manifest)}\n`),
+              ),
+              Effect.mapError(artifactError("write-artifacts")),
+            );
+        }
+
+        const workspaceStrategy: ThreadLaunchService.ThreadLaunchWorkspaceStrategy =
+          thread.worktreePath === null
+            ? {
+                type: "root",
+                ...(thread.branch === null ? {} : { branch: thread.branch }),
+              }
+            : {
+                type: "existing_worktree",
+                worktreePath: thread.worktreePath,
+                ...(thread.branch === null ? {} : { branch: thread.branch }),
+              };
+        const launched = yield* launches
+          .launch({
+            commandId: CommandId.make(`${input.commandId}:launch`),
+            projectId: thread.projectId,
+            title: input.title ?? `${thread.title} (handover)`,
+            modelSelection: input.modelSelection ?? thread.modelSelection,
+            runtimeMode: thread.runtimeMode,
+            interactionMode: thread.interactionMode,
+            workspaceStrategy,
+            initialMessage: {
+              text: initialPrompt({
+                sourceThreadId: thread.id,
+                capsule,
+                capsulePath,
+                manifestPath,
+                message: input.message,
+              }),
+              attachments: [],
+            },
+            createdBy: "agent",
+            creationSource: "mcp",
+          })
+          .pipe(
+            Effect.mapError(
+              (cause) =>
+                new ThreadHandoverError({ commandId: input.commandId, operation: "launch", cause }),
+            ),
+          );
+
+        const launchedAt = DateTime.formatIso(yield* DateTime.now);
+        const finalized: HandoverManifest = {
+          ...manifest,
+          successorThreadId: launched.threadId,
+          launchedAt: manifest.launchedAt ?? launchedAt,
+        };
+        yield* fileSystem
+          .writeFileString(manifestPath, `${stringifyManifest(finalized)}\n`)
+          .pipe(Effect.mapError(artifactError("write-artifacts")));
+
+        const settled = yield* settleSource;
+        return {
+          threadId: launched.threadId,
+          handoverId,
+          manifestPath,
+          settlesWhenTurnEnds: "settlesWhenTurnEnds" in settled && settled.settlesWhenTurnEnds,
+        };
+      }),
+    );
   });
 
   return ThreadHandoverService.of({ handover });

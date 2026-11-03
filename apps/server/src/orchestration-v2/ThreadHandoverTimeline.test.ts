@@ -187,11 +187,21 @@ describe("buildThreadHandoverTimeline epoch partitioning", () => {
       ],
     });
 
-    const { epochs } = buildThreadHandoverTimeline(projection);
+    const { epochs, markdown } = buildThreadHandoverTimeline({
+      ...projection,
+      messages: [
+        ...projection.messages,
+        assistantMessage("a1", "r1", "Automated sweep found 3 stale branches."),
+        assistantMessage("a2", "r2", "Automated follow-up confirmed nothing else is stale."),
+      ],
+    });
     expect(epochs).toHaveLength(2);
     expect(epochs[0]).toMatchObject({ fromRunOrdinal: 1, toRunOrdinal: 2, priority: "background" });
     expect(epochs[0]!.userMessages).toEqual([]);
     expect(epochs[1]).toMatchObject({ fromRunOrdinal: 3, toRunOrdinal: 4, priority: "essential" });
+
+    // A no-user-ask epoch carries its latest automated report instead of the bare "no user ask".
+    expect(markdown).toContain("Automated follow-up confirmed nothing else is stale.");
   });
 
   it("marks the latest epoch essential and notes the reason when work is still pending", () => {
@@ -243,19 +253,23 @@ describe("buildThreadHandoverTimeline epoch content", () => {
       messages: [
         ...projection.messages,
         assistantMessage("a1", "r1", "First epoch full report: fixed the login bug in auth.ts."),
+        assistantMessage("a2", "r2", "Continuation run report: covered the edge case."),
         assistantMessage("a4", "r4", "High epoch report that must stay summarized."),
         assistantMessage("a5", "r5", "Latest epoch full report: shipped and green."),
       ],
     };
 
-    const { epochs } = buildThreadHandoverTimeline(withReports);
+    const { epochs, markdown } = buildThreadHandoverTimeline(withReports);
     expect(epochs[0]!.assistantReports).toEqual([
       { runId: RunId.make("r1"), text: "First epoch full report: fixed the login bug in auth.ts." },
+      { runId: RunId.make("r2"), text: "Continuation run report: covered the edge case." },
     ]);
     expect(epochs[1]!.assistantReports).toEqual([]);
     expect(epochs[2]!.assistantReports).toEqual([
       { runId: RunId.make("r5"), text: "Latest epoch full report: shipped and green." },
     ]);
+    // Continuation-run results inside a detailed epoch are not dropped from the capsule.
+    expect(markdown).toContain("Continuation run report: covered the edge case.");
   });
 
   it("collects subagent, checkpoint, and pull request references", () => {
@@ -366,8 +380,9 @@ describe("buildThreadHandoverTimeline markdown", () => {
     expect(markdown).toContain("Now add tests");
     expect(markdown).toContain("Full first-epoch report body that must appear verbatim.");
 
-    // …but routine command output and non-essential reports stay out of the document.
-    expect(markdown).not.toContain("Routine grouped-run output that must not be inlined.");
+    // …including continuation-run reports in essential epochs, while reports from
+    // non-essential epochs stay out of the document.
+    expect(markdown).toContain("Routine grouped-run output that must not be inlined.");
     expect(markdown).not.toContain("High epoch report body that must not be inlined.");
   });
 

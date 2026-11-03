@@ -104,11 +104,16 @@ function buildEpochs(projection: OrchestrationV2ThreadProjection) {
         : []),
     ];
 
+    const runReports = epochRuns.flatMap((run) =>
+      projection.messages
+        .filter((message) => message.role === "assistant" && message.runId === run.id)
+        .map((message) => ({ runId: run.id, text: message.text })),
+    );
     const assistantReports = isEdgeEpoch
-      ? projection.messages
-          .filter((message) => message.role === "assistant" && message.runId === anchorRun.id)
-          .map((message) => ({ runId: anchorRun.id, text: message.text }))
-      : [];
+      ? runReports
+      : userMessages.length === 0
+        ? runReports.slice(-1)
+        : [];
 
     return {
       id: `epoch-${epochIndex + 1}`,
@@ -131,6 +136,7 @@ function renderMarkdown(epochs: ReturnType<typeof buildEpochs>) {
   for (const epoch of epochs) {
     const asks =
       epoch.userMessages.map((message) => message.text.replaceAll("\n", " ")).join("; ") ||
+      epoch.assistantReports.at(-1)?.text.replaceAll("\n", " ") ||
       "no user ask";
     lines.push(
       `- ${epoch.id} [${epoch.priority}] runs ${epoch.fromRunOrdinal}-${epoch.toRunOrdinal}: ${asks}`,

@@ -25,6 +25,7 @@ import {
 import * as ThreadSearch from "../../../orchestration-v2/ThreadSearch.ts";
 import * as ScheduledTasks from "../../../scheduledTasks/ScheduledTaskService.ts";
 import * as ThreadHandover from "../../../orchestration-v2/ThreadHandoverService.ts";
+import { assertNotLinked } from "../../linkOrigin.ts";
 import { queuedRunsInDeliveryOrder } from "../../../orchestration-v2/QueuedRunOrder.ts";
 import { ThreadToolkit } from "./tools.ts";
 
@@ -355,7 +356,12 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
   ),
   t3_thread_handover: writesThread((input) =>
     Effect.gen(function* () {
-      const { caller, threads } = yield* readThread(input.threadId);
+      const context = yield* readThread(input.threadId);
+      const { caller, threads } = context;
+      // The successor is a top-level thread this environment launches, and the
+      // handover cannot stamp it with the caller's link, so a fenced link would
+      // hand its work to a thread the fence no longer covers.
+      yield* assertNotLinked(context, "hand over threads");
       const sourceId = input.threadId ?? caller?.id;
       if (sourceId === undefined) {
         return yield* new OrchestratorMcpFailure({

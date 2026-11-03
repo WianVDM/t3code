@@ -505,10 +505,19 @@ export const make = Effect.gen(function* () {
       ),
     );
 
+  // encodeURIComponent keeps dots; encode them so "." and ".." ids cannot escape the project directory.
+  const projectArtifactDirectory = (projectId: ProjectId) =>
+    encodeURIComponent(projectId).replaceAll(".", "%2E");
+
   const clearProjectArtifacts = (projectId: ProjectId) =>
     fileSystem
       .remove(
-        path.join(serverConfig.stateDir, "artifacts", "projects", encodeURIComponent(projectId)),
+        path.join(
+          serverConfig.stateDir,
+          "artifacts",
+          "projects",
+          projectArtifactDirectory(projectId),
+        ),
         {
           recursive: true,
           force: true,
