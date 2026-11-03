@@ -696,6 +696,32 @@ describe("pools", () => {
     expect(accounts.slice(1).map((account) => account.redeem)).toEqual([null, null]);
   });
 
+  it("exposes upstream usage accounts when the provider reports no native limits", () => {
+    const pi = ProviderDriverKind.make("pi");
+    const upstreamOnly = provider({
+      driver: pi,
+      instanceId: ProviderInstanceId.make("pi"),
+      auth: { status: "authenticated" },
+      usageAccounts: [
+        {
+          id: "upstream@example.com.json",
+          driver: pi,
+          email: "upstream@example.com",
+          usageLimits: { checkedAt, windows: [window] },
+        },
+      ],
+    });
+    const input = new Map([
+      [EnvironmentId.make("env-a"), { ...laptop, serverConfig: { providers: [upstreamOnly] } }],
+    ]);
+    const accounts = collectLimitAccounts(input);
+    expect(accounts.map((account) => account.key)).toEqual(["env-a:pi:upstream@example.com.json"]);
+    expect(accounts[0]).toMatchObject({
+      email: "upstream@example.com",
+      environments: [{ environmentId: "env-a", label: "Laptop" }],
+    });
+  });
+
   it("keys a hub account without an email by hub, so two environments on one hub share it", () => {
     const seat = {
       id: "claude-team-seat.json",

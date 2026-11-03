@@ -20,6 +20,7 @@ export interface OpenRouterUsageInput {
 
 const KEY_URL = "https://openrouter.ai/api/v1/key";
 const ACTIVITY_URL = "https://openrouter.ai/activity";
+const PROBE_TIMEOUT = "10 seconds";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -47,15 +48,19 @@ export const readOpenRouterUsageAccount = Effect.fn("readOpenRouterUsageAccount"
       message: "OpenRouter could not read this account's usage.",
     }),
   };
-  const response = yield* httpClient
-    .execute(
+  const data = yield* Effect.gen(function* () {
+    const response = yield* httpClient.execute(
       HttpClientRequest.get(KEY_URL).pipe(HttpClientRequest.bearerToken(input.credential.key)),
-    )
-    .pipe(Effect.orElseSucceed(() => null));
-  if (response === null || response.status < 200 || response.status >= 300) return failed;
-  const body = yield* response.json.pipe(Effect.orElseSucceed(() => null));
-  if (!isRecord(body) || !isRecord(body.data)) return failed;
-  const data = body.data;
+    );
+    if (response.status < 200 || response.status >= 300) return undefined;
+    const body = yield* response.json;
+    return isRecord(body) && isRecord(body.data) ? body.data : undefined;
+  }).pipe(
+    Effect.timeout(PROBE_TIMEOUT),
+    // Stalled or malformed probes fold into the existing probeFailed account, with no retry.
+    Effect.orElseSucceed(() => undefined),
+  );
+  if (data === undefined) return failed;
   const usage = usd(data.usage);
   const limit = usd(data.limit);
   const remaining = usd(data.limit_remaining);

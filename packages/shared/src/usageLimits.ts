@@ -326,19 +326,20 @@ export function collectLimitAccounts(presentations: LimitPresentations): readonl
   for (const [environmentId, presentation] of presentations) {
     const label = presentation.entry.target.label;
     for (const provider of providersWithLimits(presentation.serverConfig?.providers ?? [])) {
-      if (!provider.usageLimits || limitsNotice(provider.usageLimits) !== null) continue;
-      merge(resolveKey(nativeReport(provider)) ?? `${environmentId}:${provider.instanceId}`, {
-        key: `${environmentId}:${provider.instanceId}`,
-        driver: provider.driver,
-        displayName: provider.displayName?.trim() || null,
-        email: provider.auth.email,
-        plan: provider.auth.label,
-        accentColor: provider.accentColor,
-        environments: [{ environmentId, label }],
-        sourceLabel: null,
-        redeem: { environmentId, input: { instanceId: provider.instanceId } },
-        limits: provider.usageLimits,
-      });
+      if (provider.usageLimits && limitsNotice(provider.usageLimits) === null) {
+        merge(resolveKey(nativeReport(provider)) ?? `${environmentId}:${provider.instanceId}`, {
+          key: `${environmentId}:${provider.instanceId}`,
+          driver: provider.driver,
+          displayName: provider.displayName?.trim() || null,
+          email: provider.auth.email,
+          plan: provider.auth.label,
+          accentColor: provider.accentColor,
+          environments: [{ environmentId, label }],
+          sourceLabel: null,
+          redeem: { environmentId, input: { instanceId: provider.instanceId } },
+          limits: provider.usageLimits,
+        });
+      }
       for (const account of provider.usageAccounts ?? []) {
         if (limitsNotice(account.usageLimits) !== null) continue;
         const key = `${environmentId}:${provider.instanceId}:${account.id}`;

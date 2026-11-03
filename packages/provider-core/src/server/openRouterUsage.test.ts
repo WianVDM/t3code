@@ -1,6 +1,8 @@
 import { expect, it } from "@effect/vitest";
 import { ProviderDriverKind } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
+import * as TestClock from "effect/testing/TestClock";
 import { HttpClient, HttpClientResponse } from "effect/http";
 
 import { readOpenRouterUsageAccount, type OpenRouterUsageInput } from "./openRouterUsage.ts";
@@ -81,6 +83,33 @@ it.effect("reports probeFailed on an unparseable response body instead of fabric
     );
 
     expect(requests).toEqual(["https://openrouter.ai/api/v1/key"]);
+    expect(account.usageLimits).toMatchObject({
+      checkedAt,
+      windows: [],
+      unavailable: { reason: "probeFailed" },
+    });
+    expect(account.usageLimits.monetaryUsage).toBeUndefined();
+  }),
+);
+
+it.effect("folds a stalled key request to probeFailed at the 10 second probe timeout", () =>
+  Effect.gen(function* () {
+    const attempts: string[] = [];
+    const http = HttpClient.make((request) =>
+      Effect.sync(() => {
+        attempts.push(request.url);
+      }).pipe(Effect.andThen(Effect.never)),
+    );
+    const fiber = yield* readOpenRouterUsageAccount(input).pipe(
+      Effect.provideService(HttpClient.HttpClient, http),
+      Effect.forkChild({ startImmediately: true }),
+    );
+    expect(attempts).toEqual(["https://openrouter.ai/api/v1/key"]);
+
+    yield* TestClock.adjust("10 seconds");
+
+    expect(fiber.pollUnsafe()).toBeDefined();
+    const account = yield* Fiber.join(fiber);
     expect(account.usageLimits).toMatchObject({
       checkedAt,
       windows: [],

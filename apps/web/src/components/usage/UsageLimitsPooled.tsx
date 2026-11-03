@@ -605,14 +605,23 @@ function PoolWindowCard({
   );
 }
 
-function PoolMonetaryAccounts({ pool }: { readonly pool: LimitPool }) {
+function PoolMonetaryAccounts({
+  pool,
+  showEmptyLabel,
+}: {
+  readonly pool: LimitPool;
+  readonly showEmptyLabel: boolean;
+}) {
   const rows = pool.accounts.flatMap((account) => {
     const monetary = monetaryUsageOf(account.limits);
     return monetary ? [{ account, monetary }] : [];
   });
+  if (!showEmptyLabel && rows.length === 0) return null;
   return (
     <div className="flex flex-col gap-2 rounded-lg border border-border/60 p-4">
-      <span className="text-xs text-muted-foreground">No rate-limit windows reported</span>
+      {showEmptyLabel ? (
+        <span className="text-xs text-muted-foreground">No rate-limit windows reported</span>
+      ) : null}
       {rows.map(({ account, monetary }) => (
         <span key={account.key} className="flex items-baseline justify-between gap-3 text-xs">
           <AccountName account={account} className="min-w-0 truncate font-medium text-foreground" />
@@ -641,24 +650,20 @@ function PoolSection({ pool, now }: { readonly pool: LimitPool; readonly now: nu
         />
         {label}
       </h2>
-      {windows.length === 0 ? (
-        <PoolMonetaryAccounts pool={pool} />
-      ) : (
-        windows.map((window) => {
-          const details =
-            pool.driver === "cursor" ? cursorUsageWindowDetails(window.id) : undefined;
-          return (
-            <PoolWindowCard
-              key={`${window.kind}:${window.id}`}
-              pool={window}
-              color={color}
-              now={now}
-              label={details?.label}
-              description={details?.description}
-            />
-          );
-        })
-      )}
+      {windows.map((window) => {
+        const details = pool.driver === "cursor" ? cursorUsageWindowDetails(window.id) : undefined;
+        return (
+          <PoolWindowCard
+            key={`${window.kind}:${window.id}`}
+            pool={window}
+            color={color}
+            now={now}
+            label={details?.label}
+            description={details?.description}
+          />
+        );
+      })}
+      <PoolMonetaryAccounts pool={pool} showEmptyLabel={windows.length === 0} />
     </section>
   );
 }
