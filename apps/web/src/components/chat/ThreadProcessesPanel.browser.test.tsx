@@ -67,6 +67,7 @@ import { AppAtomRegistryProvider } from "~/rpc/atomRegistry";
 import { act, fakeTimers, render } from "../../../test/render";
 import { ProcessDetailsDialogHost } from "./ChatOverlayHosts";
 import { ThreadProcessesPanel } from "./ThreadProcessesPanel";
+import { retainThreadOverlaysForThread } from "./threadOverlayRetention";
 
 const environmentId = EnvironmentId.make("env-1");
 const threadId = ThreadId.make("thread-1");
@@ -163,8 +164,7 @@ function subject(input: SetupInput): ReactElement {
         visibleTurnItems={state.visibleTurnItems as ReadonlyArray<OrchestrationV2ProjectedTurnItem>}
         cwd={undefined}
         workspaceRoot={undefined}
-        onOpenThread={() => {}}
-        onOpenTurnDiff={() => {}}
+        onOpenToolDiff={() => {}}
       />
     </AppAtomRegistryProvider>
   );
@@ -189,6 +189,8 @@ function applyState(input: SetupInput) {
 }
 
 async function setup(input: SetupInput = {}) {
+  // Overlays outlive unmounts and drop only on a route change, so drop them like one.
+  retainThreadOverlaysForThread(null);
   applyState(input);
   state.reveal.mockClear();
 
@@ -681,7 +683,7 @@ it("ticks a known elapsed time on the row", async () => {
   });
 });
 
-it("renders an em dash for unknown starts and never falls back to updatedAt", async () => {
+it("renders a dash for unknown starts and never falls back to updatedAt", async () => {
   await using fixture = await setup({
     sessions: [
       terminalSession({
@@ -705,7 +707,7 @@ it("renders an em dash for unknown starts and never falls back to updatedAt", as
   expect(document.querySelectorAll('[aria-label="Elapsed time unavailable"]')).toHaveLength(2);
   expect(document.body.textContent).not.toContain("0m");
 
-  // The hover says the same: Session uptime is an em dash, not a fabricated elapsed.
+  // The hover says the same: Session uptime is a dash, not a fabricated elapsed.
   await userEvent.hover(screen.getByRole("button", { name: /new shell/ }));
   await expect.element(page.getByText("Session uptime")).toBeVisible();
   const uptimeRow = page.getByText("Session uptime").element().parentElement;

@@ -80,6 +80,7 @@ async function refreshAndPublishIfStale(): Promise<void> {
 }
 
 export function useUpstreamReleasePolling(): void {
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- checks GitHub for a newer upstream release once on mount
   useEffect(() => {
     if (!isForkDesktopBuild) {
       return;

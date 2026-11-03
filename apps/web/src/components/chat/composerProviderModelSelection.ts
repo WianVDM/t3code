@@ -7,9 +7,7 @@ import {
 import {
   NO_PROVIDER_MODEL_SELECTION,
   type ProviderInstanceEntry,
-  applyProviderInstanceSettings,
-  deriveProviderInstanceEntries,
-  sortProviderInstanceEntries,
+  providerInstanceEntriesFor,
 } from "../../providerInstances";
 import { type UnifiedSettings } from "@t3tools/contracts/settings";
 import { createModelSelection } from "@t3tools/shared/model";
@@ -55,12 +53,10 @@ export function resolveComposerProviderModelSelection(input: ComposerProviderMod
     lockedProvider,
     lockedInstanceId,
   } = input;
-  const providerInstanceEntries: ReadonlyArray<ProviderInstanceEntry> = sortProviderInstanceEntries(
-    applyProviderInstanceSettings(
-      deriveProviderInstanceEntries(providerStatuses),
-      settings,
-      activeProjectId,
-    ),
+  const providerInstanceEntries: ReadonlyArray<ProviderInstanceEntry> = providerInstanceEntriesFor(
+    providerStatuses,
+    settings,
+    activeProjectId,
   );
   const selection = resolveComposerProviderSelection({
     entries: providerInstanceEntries,
@@ -77,6 +73,7 @@ export function resolveComposerProviderModelSelection(input: ComposerProviderMod
     providers: providerStatuses,
     selectedProvider,
     selectedInstanceId,
+    requestedInstanceId: selection.requestedInstanceId,
     threadModelSelection,
     projectModelSelection,
     settings,

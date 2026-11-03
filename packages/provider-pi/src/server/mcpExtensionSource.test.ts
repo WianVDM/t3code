@@ -30,7 +30,10 @@ type InputHook = (
   ctx: { ui: { notify: (message: string, level: string) => void } },
 ) => Promise<{ action: string; text: string; images?: ReadonlyArray<unknown> } | undefined>;
 
-async function loadHooks(commands: ReadonlyArray<SkillCommand> = []) {
+async function loadHooks(
+  commands: ReadonlyArray<SkillCommand> = [],
+  argv: ReadonlyArray<string> = [],
+) {
   const handlers = new Map<string, unknown>();
   const source = NodeModule.stripTypeScriptTypes(
     PI_T3_MCP_EXTENSION_SOURCE.replace(/^import .*;$/gm, "").replace(
@@ -39,7 +42,7 @@ async function loadHooks(commands: ReadonlyArray<SkillCommand> = []) {
     ),
   );
   await NodeVM.runInNewContext(`${source}\nt3McpExtension(pi)`, {
-    process: { env: {} },
+    process: { env: {}, argv },
     NodeFSP,
     NodePath,
     stripFrontmatter: (content: string) => content,
@@ -79,6 +82,32 @@ describe("Pi orchestration prompt section", () => {
       assert.isTrue(result!.systemPrompt.startsWith(`${event.systemPrompt}\n\n`));
       assert.include(result!.systemPrompt, "orchestrator_capabilities");
     }
+  });
+});
+
+describe("Pi project trust", () => {
+  it.each([
+    { name: "a trusted folder", trusted: true, argv: [], notices: 0 },
+    { name: "an untrusted folder", trusted: false, argv: [], notices: 1 },
+    { name: "--no-approve", trusted: false, argv: ["--approve", "-na"], notices: 0 },
+  ])("sends $notices trust notice per session for $name", async ({ trusted, argv, notices }) => {
+    const sent: string[] = [];
+    const ctx = {
+      cwd: "/repo",
+      isProjectTrusted: () => trusted,
+      ui: { notify: (message: string) => sent.push(message) },
+    };
+    // Pi reruns extension factories on session replacement without asking about trust again.
+    for (const _session of [1, 2]) {
+      const handlers = (await loadHooks([], ["node", "pi", ...argv])) as Map<
+        string,
+        (event: unknown, ctx: unknown) => unknown
+      >;
+      for (const _turn of [1, 2]) await handlers.get("before_agent_start")!({}, ctx);
+    }
+    assert.equal(sent.length, notices * 2);
+    for (const message of sent)
+      assert.include(message, "for /repo because the folder is not trusted");
   });
 });
 
@@ -626,7 +655,7 @@ describe("Pi context bridge target", () => {
   it("registers no bridge handlers without a payload", async () => {
     const bridge = await loadMcpBridge();
     assert.isUndefined(bridge.handlers.get("resources_discover"));
-    assert.equal(bridge.handlers.getAll("before_agent_start").length, 1);
+    assert.equal(bridge.handlers.getAll("before_agent_start").length, 2);
   });
 
   it("appends the bridged block when the assembled prompt lacks it", async () => {
@@ -635,7 +664,7 @@ describe("Pi context bridge target", () => {
         contextBridge: bridgePayload,
         reportPath: NodePath.join(directory, "report.json"),
       });
-      const hook = bridge.handlers.getAll("before_agent_start")[0]! as BridgeAgentHook;
+      const hook = bridge.handlers.getAll("before_agent_start")[1]! as BridgeAgentHook;
       const result = await hook(
         { systemPrompt: "base prompt" },
         { model: { api: "anthropic-messages" }, ui: { notify: assert.fail } },
@@ -652,7 +681,7 @@ describe("Pi context bridge target", () => {
         contextBridge: bridgePayload,
         reportPath: NodePath.join(directory, "report.json"),
       });
-      const hook = bridge.handlers.getAll("before_agent_start")[0]! as BridgeAgentHook;
+      const hook = bridge.handlers.getAll("before_agent_start")[1]! as BridgeAgentHook;
       const sections: Record<string, string> = { existing: "keep me" };
       const event = { systemPrompt: "base", systemPromptOptions: { sections } };
       const result = await hook(event, {
@@ -669,7 +698,7 @@ describe("Pi context bridge target", () => {
     await withTempDir(async (directory) => {
       const reportPath = NodePath.join(directory, "report.json");
       const bridge = await loadMcpBridge({ contextBridge: bridgePayload, reportPath });
-      const hook = bridge.handlers.getAll("before_agent_start")[0]! as BridgeAgentHook;
+      const hook = bridge.handlers.getAll("before_agent_start")[1]! as BridgeAgentHook;
       for (const event of [
         { systemPrompt: `base\n\n${CONTEXT_BRIDGE_BLOCK}` },
         {
@@ -707,7 +736,7 @@ describe("Pi context bridge target", () => {
     await withTempDir(async (directory) => {
       const reportPath = NodePath.join(directory, "report.json");
       const bridge = await loadMcpBridge({ contextBridge: bridgePayload, reportPath });
-      const start = bridge.handlers.getAll("before_agent_start")[0]! as BridgeAgentHook;
+      const start = bridge.handlers.getAll("before_agent_start")[1]! as BridgeAgentHook;
       await start(
         { systemPrompt: "base prompt" },
         { model: { api: "anthropic-messages" }, ui: { notify: assert.fail } },

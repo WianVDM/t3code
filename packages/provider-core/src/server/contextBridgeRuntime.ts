@@ -1,13 +1,7 @@
 /**
- * Context bridge runtime glue for adapters: per-turn access to the server's
- * ContextBridgeSettings plus the Effect wrappers every instruction call site
- * shares. Settings are read on every call so a change applies to the next
- * turn without a restart.
- *
- * Resolution never fails a turn. The host is optional (`Effect.serviceOption`
- * keeps the requirement out of every adapter's environment), a settings read
- * error or a defect while building the block logs a warning and yields no
- * bridged context.
+ * Context bridge runtime glue for adapters: per-turn ContextBridgeSettings access and
+ * the Effect wrappers every instruction call site shares. Resolution never fails a turn:
+ * a settings read error or a defect logs a warning and yields no bridged context.
  *
  * @module provider-core/server/contextBridgeRuntime
  */
@@ -77,11 +71,9 @@ export interface BridgedContextForTurn {
 }
 
 /**
- * The full bridged context for one session launch: the instruction route's
- * per-file resolution and the skills route's roots. Each route resolves
- * independently so one failing route never suppresses the other, and a
- * settings read failure yields two nulls. Targets that inject outside the
- * prompt stream (pi) need the per-file outcomes, not just the block.
+ * Each route (instructions, skills) resolves independently so one failing route never
+ * suppresses the other, and a settings read failure yields two nulls. Targets that
+ * inject outside the prompt stream (pi) need the per-file outcomes, not just the block.
  */
 export const bridgedContextForTurn = Effect.fn("ContextBridgeRuntime.bridgedContextForTurn")(
   function* (input: { readonly targetDriver: string; readonly cwd: string | null | undefined }) {

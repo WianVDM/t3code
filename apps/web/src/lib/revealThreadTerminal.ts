@@ -2,6 +2,7 @@ import type { ScopedThreadRef } from "@t3tools/contracts";
 
 import { selectThreadRightPanelState, useRightPanelStore } from "../rightPanelStore";
 import { selectThreadTerminalUiState, useTerminalUiStateStore } from "../terminalUiStateStore";
+import { focusTerminalOnNavigation } from "./terminalFocus";
 
 export function revealThreadTerminal(threadRef: ScopedThreadRef, terminalId: string) {
   const panels = useRightPanelStore.getState();
@@ -11,20 +12,21 @@ export function revealThreadTerminal(threadRef: ScopedThreadRef, terminalId: str
   if (surface) {
     panels.activateTerminal(threadRef, surface.id, terminalId);
     panels.activateSurface(threadRef, surface.id);
+    focusTerminalOnNavigation(threadRef, terminalId);
     return;
   }
   useTerminalUiStateStore.getState().ensureTerminal(threadRef, terminalId, {
     open: true,
     active: true,
   });
+  focusTerminalOnNavigation(threadRef, terminalId);
 }
 
 /**
- * Processes reveal always targets the right side panel: a terminal already shown there (or in a
- * split) activates in place; a drawer terminal moves to a panel surface, then the drawer's UI
- * ownership is released with a filtered reconcile — never closeTerminal, which would suppress
- * the id, and never a session close or relaunch. The panel surface opens first so the terminal
- * always has exactly one owner and repeated reveals cannot duplicate the surface.
+ * Reveal always targets the right side panel. A drawer terminal's UI ownership is released
+ * with a filtered reconcile, never closeTerminal (which would suppress the id) and never a
+ * session close or relaunch. The panel surface opens first so the terminal always has exactly
+ * one owner and repeated reveals cannot duplicate the surface.
  */
 export function revealThreadTerminalInRightPanel(threadRef: ScopedThreadRef, terminalId: string) {
   const panels = useRightPanelStore.getState();
@@ -70,4 +72,5 @@ export function revealThreadTerminalInRightPanel(threadRef: ScopedThreadRef, ter
       drawerIds.filter((id) => id !== terminalId),
     );
   }
+  focusTerminalOnNavigation(threadRef, terminalId);
 }

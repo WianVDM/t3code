@@ -29,12 +29,12 @@ export function ProcessTooltipContent(props: {
   readonly preview?: string | null;
   readonly note?: string | null;
 }) {
-  // An unknown start is still reported, as an em dash — matching the row, which never
+  // An unknown start is still reported, as a dash, matching the row, which never
   // fabricates a 0m or falls back to a proxy like updatedAt.
   const elapsed =
     props.startedAt === null ? (
       <span className="shrink-0 text-muted-foreground" aria-label="Elapsed time unavailable">
-        —
+        –
       </span>
     ) : (
       <AgentElapsed

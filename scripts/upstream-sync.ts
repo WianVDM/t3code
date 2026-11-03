@@ -374,7 +374,8 @@ const verifyMergeState = Effect.fn("upstream-sync.verifyMergeState")(function* (
       });
     }
 
-    const diffCheckArgs = ["diff", "--no-color", "--check", ...target.diffArgs, "HEAD", "--"];
+    // Against the upstream side, so upstream's own vendored whitespace doesn't block every sync.
+    const diffCheckArgs = ["diff", "--no-color", "--check", ...target.diffArgs, mergeHead, "--"];
     const diffCheck = yield* runGit(cwd, diffCheckArgs);
     if (diffCheck.exitCode !== 0) {
       return yield* new GitCommandError({

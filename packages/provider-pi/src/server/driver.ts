@@ -1,7 +1,4 @@
-/**
- * Pi state (sessions, settings, extensions, auth) lives in the user's own
- * `~/.pi/agent`, so continuation identity uses the default instance grouping.
- */
+// User-wide ~/.pi/agent state makes continuation identity use default instance grouping.
 import { ProviderDriverKind, type ServerProvider } from "@t3tools/contracts";
 import { PiSettings } from "../settings.ts";
 import * as Effect from "effect/Effect";
@@ -145,15 +142,20 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv, Path.Path> = {
     const textGeneration = yield* makePiTextGeneration(effectiveConfig, processEnv);
 
     const checkProvider = checkPiProviderStatus(effectiveConfig, processEnv, cwd).pipe(
-      Effect.flatMap((snapshot) =>
-        effectiveConfig.enabled && snapshot.installed && snapshot.auth.status === "authenticated"
-          ? readKimiCodeAccount(processEnv).pipe(
-              Effect.map(({ usageLimits }) => ({
-                ...snapshot,
-                usageLimits,
-              })),
-            )
-          : Effect.succeed(snapshot),
+      Effect.filterOrElse(
+        (snapshot) =>
+          !(
+            effectiveConfig.enabled &&
+            snapshot.installed &&
+            snapshot.auth.status === "authenticated"
+          ),
+        (snapshot) =>
+          readKimiCodeAccount(processEnv).pipe(
+            Effect.map(({ usageLimits }) => ({
+              ...snapshot,
+              usageLimits,
+            })),
+          ),
       ),
       Effect.map(stampIdentity),
       Effect.provideService(HttpClient.HttpClient, httpClient),
