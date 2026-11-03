@@ -64,8 +64,6 @@ export const CONTEXT_BRIDGE_CATALOG: Readonly<Record<string, ContextBridgeCatalo
       "~/.pi/agent/CLAUDE.md",
       "AGENTS.md",
       "CLAUDE.md",
-      "AGENTS.local.md",
-      "CLAUDE.local.md",
     ],
   },
   antigravity: {
@@ -137,6 +135,13 @@ export interface ContextBridgeInput {
   readonly targetDriver: string;
   readonly cwd: string | undefined;
   readonly userHome: string;
+  /**
+   * Pi's agent dir (PI_CODING_AGENT_DIR) when it differs from the default
+   * `~/.pi/agent` under `userHome`; only target-native instruction/skill
+   * paths expand against it, since a source file Pi already reads natively
+   * must dedupe against the agent dir rather than `userHome`/`cwd`.
+   */
+  readonly nativeHome?: string | undefined;
 }
 
 const BLOCK_MARKER = "<!-- t3-context-bridge -->";
@@ -200,6 +205,30 @@ function expandPath(rawPath: string, cwd: string | undefined, userHome: string):
   return cwd ? NodePath.resolve(cwd, trimmed) : null;
 }
 
+const PI_AGENT_HOME_PREFIX = "~/.pi/agent";
+
+/** Whether a catalog path is anchored at Pi's default agent home. */
+function isPiAgentHomePath(trimmed: string): boolean {
+  return (
+    trimmed === PI_AGENT_HOME_PREFIX ||
+    trimmed.startsWith(`${PI_AGENT_HOME_PREFIX}/`) ||
+    trimmed.startsWith(`${PI_AGENT_HOME_PREFIX}\\`)
+  );
+}
+
+function expandTargetNativePath(
+  rawPath: string,
+  cwd: string | undefined,
+  userHome: string,
+  nativeHome: string | undefined,
+): string | null {
+  const trimmed = rawPath.trim();
+  if (nativeHome !== undefined && isPiAgentHomePath(trimmed)) {
+    return NodePath.join(nativeHome, trimmed.slice(PI_AGENT_HOME_PREFIX.length));
+  }
+  return expandPath(rawPath, cwd, userHome);
+}
+
 /** Directories from the filesystem root down to `cwd`, root first. */
 function ancestorChain(cwd: string): string[] {
   const dirs: string[] = [];
@@ -237,6 +266,31 @@ function readCandidate(filePath: string): ReadCandidate | null {
 
 type InstructionTier = "global" | "project" | "local";
 
+// Claude-style `@path` import: a line whose only content is the pointer.
+const IMPORT_LINE = /^[ \t]*@(\S+)[ \t]*\r?$/;
+
+/**
+ * Inlines `@path` import lines, resolved relative to the containing file;
+ * non-Claude targets cannot resolve them, so bridged files arrive expanded.
+ * `stack` holds the real paths currently being expanded: nested imports
+ * terminate and cycles leave the offending line untouched.
+ */
+function expandImports(content: string, filePath: string, stack: ReadonlySet<string>): string {
+  return content
+    .split("\n")
+    .map((line) => {
+      const match = IMPORT_LINE.exec(line);
+      if (!match) return line;
+      const target = NodePath.resolve(NodePath.dirname(filePath), match[1]!);
+      const read = readCandidate(target);
+      if (!read) return line;
+      const key = read.realPath.toLowerCase();
+      if (stack.has(key)) return line;
+      return expandImports(read.content, read.realPath, new Set([...stack, key]));
+    })
+    .join("\n");
+}
+
 interface InstructionSpec {
   readonly path: string;
   readonly tier: InstructionTier;
@@ -257,11 +311,11 @@ function collectSourceInstructionSpecs(
     if (expanded) specs.push({ path: expanded, tier: "local" });
   }
   if (cwd) {
-    for (const rel of sourceSpec.projectInstructions) {
-      const expanded = expandPath(rel, cwd, userHome);
-      if (expanded) specs.push({ path: expanded, tier: "project" });
-    }
     for (const dir of ancestorChain(cwd)) {
+      for (const rel of sourceSpec.projectInstructions) {
+        const expanded = expandPath(rel, dir, userHome);
+        if (expanded) specs.push({ path: expanded, tier: "project" });
+      }
       for (const rel of sourceSpec.localInstructions) {
         const expanded = expandPath(rel, dir, userHome);
         if (expanded) specs.push({ path: expanded, tier: "local" });
@@ -292,7 +346,7 @@ function renderTier(
 export function resolveBridgedInstructions(
   input: ContextBridgeInput,
 ): BridgedInstructionsResolution | null {
-  const { settings, targetDriver, cwd, userHome } = input;
+  const { settings, targetDriver, cwd, userHome, nativeHome } = input;
   const source = resolveContextBridgeSource(settings, targetDriver, "instructions");
   if (!source) return null;
   const sourceSpec = CONTEXT_BRIDGE_CATALOG[source];
@@ -301,13 +355,18 @@ export function resolveBridgedInstructions(
 
   const nativeRealPaths = new Set<string>();
   const nativeContents = new Set<string>();
+  // Native harnesses walk up from the cwd, so a relative native entry
+  // resolves at every ancestor directory, not just the cwd itself.
+  const nativeDirs = cwd ? ancestorChain(cwd) : [undefined];
   for (const rel of targetSpec.nativelyLoadedInstructions) {
-    const expanded = expandPath(rel, cwd, userHome);
-    if (!expanded) continue;
-    const read = readCandidate(expanded);
-    if (read) {
-      nativeRealPaths.add(read.realPath.toLowerCase());
-      nativeContents.add(read.content);
+    for (const dir of nativeDirs) {
+      const expanded = expandTargetNativePath(rel, dir, userHome, nativeHome);
+      if (!expanded) continue;
+      const read = readCandidate(expanded);
+      if (read) {
+        nativeRealPaths.add(read.realPath.toLowerCase());
+        nativeContents.add(read.content);
+      }
     }
   }
 
@@ -319,20 +378,29 @@ export function resolveBridgedInstructions(
   for (const spec of collectSourceInstructionSpecs(sourceSpec, cwd, userHome)) {
     const read = readCandidate(spec.path);
     if (!read) continue;
+    const expanded: ReadCandidate = {
+      ...read,
+      content: expandImports(read.content, read.realPath, new Set([read.realPath.toLowerCase()])),
+    };
     const normalizedRealPath = read.realPath.toLowerCase();
     let reason: BridgedInstructionSkipReason | undefined;
+    // A native path whose `@path` imports expanded to new content must still
+    // be injected: the target harness reads the raw file and would never see
+    // the inlined bodies. Only an unchanged file is truly already loaded.
+    const importExpansionChangedContent = expanded.content !== read.content;
     if (seenRealPaths.has(normalizedRealPath)) reason = "duplicate-path";
-    else if (nativeRealPaths.has(normalizedRealPath)) reason = "native-path";
-    else if (seenContents.has(read.content)) reason = "duplicate-content";
-    else if (nativeContents.has(read.content)) reason = "native-content";
+    else if (nativeRealPaths.has(normalizedRealPath) && !importExpansionChangedContent)
+      reason = "native-path";
+    else if (seenContents.has(expanded.content)) reason = "duplicate-content";
+    else if (nativeContents.has(expanded.content)) reason = "native-content";
     if (reason !== undefined) {
       files.push({ path: read.path, tier: spec.tier, status: "skipped", reason });
       continue;
     }
     seenRealPaths.add(normalizedRealPath);
-    seenContents.add(read.content);
+    seenContents.add(expanded.content);
     files.push({ path: read.path, tier: spec.tier, status: "injected" });
-    injected.push({ ...read, tier: spec.tier });
+    injected.push({ ...expanded, tier: spec.tier });
   }
 
   if (injected.length === 0) return { source, block: "", files };
@@ -381,21 +449,34 @@ export interface BridgedSkillRoots {
 }
 
 /**
- * Resolves the source provider's skill directories for a target driver. Returns null
- * when skills are native for the target; the caller then uses only the target's own
- * roots. Roots the target loads natively are filtered out so a bridged skill never
- * registers twice.
+ * Resolves the source provider's skill directories for a target driver, or
+ * null when skills are native (the caller then uses only the target's roots).
+ * Natively loaded roots are filtered out so a bridged skill never registers
+ * twice; a custom nativeHome remaps pi's global agent directory.
  */
 export function resolveBridgedSkillRoots(input: ContextBridgeInput): BridgedSkillRoots | null {
-  const { settings, targetDriver, cwd, userHome } = input;
+  const { settings, targetDriver, cwd, userHome, nativeHome } = input;
   const source = resolveContextBridgeSource(settings, targetDriver, "skills");
   if (!source) return null;
   const sourceSpec = CONTEXT_BRIDGE_CATALOG[source];
   const targetSpec = CONTEXT_BRIDGE_CATALOG[targetDriver];
   if (!sourceSpec || !targetSpec) return null;
+  // The nativeHome remap/filter applies only to pi's global roots under
+  // `~/.pi/agent`; project-native roots stay in the set at every cwd
+  // ancestor so a bridged root on the same directory never registers twice.
+  const globalNativeRels =
+    nativeHome === undefined
+      ? targetSpec.globalSkills
+      : targetSpec.globalSkills.filter((rel) => isPiAgentHomePath(rel.trim()));
   const nativeRoots = new Set(
-    [...targetSpec.globalSkills, ...targetSpec.projectSkills]
-      .map((rel) => expandPath(rel, cwd, userHome))
+    [
+      ...globalNativeRels.map((rel) => expandTargetNativePath(rel, cwd, userHome, nativeHome)),
+      ...(cwd ? ancestorChain(cwd) : []).flatMap((dir) =>
+        targetSpec.projectSkills.map((rel) =>
+          expandTargetNativePath(rel, dir, userHome, nativeHome),
+        ),
+      ),
+    ]
       .filter((path): path is string => path !== null)
       .map((path) => NodePath.normalize(path).toLowerCase()),
   );

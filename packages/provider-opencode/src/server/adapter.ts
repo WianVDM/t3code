@@ -3290,6 +3290,7 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
                 return;
               }
               const bridgedContext = yield* bridgedInstructionsForTurn({
+                host,
                 targetDriver: OPENCODE_PROVIDER,
                 cwd: turnInput.runtimePolicy.cwd,
               });
@@ -3405,6 +3406,7 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
               const admissionSettled = turn.admissionSettled;
               const admissionAbortController = turn.admissionAbortController;
               const bridgedContext = yield* bridgedInstructionsForTurn({
+                host,
                 targetDriver: OPENCODE_PROVIDER,
                 cwd: turn.runtimePolicy.cwd,
               });

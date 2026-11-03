@@ -1,4 +1,8 @@
-import type { ClaudeSettings, ServerProviderSkill } from "@t3tools/contracts";
+import type {
+  ClaudeSettings,
+  ContextBridgeSettings,
+  ServerProviderSkill,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -11,7 +15,6 @@ import { SKILL_MENTION_PATTERN } from "@t3tools/shared/composerInlineTokens";
 import { parse as parseYamlDocument } from "yaml";
 
 import { resolveBridgedSkillRoots } from "@t3tools/provider-core/server/contextBridge";
-import { currentContextBridgeSettings } from "@t3tools/provider-core/server/contextBridgeRuntime";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 
 type ClaudeSkillScope = "user" | "project";
@@ -491,6 +494,9 @@ export const discoverClaudeSkills = Effect.fn("discoverClaudeSkills")(function* 
   config: Pick<ClaudeSettings, "homePath"> & Partial<Pick<ClaudeSettings, "launchArgs">>,
   cwd?: string,
   environment?: NodeJS.ProcessEnv,
+  // Resolved by the caller from the host captured at construction; undefined
+  // means no bridge applies. Read per call so a settings change applies without a restart.
+  contextBridge?: ContextBridgeSettings,
 ): Effect.fn.Return<ReadonlyArray<ServerProviderSkill>, never, FileSystem.FileSystem | Path.Path> {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -501,7 +507,6 @@ export const discoverClaudeSkills = Effect.fn("discoverClaudeSkills")(function* 
     environment ?? process.env,
   );
 
-  const contextBridge = yield* currentContextBridgeSettings();
   const bridgedRoots =
     contextBridge === undefined
       ? null

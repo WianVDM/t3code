@@ -45,6 +45,7 @@ import {
   type OrchestratorV2ProviderReplayHarness,
 } from "../testkit/ProviderReplayHarness.ts";
 import type { ProviderReplayGate } from "@t3tools/provider-testing/replayGate";
+import * as TestProviderHost from "@t3tools/provider-testing/TestProviderHost";
 
 export const CLAUDE_AGENT_SDK_REPLAY_PROTOCOL = "claude-agent-sdk.query" as const;
 export const claudeBackgroundWakeResultLabel = (wakeNumber: number) =>
@@ -1052,6 +1053,7 @@ function layerClaudeProviderAdapterRegistryReplay(
         NodeServices.layer,
         NodeCrypto.layer,
         layerServerConfig,
+        TestProviderHost.layer().pipe(Layer.provide(NodeServices.layer)),
       ),
     ),
   );

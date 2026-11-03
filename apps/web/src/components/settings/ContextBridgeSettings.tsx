@@ -14,6 +14,7 @@ import {
   resolveDriverLabel,
   resolveOptionLabel,
   supportsContextBridgeHooks,
+  supportsContextBridgeSkills,
   type ContextBridgeFeature,
 } from "./contextBridgeSettings.logic";
 import { SettingsRow, SettingsSection } from "./settingsLayout";
@@ -115,10 +116,11 @@ export function ProviderContextBridgeSection({
       aria-disabled={readOnly || undefined}
       className={readOnly ? "opacity-50 select-none" : undefined}
     >
-      {BRIDGE_FEATURE_ROWS.filter(
-        ({ feature }) => feature !== "hooks" || supportsContextBridgeHooks(driver),
-      ).map(({ feature, title }) => {
+      {BRIDGE_FEATURE_ROWS.map(({ feature, title }) => {
         const value = route?.[feature] ?? "native";
+        const unsupported =
+          (feature === "hooks" && !supportsContextBridgeHooks(driver)) ||
+          (feature === "skills" && !supportsContextBridgeSkills(driver));
         return (
           <SettingsRow
             key={feature}
@@ -128,25 +130,29 @@ export function ProviderContextBridgeSection({
               <Select
                 value={value}
                 onValueChange={(nextValue) => {
-                  if (!nextValue) return;
+                  if (!nextValue || unsupported) return;
                   updateSettings({
                     contextBridge: {
                       routes: computeNextRoutes(contextBridge.routes, driver, feature, nextValue),
                     },
                   });
                 }}
-                disabled={!contextBridge.enabled}
+                disabled={!contextBridge.enabled || unsupported}
               >
-                <SelectTrigger size="sm" className="w-44" aria-label={`${title} source`}>
-                  <SelectValue>{resolveOptionLabel(routeOptions, value)}</SelectValue>
+                <SelectTrigger size="sm" aria-label={`${title} source`}>
+                  <SelectValue>
+                    {unsupported ? "Not supported" : resolveOptionLabel(routeOptions, value)}
+                  </SelectValue>
                 </SelectTrigger>
-                <SelectPopup>
-                  {routeOptions.map((option) => (
-                    <SelectItem key={option.value} value={option.value}>
-                      {option.label}
-                    </SelectItem>
-                  ))}
-                </SelectPopup>
+                {!unsupported && (
+                  <SelectPopup>
+                    {routeOptions.map((option) => (
+                      <SelectItem key={option.value} value={option.value}>
+                        {option.label}
+                      </SelectItem>
+                    ))}
+                  </SelectPopup>
+                )}
               </Select>
             }
           />

@@ -2063,6 +2063,7 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
               );
           } else {
             const bridgedContext = yield* bridgedInstructionsForTurn({
+              host: providerHost,
               targetDriver: MUSE_PROVIDER,
               cwd: workspaceRoot,
             });
