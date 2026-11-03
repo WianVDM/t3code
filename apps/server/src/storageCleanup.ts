@@ -545,7 +545,12 @@ const make = Effect.gen(function* () {
         );
       if (result === null) return null;
       if (result.exitCode === 0 || result.exitCode === allowedExitCode) return result;
-      if (result.stderr.toLowerCase().includes("not a git repository")) return null;
+      const lowerStderr = result.stderr.toLowerCase();
+      if (
+        lowerStderr.includes("not a git repository") ||
+        lowerStderr.includes("does not point to a valid repository")
+      )
+        return null;
       return yield* failure(
         result.stderr.trim().split(/\r?\n/)[0]?.slice(0, 1000) || "command failed",
       );
