@@ -137,11 +137,9 @@ export interface ContextBridgeInput {
   readonly userHome: string;
   /**
    * Pi's agent dir (PI_CODING_AGENT_DIR) when it differs from the default
-   * `~/.pi/agent` under `userHome`. Only target-native instruction/skill
-   * paths expand against it. Pi loads its globals from the agent dir, so a
-   * bridged source file Pi already reads natively must dedupe against that
-   * location. Source expansion, imports, and ancestor walks keep using
-   * `userHome`/`cwd`.
+   * `~/.pi/agent` under `userHome`; only target-native instruction/skill
+   * paths expand against it, since a source file Pi already reads natively
+   * must dedupe against the agent dir rather than `userHome`/`cwd`.
    */
   readonly nativeHome?: string | undefined;
 }
@@ -272,12 +270,10 @@ type InstructionTier = "global" | "project" | "local";
 const IMPORT_LINE = /^[ \t]*@(\S+)[ \t]*\r?$/;
 
 /**
- * Inlines `@path` import lines, resolved relative to the containing file.
- * Non-Claude targets cannot resolve these pointers themselves, so a bridged
- * file must arrive with them already expanded. `stack` holds the real paths
- * of the files currently being expanded, which makes nested imports terminate
- * and cycles leave the offending line untouched. Unreadable or empty targets
- * also leave the line as-is.
+ * Inlines `@path` import lines, resolved relative to the containing file;
+ * non-Claude targets cannot resolve them, so bridged files arrive expanded.
+ * `stack` holds the real paths currently being expanded: nested imports
+ * terminate and cycles leave the offending line untouched.
  */
 function expandImports(content: string, filePath: string, stack: ReadonlySet<string>): string {
   return content
@@ -453,11 +449,10 @@ export interface BridgedSkillRoots {
 }
 
 /**
- * Resolves the source provider's skill directories for a target driver. Returns null
- * when skills are native for the target; the caller then uses only the target's own
- * roots. Roots the target loads natively are filtered out so a bridged skill never
- * registers twice. A custom nativeHome remaps pi's global agent directory while
- * project-native roots remain native throughout the cwd ancestor chain.
+ * Resolves the source provider's skill directories for a target driver, or
+ * null when skills are native (the caller then uses only the target's roots).
+ * Natively loaded roots are filtered out so a bridged skill never registers
+ * twice; a custom nativeHome remaps pi's global agent directory.
  */
 export function resolveBridgedSkillRoots(input: ContextBridgeInput): BridgedSkillRoots | null {
   const { settings, targetDriver, cwd, userHome, nativeHome } = input;

@@ -908,6 +908,7 @@ describe("CodexAdapterV2 context-bridged skills", () => {
     ) => Effect.Effect<unknown, CodexError.CodexAppServerError>;
     readonly onRequest?: (method: string, params: unknown) => void;
   }) => {
+    let turnCounter = 0;
     const client: CodexClient.CodexAppServerClient["Service"] = {
       raw: {} as any,
       request: (method: string, params: any): Effect.Effect<any, any> => {
@@ -956,7 +957,9 @@ describe("CodexAdapterV2 context-bridged skills", () => {
         if (method === "turn/start") {
           return Effect.succeed({
             turn: {
-              id: "turn-1",
+              // The real app-server assigns a fresh id per turn; a reused id
+              // reads as a stale earlier-run turn in startTurn.
+              id: `turn-${++turnCounter}`,
               status: "completed",
               items: [],
             },
@@ -969,6 +972,8 @@ describe("CodexAdapterV2 context-bridged skills", () => {
       handleServerNotification: () => Effect.void,
       handleUnknownServerRequest: () => Effect.void,
       handleUnknownServerNotification: () => Effect.void,
+      // Never terminates: openSession forks an awaitTermination watcher that every client must provide.
+      awaitTermination: Effect.never,
     };
     return client;
   };
@@ -977,7 +982,9 @@ describe("CodexAdapterV2 context-bridged skills", () => {
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const idAllocator = yield* IdAllocator.IdAllocatorV2;
-      const serverConfig = yield* ProviderReplayHarness.makeReplayServerConfig("bridged-skills").pipe(Effect.orDie);
+      const serverConfig = yield* ProviderReplayHarness.makeReplayServerConfig(
+        "bridged-skills",
+      ).pipe(Effect.orDie);
       const adapter = yield* CodexAdapterV2.makeCodexAdapterV2({
         instanceId: CodexAdapterV2.CODEX_DEFAULT_INSTANCE_ID,
         settings: DEFAULT_CODEX_SETTINGS,
@@ -1441,8 +1448,6 @@ describe("CodexAdapterV2 context-bridged skills", () => {
         ),
       ),
   );
-});
-
 });
 
 describe("CodexAdapterV2 session initialize", () => {
@@ -1953,11 +1958,11 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         Effect.scoped,
         Effect.provide(
           Layer.mergeAll(
-          IdAllocator.layer,
-          McpProviderSessions.layer,
-          NodeServices.layer,
-          layerTestProviderHost,
-        ),
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
   );
@@ -3615,11 +3620,11 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       }).pipe(
         Effect.provide(
           Layer.mergeAll(
-          IdAllocator.layer,
-          McpProviderSessions.layer,
-          NodeServices.layer,
-          layerTestProviderHost,
-        ),
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
     ),
@@ -4083,11 +4088,11 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         }).pipe(
           Effect.provide(
             Layer.mergeAll(
-          IdAllocator.layer,
-          McpProviderSessions.layer,
-          NodeServices.layer,
-          layerTestProviderHost,
-        ),
+              IdAllocator.layer,
+              McpProviderSessions.layer,
+              NodeServices.layer,
+              layerTestProviderHost,
+            ),
           ),
         ),
       ),
@@ -4298,11 +4303,11 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         Effect.scoped,
         Effect.provide(
           Layer.mergeAll(
-          IdAllocator.layer,
-          McpProviderSessions.layer,
-          NodeServices.layer,
-          layerTestProviderHost,
-        ),
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
   );
@@ -5735,11 +5740,11 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         }).pipe(
           Effect.provide(
             Layer.mergeAll(
-          IdAllocator.layer,
-          McpProviderSessions.layer,
-          NodeServices.layer,
-          layerTestProviderHost,
-        ),
+              IdAllocator.layer,
+              McpProviderSessions.layer,
+              NodeServices.layer,
+              layerTestProviderHost,
+            ),
           ),
         ),
       ),
@@ -6451,11 +6456,11 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       }).pipe(
         Effect.provide(
           Layer.mergeAll(
-          IdAllocator.layer,
-          McpProviderSessions.layer,
-          NodeServices.layer,
-          layerTestProviderHost,
-        ),
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
     ),
@@ -6922,11 +6927,11 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       }).pipe(
         Effect.provide(
           Layer.mergeAll(
-          IdAllocator.layer,
-          McpProviderSessions.layer,
-          NodeServices.layer,
-          layerTestProviderHost,
-        ),
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
     ),
@@ -7080,11 +7085,11 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         }).pipe(
           Effect.provide(
             Layer.mergeAll(
-          IdAllocator.layer,
-          McpProviderSessions.layer,
-          NodeServices.layer,
-          layerTestProviderHost,
-        ),
+              IdAllocator.layer,
+              McpProviderSessions.layer,
+              NodeServices.layer,
+              layerTestProviderHost,
+            ),
           ),
         ),
       ),
@@ -7202,11 +7207,11 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       }).pipe(
         Effect.provide(
           Layer.mergeAll(
-          IdAllocator.layer,
-          McpProviderSessions.layer,
-          NodeServices.layer,
-          layerTestProviderHost,
-        ),
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
     ),
@@ -7279,11 +7284,11 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       }).pipe(
         Effect.provide(
           Layer.mergeAll(
-          IdAllocator.layer,
-          McpProviderSessions.layer,
-          NodeServices.layer,
-          layerTestProviderHost,
-        ),
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
     ),
@@ -7398,11 +7403,11 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       }).pipe(
         Effect.provide(
           Layer.mergeAll(
-          IdAllocator.layer,
-          McpProviderSessions.layer,
-          NodeServices.layer,
-          layerTestProviderHost,
-        ),
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
     ),
@@ -7481,11 +7486,11 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       }).pipe(
         Effect.provide(
           Layer.mergeAll(
-          IdAllocator.layer,
-          McpProviderSessions.layer,
-          NodeServices.layer,
-          layerTestProviderHost,
-        ),
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
     ),
@@ -7673,11 +7678,11 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         }).pipe(
           Effect.provide(
             Layer.mergeAll(
-          IdAllocator.layer,
-          McpProviderSessions.layer,
-          NodeServices.layer,
-          layerTestProviderHost,
-        ),
+              IdAllocator.layer,
+              McpProviderSessions.layer,
+              NodeServices.layer,
+              layerTestProviderHost,
+            ),
           ),
         ),
       ),
@@ -8626,11 +8631,11 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         Effect.scoped,
         Effect.provide(
           Layer.mergeAll(
-          IdAllocator.layer,
-          McpProviderSessions.layer,
-          NodeServices.layer,
-          layerTestProviderHost,
-        ),
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
     );
@@ -8730,11 +8735,11 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         Effect.scoped,
         Effect.provide(
           Layer.mergeAll(
-          IdAllocator.layer,
-          McpProviderSessions.layer,
-          NodeServices.layer,
-          layerTestProviderHost,
-        ),
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
     );
@@ -8800,11 +8805,11 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         Effect.scoped,
         Effect.provide(
           Layer.mergeAll(
-          IdAllocator.layer,
-          McpProviderSessions.layer,
-          NodeServices.layer,
-          layerTestProviderHost,
-        ),
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
     );
@@ -8895,11 +8900,11 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         Effect.scoped,
         Effect.provide(
           Layer.mergeAll(
-          IdAllocator.layer,
-          McpProviderSessions.layer,
-          NodeServices.layer,
-          layerTestProviderHost,
-        ),
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
     );
@@ -9286,11 +9291,11 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         Effect.scoped,
         Effect.provide(
           Layer.mergeAll(
-          IdAllocator.layer,
-          McpProviderSessions.layer,
-          NodeServices.layer,
-          layerTestProviderHost,
-        ),
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            layerTestProviderHost,
+          ),
         ),
       ),
     );

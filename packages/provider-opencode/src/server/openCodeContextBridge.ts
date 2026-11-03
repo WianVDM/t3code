@@ -9,16 +9,16 @@ import {
 } from "@t3tools/provider-core/server/contextBridge";
 import { SKILL_MENTION_PATTERN } from "@t3tools/shared/composerInlineTokens";
 
-export const OPENCODE_PROVIDER = "opencode";
+const OPENCODE_PROVIDER = "opencode";
 
-export const BRIDGE_SKILLS_MARKER = ".t3-context-bridge.json";
+const BRIDGE_SKILLS_MARKER = ".t3-context-bridge.json";
 
 export interface BridgedSkill {
   readonly name: string;
   readonly dir: string;
 }
 
-export function parseSkillFrontmatterName(contents: string, fallbackName: string): string {
+function parseSkillFrontmatterName(contents: string, fallbackName: string): string {
   const normalized = contents.replace(/^\uFEFF/, "");
   if (!normalized.startsWith("---")) return fallbackName;
   const end = normalized.indexOf("\n---", 3);
@@ -33,7 +33,7 @@ export function parseSkillFrontmatterName(contents: string, fallbackName: string
   return fallbackName;
 }
 
-export function readOwnedSkillNames(skillsDir: string): string[] {
+function readOwnedSkillNames(skillsDir: string): string[] {
   try {
     const markerFile = NodePath.join(skillsDir, BRIDGE_SKILLS_MARKER);
     const parsed: unknown = JSON.parse(NodeFS.readFileSync(markerFile, "utf8"));
@@ -60,7 +60,7 @@ function removeLinkOrDir(targetPath: string): void {
   } catch {}
 }
 
-export function collectSkillsFromRoots(roots: readonly string[]): BridgedSkill[] {
+function collectSkillsFromRoots(roots: readonly string[]): BridgedSkill[] {
   const skillsByName = new Map<string, BridgedSkill>();
   for (const root of roots) {
     let entries: NodeFS.Dirent[];
@@ -92,7 +92,7 @@ export function collectSkillsFromRoots(roots: readonly string[]): BridgedSkill[]
   return [...skillsByName.values()];
 }
 
-export function syncSkillsToDir(
+function syncSkillsToDir(
   targetDir: string,
   skills: readonly BridgedSkill[],
   warnings: string[],
@@ -162,7 +162,7 @@ export function syncSkillsToDir(
   return owned;
 }
 
-export function revertOwnedSkills(targetDir: string): void {
+function revertOwnedSkills(targetDir: string): void {
   const previouslyOwned = readOwnedSkillNames(targetDir);
   for (const name of previouslyOwned) {
     removeLinkOrDir(NodePath.join(targetDir, name));
@@ -185,12 +185,8 @@ export interface SyncBridgedOpenCodeSkillsResult {
 }
 
 /**
- * Syncs bridged skills into OpenCode's native discovery roots:
- * `~/.config/opencode/skills` (user level) and `.opencode/skills` (project
- * level), copied recursively with a `.t3-context-bridge.json` ownership marker.
- *
- * User-owned files are never overwritten. On revert (route set to "native",
- * bridge disabled, or source equals target), only bridge-owned skills are removed.
+ * Syncs bridged skills into OpenCode's skill roots with an ownership marker.
+ * User-owned files are never overwritten; revert removes only bridge-owned skills.
  */
 export function syncBridgedOpenCodeSkills(
   input: SyncBridgedOpenCodeSkillsInput,

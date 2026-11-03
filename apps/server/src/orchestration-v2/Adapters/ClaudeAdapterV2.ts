@@ -4662,14 +4662,12 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
   const userInvocableSkills = (cwd: string | null) =>
     currentContextBridgeSettings(host).pipe(
       Effect.flatMap((contextBridge) =>
-        Effect.fn("ClaudeAdapterV2.discoverUserInvocableSkills")(() =>
-          discoverClaudeSkills(
-            adapterOptions.settings,
-            cwd ?? undefined,
-            adapterOptions.environment,
-            contextBridge,
-          ),
-        )(),
+        discoverClaudeSkills(
+          adapterOptions.settings,
+          cwd ?? undefined,
+          adapterOptions.environment,
+          contextBridge,
+        ).pipe(Effect.withSpan("ClaudeAdapterV2.discoverUserInvocableSkills")),
       ),
       Effect.map(
         (skills) =>

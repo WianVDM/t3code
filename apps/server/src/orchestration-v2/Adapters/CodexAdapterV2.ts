@@ -1845,11 +1845,10 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             return;
           }
           const extraRoots = Array.from(new Set([...roots.global, ...roots.project]));
-          // Track the real bridged skill names before the RPC, and rescan on
-          // every sync even when the root list is unchanged, so skill
-          // additions, removals, and frontmatter renames are reflected. Even
-          // when the roots cannot be registered, a mention of one would
-          // silently do nothing, so it is the only mention the turn may reject.
+          // Track bridged skill names before the RPC, and rescan every sync
+          // even when roots are unchanged so frontmatter renames are caught.
+          // Unregistered roots can only surface as the turn's rejected
+          // mention; any other mention of one would silently do nothing.
           const skillNames = new Set<string>();
           for (const root of extraRoots) {
             const entries = yield* fileSystem

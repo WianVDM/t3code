@@ -1,8 +1,7 @@
 /**
- * Context bridge runtime glue for adapters: per-turn ContextBridgeSettings access and
- * the Effect wrappers every instruction call site shares. The host is explicit because
- * turn/session contexts do not provide ProviderHost. Resolution never fails a turn: a
- * settings read error or a defect logs a warning and yields no bridged context.
+ * Per-turn ContextBridgeSettings access and shared Effect wrappers. The host is explicit
+ * because turn/session contexts do not provide ProviderHost. Resolution never fails a
+ * turn: a read error or defect logs a warning and yields no bridged context.
  *
  * @module provider-core/server/contextBridgeRuntime
  */
@@ -79,12 +78,10 @@ function sameLocation(a: string, b: string): boolean {
 }
 
 /**
- * Pi resolves its `~/.pi/agent` paths against PI_CODING_AGENT_DIR, falling
- * back to HOME. Report `nativeHome` only when one deviates from the server
- * home: an explicit PI_CODING_AGENT_DIR other than the default, or a launch
- * HOME different from it. An agent dir that merely restates
- * `userHome/.pi/agent` is not a move; leave it undefined so the default
- * expansion/filter behavior stays.
+ * Pi resolves its agent paths against PI_CODING_AGENT_DIR, falling back to HOME. Report
+ * `nativeHome` only when one deviates from the server home; an agent dir that merely
+ * restates `userHome/.pi/agent` is not a move, so it stays undefined and the default
+ * expansion/filter behavior applies.
  */
 function derivePiNativeHome(
   environment: NodeJS.ProcessEnv | undefined,
@@ -114,10 +111,9 @@ export const bridgedContextForTurn = Effect.fn("ContextBridgeRuntime.bridgedCont
     readonly targetDriver: string;
     readonly cwd: string | null | undefined;
     /**
-     * The launch environment for the provider process. Pi resolves its
-     * globals against PI_CODING_AGENT_DIR (default ~/.pi/agent), so when it
-     * is the target the bridge dedupes against that directory instead of
-     * the process home. Other providers never set it and keep the default.
+     * Launch environment for the provider process. Pi resolves its globals against
+     * PI_CODING_AGENT_DIR (default ~/.pi/agent), so the bridge dedupes against that
+     * directory instead of the process home; other providers keep the default.
      */
     readonly environment?: NodeJS.ProcessEnv;
   }) {

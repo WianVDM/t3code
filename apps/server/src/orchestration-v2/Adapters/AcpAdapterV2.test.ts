@@ -2014,11 +2014,9 @@ describe("AcpAdapterV2", () => {
       yield* fileSystem.makeDirectory(cwd, { recursive: true });
       yield* fileSystem.writeFileString(NodePath.join(cwd, "CLAUDE.md"), "bridged acp rules");
 
-      // Production layering: the adapter is constructed with the real
-      // ProviderHostLive over a real ServerSettingsService, then turns run
-      // without ProviderHost in the ambient context — the shape that made
-      // the bridge silently no-op when the settings were read through
-      // Effect.serviceOption at turn time.
+      // Construct with real ProviderHostLive, then run turns without
+      // ProviderHost ambient — the shape that made the bridge silently
+      // no-op when settings were read via Effect.serviceOption at turn time.
       const layerBridgeHost = ProviderHostLive.layer.pipe(
         Layer.provideMerge(ServerSecretStore.layer),
         Layer.provideMerge(

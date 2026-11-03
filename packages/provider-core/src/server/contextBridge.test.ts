@@ -391,11 +391,10 @@ describe("buildBridgedInstructions", () => {
   });
 
   it("injects the expanded AGENTS.md body when pi's native CLAUDE.md holds an @AGENTS.md pointer", () => {
-    // pi natively loads CLAUDE.md from the cwd, but unlike Claude it does not
+    // pi natively loads CLAUDE.md from the cwd but, unlike Claude, does not
     // resolve `@path` imports inside it, so the AGENTS.md body would never
-    // reach the prompt. The bridge must inject the source CLAUDE.md with the
-    // import inlined, not skip it as native-path or leave the raw pointer,
-    // while ordinary no-import native files still dedupe by content.
+    // reach the prompt: the bridge must inject the source CLAUDE.md with the
+    // import inlined rather than skip it or leave the raw pointer.
     writeFixture("project/AGENTS.md", "SHARED AGENTS BODY\n");
     writeFixture("project/CLAUDE.md", "Top of CLAUDE.\n@AGENTS.md\nEnd of CLAUDE.\n");
     // Identical to pi's natively loaded AGENTS.md body: still native-content.
