@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import * as Crypto from "effect/Crypto";
-import * as Effect from "effect/Effect";
+import * as Digest from "effect/crypto/Digest";
 import * as Base64 from "effect/encoding/Base64";
+import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
@@ -48,7 +49,7 @@ export const verifyForkRelease = Effect.fn("verifyForkRelease")(function* (
   arch: ForkReleaseArch,
   releaseDirectoryArg: string,
 ) {
-  const crypto = yield* Crypto.Crypto;
+  const digest = yield* Digest.Digest;
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
 
@@ -79,7 +80,7 @@ export const verifyForkRelease = Effect.fn("verifyForkRelease")(function* (
     );
   }
 
-  const actualSha512 = Base64.encode(yield* crypto.digest("SHA-512", installerBytes));
+  const actualSha512 = Base64.encode(yield* digest.digest(Digest.sha512, installerBytes));
   if (actualSha512 !== installerEntry.sha512) {
     throw new Error(
       `Fork release installer at ${installerPath} (version '${expectedVersion}') has SHA-512 '${actualSha512}', expected '${installerEntry.sha512}'.`,
@@ -110,7 +111,7 @@ export const verifyForkReleaseCommand = Command.make(
 
 if (import.meta.main) {
   Command.run(verifyForkReleaseCommand, { version: "0.0.0" }).pipe(
-    Effect.provide(NodeServices.layer),
+    Effect.provide([NodeServices.layer, NodeCrypto.layerDigest]),
     NodeRuntime.runMain,
   );
 }

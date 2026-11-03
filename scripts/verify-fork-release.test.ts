@@ -1,11 +1,13 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as Cause from "effect/Cause";
-import * as Crypto from "effect/Crypto";
+import * as Digest from "effect/crypto/Digest";
 import * as Effect from "effect/Effect";
 import * as Base64 from "effect/encoding/Base64";
 import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
+import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 
 import { verifyForkRelease } from "./verify-fork-release.ts";
@@ -22,7 +24,7 @@ const makeReleaseFixture = Effect.fn("test.makeReleaseFixture")(function* (optio
   readonly reportedSha512?: string;
   readonly includeBlockmap?: boolean;
 }) {
-  const crypto = yield* Crypto.Crypto;
+  const digest = yield* Digest.Digest;
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const releaseDirectory = yield* fs.makeTempDirectoryScoped({
@@ -30,8 +32,8 @@ const makeReleaseFixture = Effect.fn("test.makeReleaseFixture")(function* (optio
   });
   const manifestVersion = options.manifestVersion ?? version;
   const arm64Bytes = Uint8Array.from([0x4d, 0x5a, 0x61, 0x72, 0x6d]);
-  const arm64Sha512 = Base64.encode(yield* crypto.digest("SHA-512", arm64Bytes));
-  const installerSha512 = Base64.encode(yield* crypto.digest("SHA-512", installerBytes));
+  const arm64Sha512 = Base64.encode(yield* digest.digest(Digest.sha512, arm64Bytes));
+  const installerSha512 = Base64.encode(yield* digest.digest(Digest.sha512, installerBytes));
   const entries = [
     `  - url: T3-Code-Fork-${manifestVersion}-arm64.exe`,
     `    sha512: ${arm64Sha512}`,
@@ -74,7 +76,7 @@ const assertVerificationFails = Effect.fn("test.assertVerificationFails")(functi
   }
 });
 
-it.layer(NodeServices.layer)("verify-fork-release", (it) => {
+it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("verify-fork-release", (it) => {
   it.effect("accepts a valid x64 release with an extra arm64 manifest entry", () =>
     Effect.gen(function* () {
       const releaseDirectory = yield* makeReleaseFixture({});

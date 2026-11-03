@@ -112,7 +112,7 @@ const fixture = Effect.fn("AntigravityUsageTest.fixture")(function* (
         );
       }
       expect(JSON.parse(body)).toEqual({ project: "project-id" });
-      expect(request.headers["user-agent"]).toMatch(/^antigravity\/hub\/2\.24\.0 /);
+      expect(request.headers["user-agent"]).toMatch(/^antigravity\/hub\/2\.25\.0 /);
       return HttpClientResponse.fromWeb(
         request,
         request.url.endsWith(":retrieveUserQuotaSummary")
@@ -535,7 +535,7 @@ describe("Antigravity subscription limits", () => {
         for (const request of quotaRequests) {
           expect(request.userAgent).toContain("antigravity/hub/2.25.0");
         }
-      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+      }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.effect("keeps one endpoint's quotas when the other fails", () =>
