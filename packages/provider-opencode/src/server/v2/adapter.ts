@@ -3468,7 +3468,7 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
                   ),
                 );
               }
-              let bridged = new Set<string>();
+              let bridged: ReadonlySet<string> = new Set<string>();
               if (contextBridge !== undefined) {
                 const userHome = yield* HostProcess.HomeDirectory;
                 bridged = yield* Effect.sync(() =>
