@@ -126,6 +126,24 @@ export const CONTEXT_BRIDGE_CATALOG: Readonly<Record<string, ContextBridgeCatalo
     projectSkills: [],
     nativelyLoadedInstructions: [],
   },
+  kiro: {
+    globalInstructions: [],
+    globalLocalInstructions: [],
+    projectInstructions: [],
+    localInstructions: [],
+    globalSkills: [],
+    projectSkills: [],
+    nativelyLoadedInstructions: [],
+  },
+  fx: {
+    globalInstructions: [],
+    globalLocalInstructions: [],
+    projectInstructions: [],
+    localInstructions: [],
+    globalSkills: [],
+    projectSkills: [],
+    nativelyLoadedInstructions: [],
+  },
 };
 
 export type ContextBridgeFeature = "instructions" | "skills" | "hooks";
