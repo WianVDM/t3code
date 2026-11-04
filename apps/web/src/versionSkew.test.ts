@@ -29,12 +29,9 @@ describe("versionSkew", () => {
     { kind: "npx" },
     { kind: "pnpm-dlx" },
     { kind: "bunx" },
-  ] as const)(
-    "returns no command for the $kind installation",
-    (installation) => {
-      expect(manualServerUpdateCommand("0.0.45", installation)).toBeNull();
-    },
-  );
+  ] as const)("returns no command for the $kind installation", (installation) => {
+    expect(manualServerUpdateCommand("0.0.45", installation)).toBeNull();
+  });
   beforeEach(() => {
     branding.APP_VERSION = "0.0.34";
   });

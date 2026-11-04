@@ -76,13 +76,10 @@ describe("cli archive platforms", () => {
     );
   });
 
-  it.each(["darwin-x64", "linux-arm64", "win32-arm64"])(
-    "rejects unsupported target %s",
-    (key) => {
-      const [platform, arch] = key.split("-") as [string, string];
-      expect(cliArchivePlatformKey(platform as NodeJS.Platform, arch)).toBeUndefined();
-    },
-  );
+  it.each(["darwin-x64", "linux-arm64", "win32-arm64"])("rejects unsupported target %s", (key) => {
+    const [platform, arch] = key.split("-") as [string, string];
+    expect(cliArchivePlatformKey(platform as NodeJS.Platform, arch)).toBeUndefined();
+  });
 });
 
 describe("release metadata", () => {
