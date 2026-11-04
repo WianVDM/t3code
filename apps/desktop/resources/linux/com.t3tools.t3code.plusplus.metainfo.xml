@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <component type="desktop-application">
-  <id>com.t3tools.t3code</id>
+  <id>com.t3tools.t3code.plusplus</id>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>MIT</project_license>
-  <name>T3 Code</name>
+  <name>T3 Code ++</name>
   <summary>Desktop GUI for coding agents</summary>
   <developer id="com.t3tools">
     <name>T3 Tools Inc.</name>
@@ -15,18 +15,18 @@
       your projects.
     </p>
     <p>
-      Connect from desktop, web, or mobile to continue working remotely.
+      Connect from desktop or web to continue working remotely.
     </p>
   </description>
-  <launchable type="desktop-id">t3code.desktop</launchable>
-  <icon type="stock">t3code</icon>
+  <launchable type="desktop-id">t3codeplusplus.desktop</launchable>
+  <icon type="stock">t3codeplusplus</icon>
   <provides>
-    <binary>t3code</binary>
+    <binary>t3codeplusplus</binary>
   </provides>
   <categories>
     <category>Development</category>
   </categories>
-  <url type="homepage">https://t3.codes</url>
-  <url type="bugtracker">https://github.com/pingdotgg/t3code/issues</url>
-  <url type="vcs-browser">https://github.com/pingdotgg/t3code</url>
+  <url type="homepage">https://github.com/WianVDM/t3code</url>
+  <url type="bugtracker">https://github.com/WianVDM/t3code/issues</url>
+  <url type="vcs-browser">https://github.com/WianVDM/t3code</url>
 </component>
