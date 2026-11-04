@@ -26,6 +26,7 @@ import {
   resolveFffNativeDependencies,
   STAGE_INSTALL_ARGS,
 } from "./build-desktop-artifact.ts";
+import { assertReleaseVersion } from "./update-release-package-versions.ts";
 import { assertLinuxArm64PageCompatibility } from "./lib/linux-arm64-sea.ts";
 import { selectCliRuntimeExternalDependencies } from "./lib/cli-external-packages.ts";
 import { signWithJsign } from "./lib/windows-jsign.ts";
@@ -478,6 +479,7 @@ const buildCliArchive = Effect.fn("buildCliArchive")(function* (input: {
   readonly outputDir: string;
   readonly resourceMonitorDir: Option.Option<string>;
 }) {
+  yield* assertReleaseVersion(input.version);
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const repoRoot = yield* RepoRoot;

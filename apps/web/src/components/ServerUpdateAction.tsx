@@ -57,6 +57,8 @@ function readUpdatesDenial(environmentId: EnvironmentId): string | undefined {
 }
 
 const CROSS_TRACK_NOTE = "Switch tracks in About → Update track";
+const LEGACY_INSTALL_GUIDANCE =
+  "npm/dlx installs are no longer supported. Reinstall from GitHub Releases, then use t3 update.";
 
 /** Hosts refuse a Stable/Nightly crossing outside a track switch, which checks the database first. */
 function refusedCrossing(
@@ -276,16 +278,12 @@ export function ServerUpdateAction({
   const updatesDenial = managedUpdatesDenial(useManagedPolicy(environmentId));
   const update = useServerUpdate();
   const { copyToClipboard } = useCopyToClipboard<{ command: string }>({
-    target: installation?.kind === "npm-global" ? "update command" : "relaunch command",
+    target: "update command",
     onCopy: ({ command }) => {
       toastManager.add({
         type: "success",
-        title:
-          installation?.kind === "npm-global" ? "Update command copied" : "Relaunch command copied",
-        description:
-          installation?.kind === "npm-global"
-            ? `Run \`${command}\` on ${serverLabel}, then restart t3 with your usual options.`
-            : `Stop t3 on ${serverLabel}, then relaunch with \`${command}\` using the same subcommand and options. This does not update an installed t3 command.`,
+        title: "Update command copied",
+        description: `Run \`${command}\` on ${serverLabel}.`,
       });
     },
     onError: (error) => {
@@ -347,14 +345,14 @@ export function ServerUpdateAction({
     return <CrossTrackNote />;
   }
 
+  // A registry descriptor marks an install the CLI can no longer update in place.
+  if (selfUpdate === null && installation !== undefined) {
+    return <span className="text-muted-foreground text-xs">{LEGACY_INSTALL_GUIDANCE}</span>;
+  }
+
   const manualCommand =
     selfUpdate === null ? manualServerUpdateCommand(targetVersion, installation) : null;
-  const actionLabel =
-    manualCommand !== null
-      ? installation?.kind === "npm-global"
-        ? "Copy update command"
-        : "Copy relaunch command"
-      : label;
+  const actionLabel = manualCommand !== null ? "Copy update command" : label;
   const onClick =
     manualCommand !== null
       ? () => copyToClipboard(manualCommand, { command: manualCommand })

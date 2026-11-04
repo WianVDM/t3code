@@ -30,6 +30,8 @@ import {
   readWorkspaceConfig,
   createBuildConfig,
   DESKTOP_FILE_EXCLUSIONS,
+  isDesktopPreviewVersion,
+  resolveDesktopUpdateChannel,
   InvalidMacPasskeyRpDomainError,
   InvalidMacPasskeyPublishableKeyError,
   UnsupportedDesktopBuildArchitectureError,
@@ -520,7 +522,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       resolveDesktopProductName("0.0.17-nightly.20260413.42", "fork"),
       FORK_DESKTOP_BUILD.productName,
     );
-    assert.equal(resolveDesktopProductName("0.1.0"), "T3 Code (Beta)");
+    assert.equal(resolveDesktopProductName("0.1.0"), "T3 Code ++");
   });
 
   it("switches only the Windows icon to the fork artwork for the fork variant", () => {
@@ -621,10 +623,37 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         undefined,
         undefined,
       );
+      const signedRelease = yield* createBuildConfig(
+        "mac",
+        "dmg",
+        "0.0.33",
+        true,
+        false,
+        undefined,
+        undefined,
+      );
+      const windowsRelease = yield* createBuildConfig(
+        "win",
+        "nsis",
+        "0.0.33",
+        false,
+        false,
+        undefined,
+        undefined,
+      );
 
       assert.isNull(preview.publish);
       assert.isNull(previewChannel.publish);
-      assert.deepStrictEqual(release.publish, [
+      assert.isNull(release.publish);
+      assert.deepStrictEqual(signedRelease.publish, [
+        {
+          provider: "github",
+          owner: "pingdotgg",
+          repo: "t3code",
+          releaseType: "release",
+        },
+      ]);
+      assert.deepStrictEqual(windowsRelease.publish, [
         {
           provider: "github",
           owner: "pingdotgg",
@@ -639,6 +668,95 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         ),
       ),
     ),
+  );
+
+  it.effect("builds the stable -plusplus channel with the T3 Code ++ desktop identity", () =>
+    Effect.gen(function* () {
+      const version = "0.0.42-plusplus.7";
+      assert.equal(resolveDesktopUpdateChannel(version), "latest");
+      assert.isFalse(isDesktopPreviewVersion(version));
+
+      const stable = yield* createBuildConfig(
+        "mac",
+        "dmg",
+        version,
+        false,
+        false,
+        undefined,
+        undefined,
+      );
+      const signedStable = yield* createBuildConfig(
+        "mac",
+        "dmg",
+        version,
+        true,
+        false,
+        undefined,
+        undefined,
+      );
+
+      assert.equal(stable.appId, "com.t3tools.t3code.plusplus");
+      assert.equal(stable.productName, "T3 Code ++");
+      assert.deepStrictEqual((stable.mac as Record<string, unknown>).protocols, [
+        {
+          name: "T3 Code ++",
+          schemes: ["t3codeplusplus", "t3codeplusplus-dev"],
+        },
+        {
+          name: "Web site URL",
+          schemes: ["http", "https"],
+          role: "Viewer",
+        },
+      ]);
+
+      const linux = yield* createBuildConfig(
+        "linux",
+        "AppImage",
+        version,
+        false,
+        false,
+        undefined,
+        undefined,
+      );
+      const linuxOptions = linux.linux as Record<string, unknown>;
+      assert.equal(linuxOptions.executableName, "t3codeplusplus");
+      assert.deepStrictEqual(linuxOptions.protocols, [
+        {
+          name: "T3 Code ++",
+          schemes: ["t3codeplusplus", "t3codeplusplus-dev"],
+        },
+      ]);
+      assert.deepStrictEqual((linuxOptions.desktop as Record<string, unknown>).entry, {
+        StartupWMClass: "t3codeplusplus",
+      });
+      // The deb keeps its own package and file names so stock T3 Code can stay installed beside it.
+      const deb = linux.deb as Record<string, unknown>;
+      assert.equal(deb.packageName, "t3codeplusplus");
+      assert.deepStrictEqual(
+        (deb.fpm as string[]).map((mapping) => mapping.slice(mapping.indexOf("=") + 1)),
+        [
+          "/usr/share/metainfo/com.t3tools.t3code.plusplus.metainfo.xml",
+          "/usr/share/doc/t3codeplusplus/copyright",
+        ],
+      );
+      assert.isNull(stable.publish);
+      assert.deepStrictEqual(signedStable.publish, [
+        {
+          provider: "github",
+          owner: "WianVDM",
+          repo: "t3code",
+          releaseType: "release",
+        },
+      ]);
+      assert.deepStrictEqual(linux.publish, [
+        {
+          provider: "github",
+          owner: "WianVDM",
+          repo: "t3code",
+          releaseType: "release",
+        },
+      ]);
+    }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })))),
   );
 
   // pnpm writes "set this to true or false" placeholders into allowBuilds when a
@@ -1488,7 +1606,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     });
 
     assert.deepStrictEqual(configuration, {
-      appId: "com.t3tools.t3code",
+      appId: "com.t3tools.t3code.plusplus",
       teamId: "ABC1234567",
       rpDomains: ["example.clerk.accounts.dev"],
       provisioningProfilePath: "/tmp/t3code.provisionprofile",
@@ -1511,7 +1629,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       "clerk.example.com",
       "example.clerk.accounts.dev",
     ]);
-    assert.include(entitlements, "<string>ABC1234567.com.t3tools.t3code</string>");
+    assert.include(entitlements, "<string>ABC1234567.com.t3tools.t3code.plusplus</string>");
     assert.include(entitlements, "<string>webcredentials:clerk.example.com</string>");
     assert.include(entitlements, "<string>webcredentials:example.clerk.accounts.dev</string>");
     assert.include(entitlements, "<key>com.apple.security.cs.allow-jit</key>");

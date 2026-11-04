@@ -1,5 +1,5 @@
 import { RegistryContext } from "@effect/atom-react";
-import { AuthSessionState, type EnvironmentId } from "@t3tools/contracts";
+import { AuthSessionState, type EnvironmentId, type ServerInstallation } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Schema from "effect/Schema";
 import { AsyncResult, Atom } from "effect/reactivity";
@@ -179,6 +179,40 @@ describe("ServerUpdateAction", () => {
     await click(screen, "Update");
     expect(testState.updateServer).not.toHaveBeenCalled();
   });
+});
+
+describe("manual server update guidance", () => {
+  const GUIDANCE =
+    "npm/dlx installs are no longer supported. Reinstall from GitHub Releases, then use t3 update.";
+
+  it("copies `t3 update` for a supported manual install without a legacy descriptor", async () => {
+    using _state = setup();
+    await using screen = await renderAction({ selfUpdate: null });
+
+    await click(screen);
+
+    expect(testState.clipboard).toHaveBeenCalledTimes(1);
+    expect(testState.clipboard).toHaveBeenCalledWith("t3 update 0.0.31");
+  });
+
+  it.each([
+    { kind: "npm-global", installation: { kind: "npm-global", prefix: "/usr/local" } },
+    { kind: "npx", installation: { kind: "npx" } },
+    { kind: "pnpm-dlx", installation: { kind: "pnpm-dlx" } },
+    { kind: "bunx", installation: { kind: "bunx" } },
+  ] as const)(
+    "shows GitHub reinstall guidance for a $kind install with no copyable registry command",
+    async ({ installation }) => {
+      using _state = setup();
+      await using screen = await renderAction({ selfUpdate: null, installation });
+
+      await expect.element(screen.getByText(GUIDANCE)).toBeVisible();
+      expect(button(screen, "Copy update command")).toBeUndefined();
+      expect(button(screen, "Copy relaunch command")).toBeUndefined();
+      expect(screen.container.textContent).not.toContain("t3@0.0.31");
+      expect(testState.clipboard).not.toHaveBeenCalled();
+    },
+  );
 });
 
 describe("ServerUpdatesAction", () => {

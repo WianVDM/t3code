@@ -56,14 +56,17 @@ export function resolveVersionMismatch(
 
   const clientCore = versionCore(normalizedClientVersion);
   const serverCore = versionCore(normalizedServerVersion);
-  const compareNightlyBuilds =
-    parseSemver(normalizedClientVersion)?.prerelease[0] === "nightly" &&
-    parseSemver(normalizedServerVersion)?.prerelease[0] === "nightly";
+  // Same-channel builds carry their revision in the prerelease, so the full version decides skew.
+  const clientChannel = parseSemver(normalizedClientVersion)?.prerelease[0];
+  const serverChannel = parseSemver(normalizedServerVersion)?.prerelease[0];
+  const compareFullVersions =
+    (clientChannel === "nightly" && serverChannel === "nightly") ||
+    (clientChannel === "plusplus" && serverChannel === "plusplus");
   const serverIsBehind =
     parseSemver(clientCore) && parseSemver(serverCore)
       ? compareSemverVersions(
-          compareNightlyBuilds ? normalizedServerVersion : serverCore,
-          compareNightlyBuilds ? normalizedClientVersion : clientCore,
+          compareFullVersions ? normalizedServerVersion : serverCore,
+          compareFullVersions ? normalizedClientVersion : clientCore,
         ) < 0
       : normalizedServerVersion !== normalizedClientVersion;
   if (!serverIsBehind) {
@@ -98,14 +101,13 @@ export function supportsDesktopAppUpdate(
 export function manualServerUpdateCommand(
   targetVersion: string,
   installation?: ServerInstallation,
-): string {
-  if (installation?.kind === "npm-global") {
-    const prefix = `'${installation.prefix.replaceAll("'", "'\\''")}'`;
-    return `npm install --global --prefix ${prefix} t3@${targetVersion}`;
+): string | null {
+  // A registry descriptor names an npm/dlx install that self-update no longer reaches, so the
+  // caller shows reinstall guidance instead of a copyable command.
+  if (installation !== undefined) {
+    return null;
   }
-  const runner =
-    installation?.kind === "pnpm-dlx" ? "pnpm dlx" : installation?.kind === "bunx" ? "bunx" : "npx";
-  return `${runner} t3@${targetVersion}`;
+  return `t3 update ${targetVersion}`;
 }
 
 export function buildVersionMismatchDismissalKey(
