@@ -16,10 +16,7 @@ import {
   cliReleaseChannelOf,
   type CliReleaseChannel,
 } from "@t3tools/shared/cliRelease";
-import {
-  InvalidReleaseVersionError,
-  assertReleaseVersion,
-} from "./update-release-package-versions.ts";
+import { assertReleaseVersion } from "./update-release-package-versions.ts";
 
 export class InvalidReleaseChannelError extends Schema.TaggedError<InvalidReleaseChannelError>()(
   "InvalidReleaseChannelError",
@@ -83,9 +80,9 @@ export const buildReleaseMetadata = Effect.fn("buildReleaseMetadata")(function* 
   );
   const filePath = path.join(outputDir, CLI_RELEASE_METADATA_FILE);
   const json = yield* encodeMetadataJson({ version, channel, databaseMigration });
-  yield* fs.writeFileString(filePath, `${json}\n`).pipe(
-    Effect.mapError((cause) => new ReleaseMetadataWriteError({ filePath, cause })),
-  );
+  yield* fs
+    .writeFileString(filePath, `${json}\n`)
+    .pipe(Effect.mapError((cause) => new ReleaseMetadataWriteError({ filePath, cause })));
   return { filePath };
 });
 
