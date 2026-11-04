@@ -5,11 +5,12 @@ import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
+import * as CliError from "effect/cli/CliError";
 import { Command, Flag } from "effect/cli";
 
 import * as ServerConfig from "../config.ts";
 import { expandHomePath, resolveBaseDir } from "../os-jank.ts";
-import { importOldForkDatabase } from "../persistence/importOldFork.ts";
+import { importOldForkDatabase, mergeOldForkDatabase } from "../persistence/importOldFork.ts";
 import { isProcessAlive, readPersistedServerRuntimeState } from "../serverRuntimeState.ts";
 import { baseDirFlag } from "./config.ts";
 
@@ -37,6 +38,15 @@ export class ImportOldForkSourceIsDestinationError extends Schema.TaggedError<Im
 ) {
   override get message(): string {
     return `${this.sourcePath} is the destination database itself, so there is nothing to import.`;
+  }
+}
+
+export class RetryOldForkMergeDestinationMissingError extends Schema.TaggedError<RetryOldForkMergeDestinationMissingError>()(
+  "RetryOldForkMergeDestinationMissingError",
+  { destinationPath: Schema.String },
+) {
+  override get message(): string {
+    return `Nothing to retry: ${this.destinationPath} does not exist yet. Import the old fork database first with import-old-fork.`;
   }
 }
 
@@ -114,6 +124,74 @@ export const importOldForkCommand = Command.make("import-old-fork", {
       yield* Console.log(`Imported ${sourcePath} into ${destinationPath}.`);
       yield* Console.log(
         "Projects, threads, and completed work are restored as history. Running turns and other live work from the old fork are not resumed.",
+      );
+    }),
+  ),
+);
+
+const oldForkMergeMarkerName = "old-fork-import-plus-plus-v1.json";
+
+export const retryOldForkMergeCommand = Command.make("retry-old-fork-merge", {
+  baseDir: baseDirFlag,
+}).pipe(
+  Command.withDescription(
+    "Retry the one-time old fork merge for this installation's home. Re-runs merge steps that can safely be repeated; live servers are refused and running turns are never resumed or deleted.",
+  ),
+  Command.withHandler(({ baseDir }) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const sourceHome = path.resolve(yield* expandHomePath("~/.t3-fork"));
+      const { baseDir: destinationHome, paths } = yield* resolveImportPaths(baseDir);
+      const sourcePath = path.join(sourceHome, "userdata", "statev2.sqlite");
+      const destinationPath = paths.dbPath;
+      const markerPath = path.join(paths.stateDir, oldForkMergeMarkerName);
+
+      if (!(yield* fs.exists(sourcePath).pipe(Effect.orElseSucceed(() => false)))) {
+        return yield* new ImportOldForkSourceMissingError({ sourcePath });
+      }
+      // Same guard as a manual server start: a live server owns the destination.
+      const runtime = yield* readPersistedServerRuntimeState(paths.serverRuntimeStatePath);
+      if (
+        Option.isSome(runtime) &&
+        runtime.value.pid > 0 &&
+        runtime.value.pid !== process.pid &&
+        isProcessAlive(runtime.value.pid)
+      ) {
+        return yield* new ImportOldForkServerRunningError({
+          destinationPath,
+          pid: runtime.value.pid,
+          origin: runtime.value.origin,
+        });
+      }
+      if (!(yield* fs.exists(destinationPath).pipe(Effect.orElseSucceed(() => false)))) {
+        return yield* new RetryOldForkMergeDestinationMissingError({ destinationPath });
+      }
+
+      const outcome = yield* mergeOldForkDatabase({
+        sourceHome,
+        destinationHome,
+        markerPath,
+        retryTerminal: true,
+      });
+      if (outcome.status === "busy") {
+        return yield* new CliError.UserError({
+          cause: "merge-lock",
+          userMessage:
+            "Another process is already merging the old fork. Wait for it to finish, then retry.",
+        });
+      }
+      if (outcome.status === "blocked") {
+        return yield* new CliError.UserError({
+          cause: "merge-blocked",
+          userMessage: `The old fork merge is blocked: ${outcome.reason}`,
+        });
+      }
+      yield* Console.log(
+        `The old fork merge from ${sourceHome} into ${destinationHome} completed.`,
+      );
+      yield* Console.log(
+        "Completed old fork work is merged as history. Running turns and other live work are never resumed or deleted.",
       );
     }),
   ),

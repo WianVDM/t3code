@@ -9,6 +9,8 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import { ThreadId } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+import * as DateTime from "effect/DateTime";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -423,60 +425,70 @@ const threadEvent = (input: {
   payload: threadPayload(input),
 });
 
+interface MergeReceipt {
+  readonly commandId: string;
+  readonly aggregateId: string;
+  readonly resultEventId: string;
+}
+
+const writeMergeRows = (
+  database: NodeSqlite.DatabaseSync,
+  events: ReadonlyArray<MergeEvent>,
+  receipts: ReadonlyArray<MergeReceipt> = [],
+): void => {
+  const insertEvent = database.prepare(`
+    INSERT INTO orchestration_events (
+      event_id, aggregate_kind, stream_id, stream_version, event_type, occurred_at,
+      command_id, causation_event_id, correlation_id, actor_kind, payload_json,
+      metadata_json, application_event_version
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'client', ?, '{}', 2)
+  `);
+  for (const event of events) {
+    insertEvent.run(
+      event.eventId,
+      event.aggregateKind,
+      event.streamId,
+      event.streamVersion,
+      event.eventType,
+      event.occurredAt,
+      event.commandId,
+      event.causationEventId ?? null,
+      event.commandId,
+      JSON.stringify(event.payload),
+    );
+  }
+  const findSequence = database.prepare(
+    "SELECT sequence FROM orchestration_events WHERE event_id = ?",
+  );
+  const insertReceipt = database.prepare(`
+    INSERT INTO orchestration_command_receipts (
+      command_id, aggregate_kind, aggregate_id, accepted_at, result_sequence,
+      status, command_type
+    ) VALUES (?, 'thread', ?, ?, ?, 'accepted', 'thread.create')
+  `);
+  for (const receipt of receipts) {
+    const row = findSequence.get(receipt.resultEventId);
+    if (row === undefined) throw new Error(`Missing event ${receipt.resultEventId}`);
+    insertReceipt.run(
+      receipt.commandId,
+      receipt.aggregateId,
+      "2026-01-01T00:00:00.000Z",
+      row.sequence as number,
+    );
+  }
+};
+
 const seedMergeDatabase = (
   dbPath: string,
   events: ReadonlyArray<MergeEvent>,
-  receipts: ReadonlyArray<{
-    readonly commandId: string;
-    readonly aggregateId: string;
-    readonly resultEventId: string;
-  }> = [],
+  receipts: ReadonlyArray<MergeReceipt> = [],
 ) =>
   Effect.gen(function* () {
     yield* runMigrations().pipe(Effect.provide(NodeSqliteClient.layer({ filename: dbPath })));
     yield* Effect.sync(() => {
       const database = new NodeSqlite.DatabaseSync(dbPath);
       try {
-        const insertEvent = database.prepare(`
-          INSERT INTO orchestration_events (
-            event_id, aggregate_kind, stream_id, stream_version, event_type, occurred_at,
-            command_id, causation_event_id, correlation_id, actor_kind, payload_json,
-            metadata_json, application_event_version
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'client', ?, '{}', 2)
-        `);
-        for (const event of events) {
-          insertEvent.run(
-            event.eventId,
-            event.aggregateKind,
-            event.streamId,
-            event.streamVersion,
-            event.eventType,
-            event.occurredAt,
-            event.commandId,
-            event.causationEventId ?? null,
-            event.commandId,
-            JSON.stringify(event.payload),
-          );
-        }
-        const findSequence = database.prepare(
-          "SELECT sequence FROM orchestration_events WHERE event_id = ?",
-        );
-        const insertReceipt = database.prepare(`
-          INSERT INTO orchestration_command_receipts (
-            command_id, aggregate_kind, aggregate_id, accepted_at, result_sequence,
-            status, command_type
-          ) VALUES (?, 'thread', ?, ?, ?, 'accepted', 'thread.create')
-        `);
-        for (const receipt of receipts) {
-          const row = findSequence.get(receipt.resultEventId);
-          if (row === undefined) throw new Error(`Missing event ${receipt.resultEventId}`);
-          insertReceipt.run(
-            receipt.commandId,
-            receipt.aggregateId,
-            "2026-01-01T00:00:00.000Z",
-            row.sequence as number,
-          );
-        }
+        writeMergeRows(database, events, receipts);
       } finally {
         database.close();
       }
@@ -540,6 +552,70 @@ const seedRuntimeState = (dbPath: string, prefix: string) =>
     } finally {
       database.close();
     }
+  });
+
+const readRows = (dbPath: string, sql: string): ReadonlyArray<Record<string, unknown>> => {
+  const database = new NodeSqlite.DatabaseSync(dbPath, { readOnly: true });
+  try {
+    return database.prepare(sql).all() as ReadonlyArray<Record<string, unknown>>;
+  } finally {
+    database.close();
+  }
+};
+
+const readEventIds = (dbPath: string): ReadonlyArray<string> =>
+  readRows(dbPath, "SELECT event_id FROM orchestration_events ORDER BY sequence").map((row) =>
+    String(row.event_id),
+  );
+
+const readEventCausation = (dbPath: string): ReadonlyArray<[string, string | null]> =>
+  readRows(
+    dbPath,
+    `SELECT event_id AS eventId, causation_event_id AS causationEventId
+     FROM orchestration_events ORDER BY sequence`,
+  ).map((row) => [
+    String(row.eventId),
+    row.causationEventId === null ? null : String(row.causationEventId),
+  ]);
+
+/** History the old fork recorded between two merge attempts. */
+const appendMergeEvents = (dbPath: string, events: ReadonlyArray<MergeEvent>) =>
+  Effect.sync(() => {
+    const database = new NodeSqlite.DatabaseSync(dbPath);
+    try {
+      writeMergeRows(database, events);
+    } finally {
+      database.close();
+    }
+  });
+
+const execMergeDatabase = (dbPath: string, statement: string) =>
+  Effect.sync(() => {
+    const database = new NodeSqlite.DatabaseSync(dbPath);
+    try {
+      database.exec(statement);
+    } finally {
+      database.close();
+    }
+  });
+
+/** The merge lock as the merge records it: owner pid, exclusive token, and creation time. */
+const writeMergeLock = (markerPath: string, lock: { pid: number; createdAt: string }) =>
+  NodeFS.writeFileSync(`${markerPath}.lock`, JSON.stringify({ token: "held-by-test", ...lock }));
+
+/** A server-runtime record is the claim a running server holds on a home. */
+const writeServerClaim = (home: string, pid: number) =>
+  Effect.sync(() => {
+    NodeFS.writeFileSync(
+      NodePath.join(home, "userdata", "server-runtime.json"),
+      JSON.stringify({
+        version: 1,
+        pid,
+        port: 5123,
+        origin: "http://127.0.0.1:5123",
+        startedAt: "2026-01-01T00:00:00.000Z",
+      }),
+    );
   });
 
 const seedBasicMergeHomes = (directory: string) =>
@@ -1054,6 +1130,680 @@ it.effect("aborts an invalid conflict without changing the destination", () => {
     assert.deepEqual(NodeFS.readFileSync(destination.dbPath), destinationBefore);
     assert.deepEqual(NodeFS.readFileSync(source.dbPath), sourceBefore);
     assert.isFalse(NodeFS.existsSync(markerPath));
+  }).pipe(
+    Effect.provide(NodeServices.layer),
+    Effect.ensuring(Effect.sync(() => NodeFS.rmSync(directory, { recursive: true, force: true }))),
+  );
+});
+
+it.effect(
+  "imports the old fork home on first boot, including a competing empty destination",
+  () => {
+    const directory = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-merge-first-boot-"));
+    return Effect.gen(function* () {
+      const source = mergeHome(directory, "source");
+      yield* seedMergeDatabase(source.dbPath, [
+        projectCreated({
+          eventId: "source-project-created",
+          projectId: "source-project",
+          title: "Source project",
+          occurredAt: "2026-01-01T00:00:00.000Z",
+        }),
+        threadEvent({
+          eventId: "source-thread-created",
+          threadId: "source-thread",
+          projectId: "source-project",
+          title: "Source thread",
+          occurredAt: "2026-01-01T00:00:01.000Z",
+        }),
+      ]);
+      const sourceBefore = NodeFS.readFileSync(source.dbPath);
+      const sourceEvents = ["source-project-created", "source-thread-created"];
+
+      const firstBoot = mergeHome(directory, "first-boot");
+      const markerPath = NodePath.join(directory, "first-boot.marker");
+      assert.isFalse(NodeFS.existsSync(firstBoot.dbPath));
+      yield* mergeOldForkDatabase({
+        sourceHome: source.home,
+        destinationHome: firstBoot.home,
+        markerPath,
+      });
+      assert.deepEqual(readEventIds(firstBoot.dbPath), sourceEvents);
+      assert.isTrue(NodeFS.existsSync(markerPath));
+
+      // A competing first boot can create an empty database before the import lands.
+      const competing = mergeHome(directory, "competing");
+      yield* seedMergeDatabase(competing.dbPath, []);
+      const competingMarker = NodePath.join(directory, "competing.marker");
+      yield* mergeOldForkDatabase({
+        sourceHome: source.home,
+        destinationHome: competing.home,
+        markerPath: competingMarker,
+      });
+      assert.deepEqual(readEventIds(competing.dbPath), sourceEvents);
+      assert.deepEqual(
+        readRows(
+          competing.dbPath,
+          "SELECT project_id AS projectId FROM projection_projects ORDER BY project_id",
+        ),
+        [{ projectId: "source-project" }],
+      );
+      assert.isTrue(NodeFS.existsSync(competingMarker));
+      assert.deepEqual(NodeFS.readFileSync(source.dbPath), sourceBefore);
+    }).pipe(
+      Effect.provide(NodeServices.layer),
+      Effect.ensuring(
+        Effect.sync(() => NodeFS.rmSync(directory, { recursive: true, force: true })),
+      ),
+    );
+  },
+);
+
+it.effect("leaves both databases untouched while another connection holds the destination", () => {
+  const directory = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-merge-busy-"));
+  return Effect.gen(function* () {
+    const { source, destination, markerPath } = yield* seedBasicMergeHomes(directory);
+    const sourceBefore = NodeFS.readFileSync(source.dbPath);
+    const destinationBefore = readEventIds(destination.dbPath);
+    const merged = [
+      "source-project-created",
+      "source-thread-created",
+      "destination-project-created",
+      "destination-thread-created",
+    ];
+
+    const holder = new NodeSqlite.DatabaseSync(destination.dbPath);
+    const attempt = yield* Effect.gen(function* () {
+      holder.exec("BEGIN EXCLUSIVE");
+      return yield* Effect.result(
+        mergeOldForkDatabase({
+          sourceHome: source.home,
+          destinationHome: destination.home,
+          markerPath,
+        }),
+      );
+    }).pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          try {
+            holder.exec("ROLLBACK");
+          } finally {
+            holder.close();
+          }
+        }),
+      ),
+    );
+
+    // Busy is transient: nothing is merged, nothing is discarded, and the next run succeeds.
+    assert.equal(attempt._tag, "Failure");
+    assert.deepEqual(readEventIds(destination.dbPath), destinationBefore);
+    assert.deepEqual(NodeFS.readFileSync(source.dbPath), sourceBefore);
+
+    yield* mergeOldForkDatabase({
+      sourceHome: source.home,
+      destinationHome: destination.home,
+      markerPath,
+    });
+    assert.deepEqual(readEventIds(destination.dbPath), merged);
+  }).pipe(
+    Effect.provide(NodeServices.layer),
+    Effect.ensuring(Effect.sync(() => NodeFS.rmSync(directory, { recursive: true, force: true }))),
+  );
+});
+
+it.effect("refuses a destination claimed by a live server and ignores a stale claim", () => {
+  const directory = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-merge-claim-"));
+  return Effect.gen(function* () {
+    const { source, destination, markerPath } = yield* seedBasicMergeHomes(directory);
+    const sourceBefore = NodeFS.readFileSync(source.dbPath);
+    const destinationBefore = readEventIds(destination.dbPath);
+    const deadPid = NodeChildProcess.spawnSync(process.execPath, ["-e", ""]).pid;
+    assert.isNumber(deadPid);
+    yield* writeServerClaim(destination.home, deadPid as number);
+
+    const liveServer = NodeChildProcess.spawn(
+      process.execPath,
+      ["-e", "setTimeout(() => {}, 60000)"],
+      { stdio: "ignore" },
+    );
+    assert.isNumber(liveServer.pid);
+    yield* Effect.gen(function* () {
+      yield* writeServerClaim(destination.home, liveServer.pid as number);
+      const attempt = yield* Effect.result(
+        mergeOldForkDatabase({
+          sourceHome: source.home,
+          destinationHome: destination.home,
+          markerPath,
+        }),
+      );
+      assert.equal(attempt._tag, "Failure");
+      assert.deepEqual(readEventIds(destination.dbPath), destinationBefore);
+      assert.deepEqual(NodeFS.readFileSync(source.dbPath), sourceBefore);
+    }).pipe(Effect.ensuring(Effect.sync(() => liveServer.kill())));
+
+    yield* writeServerClaim(destination.home, deadPid as number);
+    yield* mergeOldForkDatabase({
+      sourceHome: source.home,
+      destinationHome: destination.home,
+      markerPath,
+    });
+    assert.deepEqual(readEventIds(destination.dbPath), [
+      "source-project-created",
+      "source-thread-created",
+      "destination-project-created",
+      "destination-thread-created",
+    ]);
+  }).pipe(
+    Effect.provide(NodeServices.layer),
+    Effect.ensuring(Effect.sync(() => NodeFS.rmSync(directory, { recursive: true, force: true }))),
+  );
+});
+
+it.effect("reports a fresh lock held by a live merge as busy without backup work", () => {
+  const directory = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-merge-lock-live-"));
+  return Effect.gen(function* () {
+    const { source, destination, markerPath } = yield* seedBasicMergeHomes(directory);
+    const lockPath = `${markerPath}.lock`;
+    const destinationBefore = readEventIds(destination.dbPath);
+    const holder = NodeChildProcess.spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)"], {
+      stdio: "ignore",
+    });
+    assert.isNumber(holder.pid);
+    writeMergeLock(markerPath, {
+      pid: holder.pid as number,
+      createdAt: DateTime.formatIso(yield* DateTime.now),
+    });
+    const held = NodeFS.readFileSync(lockPath, "utf8");
+
+    const attempt = yield* mergeOldForkDatabase({
+      sourceHome: source.home,
+      destinationHome: destination.home,
+      markerPath,
+    }).pipe(Effect.ensuring(Effect.sync(() => holder.kill())));
+
+    assert.deepEqual(attempt, { status: "busy" });
+    // Busy is decided before any snapshot, migration, or merge work starts.
+    assert.deepEqual(
+      NodeFS.readdirSync(destination.userdata).filter((name) => name.startsWith(".v2-import-")),
+      [],
+    );
+    assert.deepEqual(readEventIds(destination.dbPath), destinationBefore);
+    assert.isFalse(NodeFS.existsSync(markerPath));
+    assert.isFalse(NodeFS.existsSync(`${markerPath}.state`));
+    assert.equal(NodeFS.readFileSync(lockPath, "utf8"), held);
+  }).pipe(
+    Effect.provide(NodeServices.layer),
+    Effect.ensuring(Effect.sync(() => NodeFS.rmSync(directory, { recursive: true, force: true }))),
+  );
+});
+
+it.effect("reclaims a lock whose pid was reused once it passes the stale bound", () => {
+  const directory = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-merge-lock-reused-"));
+  return Effect.gen(function* () {
+    const { source, destination, markerPath } = yield* seedBasicMergeHomes(directory);
+    const lockPath = `${markerPath}.lock`;
+    // A crashed merge leaves its pid behind; the OS can hand that pid to a live process, so
+    // liveness alone cannot keep the lock forever.
+    writeMergeLock(markerPath, {
+      pid: process.pid,
+      createdAt: DateTime.formatIso(
+        DateTime.subtractDuration(yield* DateTime.now, Duration.hours(2)),
+      ),
+    });
+
+    const outcome = yield* mergeOldForkDatabase({
+      sourceHome: source.home,
+      destinationHome: destination.home,
+      markerPath,
+    });
+
+    assert.deepEqual(outcome, { status: "done" });
+    assert.deepEqual(readEventIds(destination.dbPath), [
+      "source-project-created",
+      "source-thread-created",
+      "destination-project-created",
+      "destination-thread-created",
+    ]);
+    assert.isTrue(NodeFS.existsSync(markerPath));
+    assert.isFalse(NodeFS.existsSync(lockPath));
+  }).pipe(
+    Effect.provide(NodeServices.layer),
+    Effect.ensuring(Effect.sync(() => NodeFS.rmSync(directory, { recursive: true, force: true }))),
+  );
+});
+
+it.effect("recovers a lock whose contents cannot be read", () => {
+  const directory = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-merge-lock-garbage-"));
+  return Effect.gen(function* () {
+    const { source, destination, markerPath } = yield* seedBasicMergeHomes(directory);
+    const lockPath = `${markerPath}.lock`;
+    NodeFS.writeFileSync(lockPath, '{"pid": null, "token"');
+
+    const outcome = yield* mergeOldForkDatabase({
+      sourceHome: source.home,
+      destinationHome: destination.home,
+      markerPath,
+    });
+
+    assert.deepEqual(outcome, { status: "done" });
+    assert.deepEqual(readEventIds(destination.dbPath), [
+      "source-project-created",
+      "source-thread-created",
+      "destination-project-created",
+      "destination-thread-created",
+    ]);
+    assert.isFalse(NodeFS.existsSync(lockPath));
+  }).pipe(
+    Effect.provide(NodeServices.layer),
+    Effect.ensuring(Effect.sync(() => NodeFS.rmSync(directory, { recursive: true, force: true }))),
+  );
+});
+
+it.effect("skips a terminal conflict until an explicit retry", () => {
+  const directory = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-merge-terminal-"));
+  const source = mergeHome(directory, "source");
+  const destination = mergeHome(directory, "destination");
+  const markerPath = NodePath.join(directory, "old-fork-merge.marker");
+  return Effect.gen(function* () {
+    const sharedProject = projectCreated({
+      eventId: "shared-project-created",
+      projectId: "shared-project",
+      title: "Shared project",
+      occurredAt: "2026-01-01T00:00:00.000Z",
+    });
+    const sharedThread = threadEvent({
+      eventId: "shared-thread-created",
+      threadId: "shared-thread",
+      projectId: "shared-project",
+      title: "Shared thread",
+      occurredAt: "2026-01-01T00:00:01.000Z",
+    });
+    yield* seedMergeDatabase(source.dbPath, [
+      sharedProject,
+      sharedThread,
+      threadEvent({
+        eventId: "duplicate-selected-event",
+        threadId: "shared-thread",
+        projectId: "shared-project",
+        title: "Source conflict",
+        occurredAt: "2026-01-01T00:00:02.000Z",
+        streamVersion: 1,
+        eventType: "thread.metadata-updated",
+      }),
+    ]);
+    yield* seedMergeDatabase(destination.dbPath, [
+      sharedProject,
+      sharedThread,
+      projectCreated({
+        eventId: "destination-project-created",
+        projectId: "destination-project",
+        title: "Destination project",
+        occurredAt: "2026-01-01T00:00:03.000Z",
+      }),
+      threadEvent({
+        eventId: "destination-thread-created",
+        threadId: "destination-thread",
+        projectId: "destination-project",
+        title: "Destination thread",
+        occurredAt: "2026-01-01T00:00:04.000Z",
+      }),
+      threadEvent({
+        eventId: "duplicate-selected-event",
+        threadId: "destination-thread",
+        projectId: "destination-project",
+        title: "Destination conflict",
+        occurredAt: "2026-01-01T00:00:05.000Z",
+        streamVersion: 1,
+        eventType: "thread.metadata-updated",
+      }),
+    ]);
+    const blockedEvents = readEventIds(destination.dbPath);
+
+    const blocked = yield* Effect.result(
+      mergeOldForkDatabase({
+        sourceHome: source.home,
+        destinationHome: destination.home,
+        markerPath,
+      }),
+    );
+    assert.equal(blocked._tag, "Failure");
+    assert.deepEqual(readEventIds(destination.dbPath), blockedEvents);
+
+    // Removing the conflict must not be enough: a terminal outcome waits for an explicit retry.
+    yield* execMergeDatabase(
+      destination.dbPath,
+      "DELETE FROM orchestration_events WHERE event_id = 'duplicate-selected-event'",
+    );
+    yield* appendMergeEvents(source.dbPath, [
+      projectCreated({
+        eventId: "late-source-project-created",
+        projectId: "late-source-project",
+        title: "Late source project",
+        occurredAt: "2026-01-01T00:00:06.000Z",
+      }),
+    ]);
+    const resolvedEvents = readEventIds(destination.dbPath);
+    const skipped = yield* Effect.result(
+      mergeOldForkDatabase({
+        sourceHome: source.home,
+        destinationHome: destination.home,
+        markerPath,
+      }),
+    );
+    assert.equal(skipped._tag, "Success");
+    assert.deepEqual(readEventIds(destination.dbPath), resolvedEvents);
+
+    yield* mergeOldForkDatabase({
+      sourceHome: source.home,
+      destinationHome: destination.home,
+      markerPath,
+      retryTerminal: true,
+    });
+    assert.deepEqual(readEventIds(destination.dbPath), [
+      "shared-project-created",
+      "shared-thread-created",
+      "duplicate-selected-event",
+      "late-source-project-created",
+      "destination-project-created",
+      "destination-thread-created",
+    ]);
+    assert.isTrue(NodeFS.existsSync(markerPath));
+  }).pipe(
+    Effect.provide(NodeServices.layer),
+    Effect.ensuring(Effect.sync(() => NodeFS.rmSync(directory, { recursive: true, force: true }))),
+  );
+});
+
+it.effect("resumes a published merge by overlaying files only", () => {
+  const directory = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-merge-resume-"));
+  return Effect.gen(function* () {
+    const { source, destination } = yield* seedBasicMergeHomes(directory);
+    const markerPath = NodePath.join(directory, "old-fork-merge.marker");
+    NodeFS.mkdirSync(NodePath.join(source.userdata, "themes"), { recursive: true });
+    NodeFS.writeFileSync(NodePath.join(source.userdata, "themes", "shared.json"), "source");
+    // A file where the themes directory belongs fails the overlay once the database is published.
+    NodeFS.writeFileSync(NodePath.join(destination.userdata, "themes"), "not a directory");
+
+    const interrupted = yield* Effect.result(
+      mergeOldForkDatabase({
+        sourceHome: source.home,
+        destinationHome: destination.home,
+        markerPath,
+      }),
+    );
+    assert.equal(interrupted._tag, "Failure");
+    const published = readEventIds(destination.dbPath);
+    assert.deepEqual(published, [
+      "source-project-created",
+      "source-thread-created",
+      "destination-project-created",
+      "destination-thread-created",
+    ]);
+
+    // History the old fork gained after publication must not reach an already published database.
+    yield* appendMergeEvents(source.dbPath, [
+      projectCreated({
+        eventId: "late-source-project-created",
+        projectId: "late-source-project",
+        title: "Late source project",
+        occurredAt: "2026-02-01T00:00:00.000Z",
+      }),
+    ]);
+    assert.isFalse(NodeFS.existsSync(markerPath));
+    NodeFS.rmSync(NodePath.join(destination.userdata, "themes"));
+
+    yield* mergeOldForkDatabase({
+      sourceHome: source.home,
+      destinationHome: destination.home,
+      markerPath,
+    });
+    assert.deepEqual(readEventIds(destination.dbPath), published);
+    assert.isTrue(NodeFS.existsSync(markerPath));
+    assert.equal(
+      NodeFS.readFileSync(NodePath.join(destination.userdata, "themes", "shared.json"), "utf8"),
+      "source",
+    );
+  }).pipe(
+    Effect.provide(NodeServices.layer),
+    Effect.ensuring(Effect.sync(() => NodeFS.rmSync(directory, { recursive: true, force: true }))),
+  );
+});
+
+it.effect("nulls causation that points at destination history the merge discards", () => {
+  const directory = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-merge-causation-"));
+  const source = mergeHome(directory, "source");
+  const destination = mergeHome(directory, "destination");
+  const markerPath = NodePath.join(directory, "old-fork-merge.marker");
+  return Effect.gen(function* () {
+    const sharedProject = projectCreated({
+      eventId: "shared-project-created",
+      projectId: "shared-project",
+      title: "Shared project",
+      occurredAt: "2026-01-01T00:00:00.000Z",
+    });
+    const sharedThread = threadEvent({
+      eventId: "shared-thread-created",
+      threadId: "shared-thread",
+      projectId: "shared-project",
+      title: "Shared thread",
+      occurredAt: "2026-01-01T00:00:01.000Z",
+    });
+    yield* seedMergeDatabase(source.dbPath, [
+      sharedProject,
+      sharedThread,
+      threadEvent({
+        eventId: "old-fork-metadata",
+        threadId: "shared-thread",
+        projectId: "shared-project",
+        title: "Old fork wins",
+        occurredAt: "2026-01-01T00:00:02.000Z",
+        streamVersion: 1,
+        eventType: "thread.metadata-updated",
+        causationEventId: "shared-thread-created",
+      }),
+    ]);
+    yield* seedMergeDatabase(destination.dbPath, [
+      sharedProject,
+      sharedThread,
+      threadEvent({
+        eventId: "destination-metadata",
+        threadId: "shared-thread",
+        projectId: "shared-project",
+        title: "Destination loses",
+        occurredAt: "2026-01-01T00:00:02.000Z",
+        streamVersion: 1,
+        eventType: "thread.metadata-updated",
+      }),
+      threadEvent({
+        eventId: "destination-thread-created",
+        threadId: "destination-thread",
+        projectId: "shared-project",
+        title: "Destination thread",
+        occurredAt: "2026-01-01T00:00:03.000Z",
+        causationEventId: "destination-metadata",
+      }),
+    ]);
+
+    yield* mergeOldForkDatabase({
+      sourceHome: source.home,
+      destinationHome: destination.home,
+      markerPath,
+    });
+
+    // The surviving event outlives its discarded cause, so it keeps no causation instead of failing.
+    assert.deepEqual(readEventCausation(destination.dbPath), [
+      ["shared-project-created", null],
+      ["shared-thread-created", null],
+      ["old-fork-metadata", "shared-thread-created"],
+      ["destination-thread-created", null],
+    ]);
+    assert.deepEqual(
+      readRows(
+        destination.dbPath,
+        "SELECT thread_id AS threadId FROM orchestration_v2_projection_threads ORDER BY thread_id",
+      ).map((thread) => thread.threadId),
+      ["destination-thread", "shared-thread"],
+    );
+  }).pipe(
+    Effect.provide(NodeServices.layer),
+    Effect.ensuring(Effect.sync(() => NodeFS.rmSync(directory, { recursive: true, force: true }))),
+  );
+});
+
+it.effect("keeps a missing source causation and a dangling prompt anchor fatal", () => {
+  const directory = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-merge-fatal-"));
+  const source = mergeHome(directory, "source");
+  const destination = mergeHome(directory, "destination");
+  const markerPath = NodePath.join(directory, "old-fork-merge.marker");
+  return Effect.gen(function* () {
+    yield* seedMergeDatabase(source.dbPath, [
+      projectCreated({
+        eventId: "source-project-created",
+        projectId: "source-project",
+        title: "Source project",
+        occurredAt: "2026-01-01T00:00:00.000Z",
+      }),
+      threadEvent({
+        eventId: "source-thread-created",
+        threadId: "source-thread",
+        projectId: "source-project",
+        title: "Source thread",
+        occurredAt: "2026-01-01T00:00:01.000Z",
+        causationEventId: "source-event-that-does-not-exist",
+      }),
+    ]);
+    yield* seedMergeDatabase(destination.dbPath, [
+      projectCreated({
+        eventId: "destination-project-created",
+        projectId: "destination-project",
+        title: "Destination project",
+        occurredAt: "2026-01-01T00:00:02.000Z",
+      }),
+      threadEvent({
+        eventId: "destination-thread-created",
+        threadId: "destination-thread",
+        projectId: "destination-project",
+        title: "Destination thread",
+        occurredAt: "2026-01-01T00:00:03.000Z",
+      }),
+    ]);
+    const destinationBefore = readEventIds(destination.dbPath);
+
+    const missingCausation = yield* Effect.result(
+      mergeOldForkDatabase({
+        sourceHome: source.home,
+        destinationHome: destination.home,
+        markerPath,
+      }),
+    );
+    assert.equal(missingCausation._tag, "Failure");
+    assert.deepEqual(readEventIds(destination.dbPath), destinationBefore);
+
+    yield* execMergeDatabase(
+      source.dbPath,
+      `UPDATE orchestration_events
+       SET causation_event_id = NULL, payload_json = json_set(payload_json, '$.promptSequence', 9999)
+       WHERE event_id = 'source-thread-created'`,
+    );
+    // A terminal outcome from the first attempt must not hide the second failure.
+    const danglingPrompt = yield* Effect.result(
+      mergeOldForkDatabase({
+        sourceHome: source.home,
+        destinationHome: destination.home,
+        markerPath,
+        retryTerminal: true,
+      }),
+    );
+    assert.equal(danglingPrompt._tag, "Failure");
+    assert.deepEqual(readEventIds(destination.dbPath), destinationBefore);
+  }).pipe(
+    Effect.provide(NodeServices.layer),
+    Effect.ensuring(Effect.sync(() => NodeFS.rmSync(directory, { recursive: true, force: true }))),
+  );
+});
+
+it.effect("carries an additive nullable event column through the merge", () => {
+  const directory = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-merge-columns-"));
+  return Effect.gen(function* () {
+    const { source, destination, markerPath } = yield* seedBasicMergeHomes(directory);
+    for (const dbPath of [source.dbPath, destination.dbPath]) {
+      yield* execMergeDatabase(
+        dbPath,
+        "ALTER TABLE orchestration_events ADD COLUMN lifecycle_note TEXT",
+      );
+      yield* execMergeDatabase(
+        dbPath,
+        "UPDATE orchestration_events SET lifecycle_note = event_id || ':note'",
+      );
+    }
+
+    yield* mergeOldForkDatabase({
+      sourceHome: source.home,
+      destinationHome: destination.home,
+      markerPath,
+    });
+
+    assert.deepEqual(
+      readRows(
+        destination.dbPath,
+        "SELECT event_id AS eventId, lifecycle_note AS lifecycleNote FROM orchestration_events ORDER BY sequence",
+      ).map((row) => [row.eventId, row.lifecycleNote]),
+      [
+        ["source-project-created", "source-project-created:note"],
+        ["source-thread-created", "source-thread-created:note"],
+        ["destination-project-created", "destination-project-created:note"],
+        ["destination-thread-created", "destination-thread-created:note"],
+      ],
+    );
+  }).pipe(
+    Effect.provide(NodeServices.layer),
+    Effect.ensuring(Effect.sync(() => NodeFS.rmSync(directory, { recursive: true, force: true }))),
+  );
+});
+
+it.effect("blocks the merge when the event tables disagree on a column", () => {
+  const directory = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-merge-columns-off-"));
+  return Effect.gen(function* () {
+    const { source, destination, markerPath } = yield* seedBasicMergeHomes(directory);
+    yield* execMergeDatabase(
+      destination.dbPath,
+      "ALTER TABLE orchestration_events ADD COLUMN lifecycle_note TEXT",
+    );
+    const sourceBefore = NodeFS.readFileSync(source.dbPath);
+    const destinationBefore = readEventIds(destination.dbPath);
+
+    const result = yield* Effect.result(
+      mergeOldForkDatabase({
+        sourceHome: source.home,
+        destinationHome: destination.home,
+        markerPath,
+      }),
+    );
+
+    assert.equal(result._tag, "Failure");
+    assert.deepEqual(readEventIds(destination.dbPath), destinationBefore);
+    assert.deepEqual(NodeFS.readFileSync(source.dbPath), sourceBefore);
+
+    const statePath = `${markerPath}.state`;
+    const recorded = JSON.parse(NodeFS.readFileSync(statePath, "utf8")) as {
+      status: string;
+      reason: string;
+    };
+    assert.equal(recorded.status, "blocked");
+    assert.match(recorded.reason, /different columns/);
+    assert.isFalse(NodeFS.existsSync(`${markerPath}.lock`));
+
+    // The recorded block is terminal, so the next run must decide before opening either database.
+    NodeFS.rmSync(destination.dbPath);
+    const skipped = yield* mergeOldForkDatabase({
+      sourceHome: source.home,
+      destinationHome: destination.home,
+      markerPath,
+    });
+    assert.deepEqual(skipped, { status: "blocked", reason: recorded.reason });
+    assert.isTrue(NodeFS.existsSync(statePath));
+    assert.isFalse(NodeFS.existsSync(markerPath));
+    assert.isFalse(NodeFS.existsSync(destination.dbPath));
   }).pipe(
     Effect.provide(NodeServices.layer),
     Effect.ensuring(Effect.sync(() => NodeFS.rmSync(directory, { recursive: true, force: true }))),
