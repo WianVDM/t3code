@@ -194,6 +194,68 @@ describe("pi T3 MCP injection", () => {
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
+  it.effect("bounds session-scoped filenames for deeply delegated session ids", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const cacheDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-pi-extensions-" });
+      const contextBridge = {
+        instructions: {
+          source: "claudeAgent" as const,
+          block: "BRIDGED_CONTENT_MARKER",
+          files: [],
+        },
+        skillRoots: [],
+      };
+      // Delegated sessions chain their parent ids; these reach the 254-char
+      // component length that overflows NTFS once the extension prefix and
+      // jiti's cache suffix are appended.
+      const delegatedSegment = (depth: number) =>
+        `delegated-task-${depth}-c5f1e0d9-8a3b-4f2e-9d77-1a2b3c4d5e6f`;
+      const sessionId = [
+        "provider-session",
+        "provider-instance",
+        "pi-local",
+        "shared",
+        ...[0, 1, 2, 3].map(delegatedSegment),
+      ].join(":");
+      const siblingId = [
+        "provider-session",
+        "provider-instance",
+        "pi-local",
+        "shared",
+        ...[0, 1, 2, 3].map((depth) => `${delegatedSegment(depth)}-sibling`),
+      ].join(":");
+
+      const dest = yield* materializePiT3McpExtension(cacheDir, { contextBridge, sessionId });
+      const destName = dest.slice(dest.lastIndexOf("/") + 1);
+      assert.isTrue(dest.startsWith(`${cacheDir.replace(/\\/g, "/")}/`));
+      assert.isTrue(destName.endsWith(".ts"));
+      assert.isBelow(destName.length, 128);
+      assert.isTrue(yield* fs.exists(dest));
+      assert.equal(
+        yield* materializePiT3McpExtension(cacheDir, { contextBridge, sessionId }),
+        dest,
+      );
+
+      const reportPath = piT3ContextBridgeReportPath(cacheDir, sessionId);
+      assert.isBelow(reportPath.slice(reportPath.lastIndexOf("/") + 1).length, 128);
+      yield* fs.makeDirectory(`${cacheDir}/context-bridge`);
+      yield* fs.writeFileString(reportPath, "{}");
+
+      // Distinct sessions keep distinct files, and removal still targets the
+      // same bounded paths that materialization wrote.
+      const siblingDest = yield* materializePiT3McpExtension(cacheDir, {
+        contextBridge,
+        sessionId: siblingId,
+      });
+      assert.notEqual(siblingDest, dest);
+      yield* removePiT3SessionScopedFiles(cacheDir, sessionId);
+      assert.isFalse(yield* fs.exists(dest));
+      assert.isFalse(yield* fs.exists(reportPath));
+      assert.isTrue(yield* fs.exists(siblingDest));
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
   it.effect("removes the session-scoped files and keeps the shared extension", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
