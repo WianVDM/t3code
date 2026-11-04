@@ -247,6 +247,34 @@ export check's workspace selectors as more workspaces become clean. Review calle
 deleting code; production mode can also report development scripts and test fixtures.
 Runtime-discovered entrypoints and dependency exceptions belong in [knip.jsonc](../../knip.jsonc).
 
+## Merging pull requests
+
+Two statuses are required: `Check` and `Agent context budget`. `Check` is the aggregate job at the end
+of [ci.yml](../../.github/workflows/ci.yml). It fails when any job fails, is cancelled, or is skipped
+with no reason, so it covers every gate above, plus `Shared Persistence Compat` and the release smoke
+run. Persistence compat compares this branch's migrations with a fresh fetch of upstream `main`, and
+fails on fork-only migrations or DDL divergence. `Agent context budget` fails when a PR raises
+`apps/server/src/provider/agentContextBudget.json` above main's.
+
+Agent context growth is sometimes correct. The `agent-context-increase` label accepts it on purpose:
+review the added model-facing text against [the eval rules](../../AGENTS.md#evals), run the evals that
+cover it, and only then add the label. It records an argued override, not a routine unblock.
+
+CodeRabbit comments are advisory input, never a gate. Verify each finding against the source, fix the
+real ones, and dismiss false positives with a written reason.
+
+A second human approval is not part of the gate in this fork. Working solo, merge your own PR once
+both statuses pass on the latest commit. Squash merge with the PR title as the commit message: one
+conventional title in plain language, such as `fix(web): new threads no longer spike CPU`.
+
+Stacks are fine when one problem genuinely decomposes: a main PR plus focused child PRs that each
+stand alone. One problem per PR still holds, and the stack merges bottom-up.
+
+External PRs run CI under `pull_request`, so fork code gets a read-only token and no repository
+secrets. Do not add a workflow that installs, builds, or tests untrusted code under
+`pull_request_target`; [pr-size.yml](../../.github/workflows/pr-size.yml) is the narrow exception and
+reads PR commits only as passive git data.
+
 ## Desktop artifacts
 
 Local artifact builds are unsigned by default and write to `release/`:
