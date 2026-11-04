@@ -166,10 +166,6 @@ describe("bridgedContextForTurn", () => {
         global: [NodePath.join(userHome, ".claude", "skills")],
         project: [NodePath.join(cwd, ".claude", "skills")],
       },
-      unbridged: {
-        global: [],
-        project: [NodePath.join(cwd, ".claude", "skills")],
-      },
     };
   }
 
@@ -215,8 +211,9 @@ describe("bridgedContextForTurn", () => {
         assert.include(bridged.instructions?.block ?? "", "global claude rules");
         assert.strictEqual(bridged.instructions?.files.length, 1);
         assert.strictEqual(bridged.instructions?.files[0]?.status, "injected");
-        // pi loads ~/.claude/skills natively, so the bridged route drops it.
-        assert.deepEqual(bridged.skillRoots, skillRoots.unbridged);
+        // pi does not load ~/.claude/skills by itself, so the claudeAgent
+        // global root has to arrive through the bridge.
+        assert.deepEqual(bridged.skillRoots, skillRoots.bridged);
       }),
     ),
   );
@@ -225,10 +222,13 @@ describe("bridgedContextForTurn", () => {
     withPiTargetFixture(({ tempRoot, userHome, skillRoots }) =>
       Effect.gen(function* () {
         const agentDir = NodePath.join(tempRoot, "custom-agent-home");
+        // The redirect moves pi's own agent skills root; it must not pull the
+        // claudeAgent source root along with it.
+        NodeFS.mkdirSync(NodePath.join(agentDir, "skills"), { recursive: true });
         const host = yield* ProviderHost.ProviderHost;
 
         // An explicit PI_CODING_AGENT_DIR moves pi's native discovery, so
-        // ~/.claude/skills must stay bridged.
+        // ~/.claude/skills must stay bridged at the server home.
         const viaAgentDir = yield* bridgedContextForTurn({
           host,
           targetDriver: "pi",
@@ -246,14 +246,15 @@ describe("bridgedContextForTurn", () => {
         });
         assert.deepEqual(viaHome.skillRoots, skillRoots.bridged);
 
-        // No redirect: pi's native global skills root is dropped.
+        // No redirect: pi's native skill discovery never covered
+        // ~/.claude/skills, so the bridged root is the same either way.
         const noRedirect = yield* bridgedContextForTurn({
           host,
           targetDriver: "pi",
           cwd: skillRoots.cwd,
           environment: { HOME: userHome },
         });
-        assert.deepEqual(noRedirect.skillRoots, skillRoots.unbridged);
+        assert.deepEqual(noRedirect.skillRoots, skillRoots.bridged);
       }),
     ),
   );
@@ -262,15 +263,15 @@ describe("bridgedContextForTurn", () => {
     withPiTargetFixture(({ userHome, skillRoots }) =>
       Effect.gen(function* () {
         const host = yield* ProviderHost.ProviderHost;
-        // Restating ~/.pi/agent under the server home is not a move: pi still
-        // loads ~/.claude/skills natively, so the bridged root stays filtered.
+        // Restating ~/.pi/agent under the server home is not a move, and the
+        // claudeAgent global root is bridged whether or not pi's home moves.
         const restated = yield* bridgedContextForTurn({
           host,
           targetDriver: "pi",
           cwd: skillRoots.cwd,
           environment: { PI_CODING_AGENT_DIR: NodePath.join(userHome, ".pi", "agent") },
         });
-        assert.deepEqual(restated.skillRoots, skillRoots.unbridged);
+        assert.deepEqual(restated.skillRoots, skillRoots.bridged);
       }),
     ),
   );

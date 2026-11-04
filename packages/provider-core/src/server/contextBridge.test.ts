@@ -668,24 +668,35 @@ describe("resolveBridgedSkillRoots", () => {
     });
   });
 
-  it("filters roots the target already loads natively", () => {
-    // pi loads ~/.claude/skills by itself; bridging claudeAgent's skills into
-    // pi must not register that root a second time.
+  it("bridges the claudeAgent global skill root into pi", () => {
+    // pi does not load ~/.claude/skills by itself, so the claudeAgent global
+    // root must arrive through the bridge rather than be filtered as native.
     const settings = decodeSettings({
       enabled: true,
       routes: { pi: { skills: "claudeAgent" } },
     });
     expect(resolveBridgedSkillRoots({ settings, targetDriver: "pi", cwd, userHome })).toEqual({
-      global: [],
+      global: [NodePath.join(userHome, ".claude", "skills")],
       project: [NodePath.join(cwd, ".claude", "skills")],
     });
   });
 
+  it("still filters the roots pi loads natively", () => {
+    // pi discovers .agents/skills at the project root itself; the bridged
+    // root must not register it a second time.
+    const settings = decodeSettings({
+      enabled: true,
+      routes: { pi: { skills: "codex" } },
+    });
+    expect(resolveBridgedSkillRoots({ settings, targetDriver: "pi", cwd, userHome })).toEqual({
+      global: [NodePath.join(userHome, ".codex", "skills")],
+      project: [NodePath.join(cwd, ".codex", "skills")],
+    });
+  });
+
   it("keeps the claudeAgent global root when pi's nativeHome is a custom agent dir", () => {
-    // With a custom PI_CODING_AGENT_DIR, pi's native skill discovery is
-    // rooted at that dir and no longer loads ~/.claude/skills by itself.
-    // The bridge must still include the claudeAgent global root so skills
-    // like /voice stay discoverable, instead of filtering it as native.
+    // nativeHome remaps only pi's own global roots; the claudeAgent source
+    // root must not be expanded against it or dropped from the bridge.
     const nativeHome = NodePath.join(tempRoot, "pi-agent");
     const settings = decodeSettings({
       enabled: true,

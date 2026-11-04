@@ -57,7 +57,7 @@ export const CONTEXT_BRIDGE_CATALOG: Readonly<Record<string, ContextBridgeCatalo
     globalLocalInstructions: ["~/.pi/agent/AGENTS.local.md", "~/.pi/agent/CLAUDE.local.md"],
     projectInstructions: ["AGENTS.md", "CLAUDE.md"],
     localInstructions: ["AGENTS.local.md", "CLAUDE.local.md"],
-    globalSkills: ["~/.pi/agent/skills", "~/.claude/skills"],
+    globalSkills: ["~/.pi/agent/skills"],
     projectSkills: [".pi/skills", ".agents/skills"],
     nativelyLoadedInstructions: [
       "~/.pi/agent/AGENTS.md",
