@@ -43,6 +43,7 @@ import {
   openCodeCommandsToServerProviderSlashCommands,
 } from "./status.ts";
 import { makeManagedServerProvider } from "@t3tools/provider-core/server/managedProvider";
+import { mergeBridgedSkillsForSnapshot } from "@t3tools/provider-core/server/contextBridgeRuntime";
 import * as OpenCodeRuntime from "./OpenCodeRuntime.ts";
 import {
   makeOpenCodeRuntimeProbe,
@@ -579,14 +580,25 @@ export const OpenCodeDriver: ProviderDriver<
                   ),
                 ),
               ]).pipe(
-                Effect.map(([machineSnapshot, { skills, commands }]) => ({
-                  ...machineSnapshot,
-                  skills: openCode2SkillsToServerProviderSkills(skills),
-                  slashCommands: openCode2CommandsToServerProviderSlashCommands(commands),
-                  // A finished scan lists at least the built-ins. None means it
-                  // timed out, so the registry decides from the provider's health.
-                  slashCommandsPending: commands.length > 0 ? false : undefined,
-                })),
+                // Only 2.x syncs bridged skills for turns, so only it advertises them;
+                // cold snapshots read them in place with no provider-home sync.
+                Effect.flatMap(([machineSnapshot, { skills, commands }]) =>
+                  mergeBridgedSkillsForSnapshot({
+                    host,
+                    targetDriver: DRIVER_KIND,
+                    cwd,
+                    nativeSkills: openCode2SkillsToServerProviderSkills(skills),
+                  }).pipe(
+                    Effect.map((bridgedSkills) => ({
+                      ...machineSnapshot,
+                      skills: bridgedSkills,
+                      slashCommands: openCode2CommandsToServerProviderSlashCommands(commands),
+                      // A finished scan lists at least the built-ins. None means it
+                      // timed out, so the registry decides from the provider's health.
+                      slashCommandsPending: commands.length > 0 ? false : undefined,
+                    })),
+                  ),
+                ),
               ),
               v1: Effect.all([
                 snapshot.getSnapshot,

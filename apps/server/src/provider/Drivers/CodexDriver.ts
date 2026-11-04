@@ -144,6 +144,7 @@ export const CodexDriver: ProviderDriver<
         config,
       });
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const host = yield* ProviderHost.ProviderHost;
     const resetCreditCoordinator = yield* ResetCreditCoordinator.ResetCreditCoordinator;
     const fileSystem = yield* FileSystem.FileSystem;
     const pathService = yield* Path.Path;
@@ -292,6 +293,7 @@ export const CodexDriver: ProviderDriver<
               launchArgs: resolveCodexLaunchArgs(effectiveConfig.launchArgs, processEnv),
               cwd,
               environment: processEnv,
+              host,
             }).pipe(
               Effect.scoped,
               Effect.timeout("20 seconds"),

@@ -45,6 +45,8 @@ import {
   type ServerProviderDraft,
 } from "@t3tools/provider-core/server/snapshotProbe";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
+import { mergeBridgedSkillsForSnapshot } from "@t3tools/provider-core/server/contextBridgeRuntime";
+import type { ProviderHost } from "@t3tools/provider-core/server/ProviderHost";
 import { makeUnavailableUsageLimits } from "@t3tools/provider-core/server/usageLimits";
 import {
   codexRateLimitsFailureMessage,
@@ -650,10 +652,18 @@ export const probeCodexSkillsForCwd = Effect.fn("probeCodexSkillsForCwd")(functi
   readonly launchArgs?: string;
   readonly cwd: string;
   readonly environment?: NodeJS.ProcessEnv;
+  readonly host: ProviderHost["Service"];
 }) {
   const { client } = yield* withCodexAppServerClient(input);
   const skillsResponse = yield* client.request("skills/list", { cwds: [input.cwd] });
-  return parseCodexSkillsListResponse(skillsResponse, input.cwd);
+  // Snapshots merge bridged skills read-side; only turns sync roots via skills/extraRoots/set.
+  return yield* mergeBridgedSkillsForSnapshot({
+    host: input.host,
+    targetDriver: "codex",
+    cwd: input.cwd,
+    ...(input.environment === undefined ? {} : { environment: input.environment }),
+    nativeSkills: parseCodexSkillsListResponse(skillsResponse, input.cwd),
+  });
 });
 
 const emptyCodexModelsFromSettings = (codexSettings: CodexSettings): ServerProvider["models"] =>

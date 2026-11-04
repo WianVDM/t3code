@@ -1,6 +1,14 @@
+// @effect-diagnostics nodeBuiltinImport:off
+import * as NodeFS from "node:fs";
+import * as NodePath from "node:path";
+
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
-import { DEFAULT_SERVER_SETTINGS, ProviderInstanceId } from "@t3tools/contracts";
+import {
+  DEFAULT_SERVER_SETTINGS,
+  ProviderInstanceId,
+  type ServerSettings,
+} from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -18,6 +26,7 @@ import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as ProviderLatestVersions from "@t3tools/provider-core/server/ProviderLatestVersions";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as TestProviderHost from "@t3tools/provider-testing/TestProviderHost";
 import type { PiSettings } from "../settings.ts";
 import { PiDriver } from "./driver.ts";
@@ -49,6 +58,7 @@ const personalSkill = {
 
 const makePiSpawner = Effect.fnUntraced(function* (
   discovery: { readonly state?: unknown; readonly models?: ReadonlyArray<unknown> } = {},
+  plainCwds: ReadonlyArray<string> = [],
 ) {
   const pendingCommand = yield* Deferred.make<void>();
   const launches: Array<ChildProcess.StandardCommand> = [];
@@ -78,7 +88,7 @@ const makePiSpawner = Effect.fnUntraced(function* (
               ? {
                   commands: [
                     personalSkill,
-                    ...(cwd === "/machine"
+                    ...(cwd === "/machine" || plainCwds.includes(cwd ?? "")
                       ? []
                       : [
                           {
@@ -298,5 +308,185 @@ it.layer(layerTest)("PiDriver workspace discovery", (it) => {
           ["personal"],
         );
       }).pipe(Effect.scoped),
+  );
+});
+
+const writeBridgedSkill = (root: string, entry: string, name = entry): string => {
+  const dir = NodePath.join(root, entry);
+  NodeFS.mkdirSync(dir, { recursive: true });
+  NodeFS.writeFileSync(
+    NodePath.join(dir, "SKILL.md"),
+    `---\nname: ${name}\ndescription: ${entry} description\n---\n\nBody.\n`,
+    "utf8",
+  );
+  return NodePath.join(dir, "SKILL.md");
+};
+
+const listTree = (root: string): string[] => {
+  const entries: string[] = [];
+  const walk = (dir: string) => {
+    for (const entry of NodeFS.readdirSync(dir, { withFileTypes: true })) {
+      const full = NodePath.join(dir, entry.name);
+      entries.push(NodePath.relative(root, full));
+      if (entry.isDirectory()) walk(full);
+    }
+  };
+  if (NodeFS.existsSync(root)) walk(root);
+  return entries.sort();
+};
+
+const bridgeSettings = (contextBridge: ServerSettings["contextBridge"]): ServerSettings => ({
+  ...DEFAULT_SERVER_SETTINGS,
+  enableProviderUpdateChecks: false,
+  contextBridge,
+});
+
+const claudeRoute = {
+  enabled: true,
+  defaultSource: "claudeAgent",
+  routes: { pi: { skills: "claudeAgent" } },
+} satisfies ServerSettings["contextBridge"];
+
+it.layer(layerTest)("PiDriver bridged skills", (it) => {
+  const makeFixture = Effect.fnUntraced(function* (agentDir?: string) {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const settingsControl = yield* TestProviderHost.TestProviderHostSettings;
+    const userHome = yield* fileSystem.makeTempDirectoryScoped({ prefix: "pi-bridge-home-" });
+    const workspaceCwd = yield* fileSystem.makeTempDirectoryScoped({ prefix: "pi-bridge-ws-" });
+    const { spawner, launches } = yield* makePiSpawner({}, [workspaceCwd]);
+    const instance = yield* create({}, true, agentDir ?? "/isolated-pi").pipe(
+      Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+    );
+    return { settingsControl, userHome, workspaceCwd, launches, instance };
+  });
+
+  it.effect("bridges default-source skills beside native discovery", () =>
+    Effect.gen(function* () {
+      const fixture = yield* makeFixture();
+      yield* fixture.settingsControl.set(
+        bridgeSettings({ ...claudeRoute, routes: { pi: { skills: "default" } } }),
+      );
+      writeBridgedSkill(NodePath.join(fixture.userHome, ".claude", "skills"), "global-review");
+      writeBridgedSkill(NodePath.join(fixture.workspaceCwd, ".claude", "skills"), "project-deploy");
+      yield* fixture.instance.snapshot.refresh;
+      assert.isDefined(fixture.instance.snapshotForCwd);
+      const workspace = yield* fixture.instance.snapshotForCwd!(fixture.workspaceCwd).pipe(
+        Effect.provideService(HostProcess.HomeDirectory, fixture.userHome),
+      );
+      assert.deepEqual(
+        workspace.skills.map((skill) => skill.name),
+        ["global-review", "personal", "project-deploy"],
+      );
+      assert.deepEqual(
+        workspace.slashCommands.map((command) => command.name),
+        ["compact"],
+      );
+      const globalSkill = workspace.skills.find((skill) => skill.name === "global-review");
+      const projectSkill = workspace.skills.find((skill) => skill.name === "project-deploy");
+      assert.equal(globalSkill?.scope, "user");
+      assert.equal(projectSkill?.scope, "project");
+      assert.isTrue(globalSkill?.path.endsWith(NodePath.join("global-review", "SKILL.md")));
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("uses the explicitly routed source over the default source", () =>
+    Effect.gen(function* () {
+      const fixture = yield* makeFixture();
+      yield* fixture.settingsControl.set(
+        bridgeSettings({ enabled: true, defaultSource: "pi", routes: claudeRoute.routes }),
+      );
+      writeBridgedSkill(NodePath.join(fixture.userHome, ".claude", "skills"), "claude-skill");
+      writeBridgedSkill(NodePath.join(fixture.userHome, ".pi", "agent", "skills"), "pi-skill");
+      yield* fixture.instance.snapshot.refresh;
+      assert.isDefined(fixture.instance.snapshotForCwd);
+      const workspace = yield* fixture.instance.snapshotForCwd!(fixture.workspaceCwd).pipe(
+        Effect.provideService(HostProcess.HomeDirectory, fixture.userHome),
+      );
+      assert.deepEqual(
+        workspace.skills.map((skill) => skill.name),
+        ["claude-skill", "personal"],
+      );
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("leaves the native catalog untouched on a native route", () =>
+    Effect.gen(function* () {
+      const fixture = yield* makeFixture();
+      yield* fixture.settingsControl.set(
+        bridgeSettings({ ...claudeRoute, routes: { pi: { skills: "native" } } }),
+      );
+      writeBridgedSkill(NodePath.join(fixture.userHome, ".claude", "skills"), "global-review");
+      yield* fixture.instance.snapshot.refresh;
+      assert.isDefined(fixture.instance.snapshotForCwd);
+      const workspace = yield* fixture.instance.snapshotForCwd!(fixture.workspaceCwd).pipe(
+        Effect.provideService(HostProcess.HomeDirectory, fixture.userHome),
+      );
+      assert.deepEqual(
+        workspace.skills.map((skill) => skill.name),
+        ["personal"],
+      );
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("gives a bridged skill precedence over a same-named native skill", () =>
+    Effect.gen(function* () {
+      const fixture = yield* makeFixture();
+      yield* fixture.settingsControl.set(bridgeSettings(claudeRoute));
+      writeBridgedSkill(
+        NodePath.join(fixture.userHome, ".claude", "skills"),
+        "personal-bridge",
+        "personal",
+      );
+      yield* fixture.instance.snapshot.refresh;
+      assert.isDefined(fixture.instance.snapshotForCwd);
+      const workspace = yield* fixture.instance.snapshotForCwd!(fixture.workspaceCwd).pipe(
+        Effect.provideService(HostProcess.HomeDirectory, fixture.userHome),
+      );
+      assert.deepEqual(
+        workspace.skills.map((skill) => skill.name),
+        ["personal"],
+      );
+      const personal = workspace.skills[0];
+      assert.equal(personal?.scope, "user");
+      assert.isTrue(personal?.path.includes(NodePath.join(".claude", "skills", "personal-bridge")));
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("bridges with a custom PI_CODING_AGENT_DIR without extending or materializing", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const agentDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "pi-bridge-agent-" });
+      const fixture = yield* makeFixture(agentDir);
+      yield* fixture.settingsControl.set(bridgeSettings(claudeRoute));
+      writeBridgedSkill(NodePath.join(fixture.userHome, ".claude", "skills"), "global-review");
+      writeBridgedSkill(NodePath.join(agentDir, "skills"), "agent-skill");
+      const before = {
+        home: listTree(fixture.userHome),
+        agent: listTree(agentDir),
+        workspace: listTree(fixture.workspaceCwd),
+      };
+      yield* fixture.instance.snapshot.refresh;
+      assert.isDefined(fixture.instance.snapshotForCwd);
+      const workspace = yield* fixture.instance.snapshotForCwd!(fixture.workspaceCwd).pipe(
+        Effect.provideService(HostProcess.HomeDirectory, fixture.userHome),
+      );
+      assert.deepEqual(
+        workspace.skills.map((skill) => skill.name),
+        ["global-review", "personal"],
+      );
+      const launch = fixture.launches.find(
+        (candidate) => candidate.options.cwd === fixture.workspaceCwd,
+      );
+      assert.isDefined(launch);
+      assert.equal(launch!.options.env?.PI_CODING_AGENT_DIR, agentDir);
+      assert.deepEqual(listTree(fixture.userHome), before.home);
+      assert.deepEqual(listTree(agentDir), before.agent);
+      assert.deepEqual(listTree(fixture.workspaceCwd), before.workspace);
+      assert.deepEqual(
+        fixture.launches.filter((candidate) => candidate.options.cwd === fixture.workspaceCwd)
+          .length,
+        1,
+      );
+    }).pipe(Effect.scoped),
   );
 });

@@ -7,10 +7,12 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
+  ContextBridgeSettings,
   DEFAULT_SERVER_SETTINGS,
   ProviderInstanceId,
   ProviderSessionId,
   ThreadId,
+  type ServerProviderSkill,
 } from "@t3tools/contracts";
 import type { ResolvedProviderInstanceEnvironment } from "@t3tools/contracts";
 import type { OpenCodeSettings } from "../settings.ts";
@@ -22,6 +24,7 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
 import * as References from "effect/References";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import * as HttpClient from "effect/http/HttpClient";
@@ -34,7 +37,12 @@ import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderS
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import * as ProviderMaintenance from "@t3tools/provider-core/server/maintenanceResolver";
 import * as OpenCodeRuntime from "./OpenCodeRuntime.ts";
-import { OPENCODE_2_RESPONSES, replayOpenCodeServer } from "./probeResponses.fixture.ts";
+import {
+  OPENCODE_1_RESPONSES,
+  OPENCODE_2_RESPONSES,
+  OPENCODE_2_WORKSPACE_RESPONSES,
+  replayOpenCodeServer,
+} from "./probeResponses.fixture.ts";
 import { OpenCodeDriver, openCodeUpdateFor } from "./driver.ts";
 import * as TestProviderHost from "@t3tools/provider-testing/TestProviderHost";
 
@@ -778,5 +786,184 @@ it.layer(layerUpdate)("OpenCodeDriver updates", (it) => {
         );
         assert.include(serverStarts, "start", "the OpenCode 2 adapter starts its server");
       }).pipe(Effect.scoped),
+  );
+});
+
+const decodeContextBridge = Schema.decodeSync(ContextBridgeSettings);
+
+// Ancestor walks reach the filesystem root, so fixtures must sit outside the
+// user profile. Windows temp is inside the profile, so use Windows\Temp.
+const makeBridgeRoot = () => {
+  const tempBase =
+    HostProcess.Platform.defaultValue() === "win32"
+      ? NodePath.join(process.env.SystemDrive ?? "C:", "\\", "Windows", "Temp")
+      : NodeFS.realpathSync(NodeOS.tmpdir());
+  return NodeFS.mkdtempSync(NodePath.join(tempBase, "t3-opencode-bridge-"));
+};
+
+const writeBridgedSkill = (root: string, entry: string) => {
+  const dir = NodePath.join(root, entry);
+  NodeFS.mkdirSync(dir, { recursive: true });
+  NodeFS.writeFileSync(
+    NodePath.join(dir, "SKILL.md"),
+    `---\nname: ${entry}\ndescription: ${entry} description\n---\n\nBody.\n`,
+    "utf8",
+  );
+};
+
+interface BridgeFixture {
+  readonly tempRoot: string;
+  readonly userHome: string;
+  readonly cwd: string;
+}
+
+const withBridgedClaudeSkills = <A, E, R>(
+  use: (fixture: BridgeFixture) => Effect.Effect<A, E, R>,
+) =>
+  Effect.gen(function* () {
+    const tempRoot = makeBridgeRoot();
+    try {
+      const userHome = NodePath.join(tempRoot, "home");
+      const cwd = NodePath.join(tempRoot, "project");
+      NodeFS.mkdirSync(cwd, { recursive: true });
+      writeBridgedSkill(NodePath.join(userHome, ".claude", "skills"), "global-review");
+      writeBridgedSkill(NodePath.join(cwd, ".claude", "skills"), "project-deploy");
+      const testSettings = yield* TestProviderHost.TestProviderHostSettings;
+      yield* testSettings.set({
+        ...DEFAULT_SERVER_SETTINGS,
+        contextBridge: decodeContextBridge({
+          enabled: true,
+          routes: { opencode: { skills: "claudeAgent" } },
+        }),
+      });
+      return yield* use({ tempRoot, userHome, cwd }).pipe(
+        Effect.provideService(HostProcess.HomeDirectory, userHome),
+      );
+    } finally {
+      NodeFS.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+const bridgedEntries = (skills: ReadonlyArray<ServerProviderSkill>) =>
+  skills
+    .filter((skill) => skill.name === "global-review" || skill.name === "project-deploy")
+    .map(({ name, scope, enabled }) => ({ name, scope, enabled }));
+
+const expectedBridgedEntries = [
+  { name: "global-review", scope: "user", enabled: true },
+  { name: "project-deploy", scope: "project", enabled: true },
+];
+
+// Cold snapshots must read bridged skills in place: no copies, no destinations, no ownership marker.
+const assertNoBridgeSideEffects = ({ tempRoot, userHome, cwd }: BridgeFixture) => {
+  const markers: Array<string> = [];
+  const walk = (dir: string) => {
+    for (const entry of NodeFS.readdirSync(dir, { withFileTypes: true })) {
+      const full = NodePath.join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.name === ".t3-context-bridge.json") markers.push(full);
+    }
+  };
+  walk(tempRoot);
+  assert.deepStrictEqual(markers, []);
+  assert.isFalse(NodeFS.existsSync(NodePath.join(userHome, ".opencode")));
+  assert.isFalse(NodeFS.existsSync(NodePath.join(cwd, ".opencode")));
+  assert.deepStrictEqual(NodeFS.readdirSync(NodePath.join(userHome, ".claude", "skills")), [
+    "global-review",
+  ]);
+  assert.deepStrictEqual(NodeFS.readdirSync(NodePath.join(cwd, ".claude", "skills")), [
+    "project-deploy",
+  ]);
+};
+
+const openCode1WorkspaceRuntime = {
+  runOpenCodeCommand: () => Effect.succeed({ stdout: "1.18.32\n", stderr: "", code: 0 }),
+  startOpenCodeServerProcess: () => reachedServer("start"),
+  connectToOpenCodeServer: () => Effect.succeed({ url: "http://127.0.0.1:4096" }),
+  createOpenCodeSdkClient: () => ({
+    command: {
+      list: () =>
+        Promise.resolve({
+          data: [
+            { name: "init", description: "guided AGENTS.md setup", source: "command", hints: [] },
+          ],
+        }),
+    },
+  }),
+  loadOpenCodeInventory: () =>
+    Effect.fail(
+      new OpenCodeRuntime.OpenCodeRuntimeError({ operation: "inventory", detail: "not served" }),
+    ),
+  loadOpenCodeSkills: () =>
+    Effect.succeed([
+      { name: "zeta-native", description: "native zeta", location: "/native/zeta/SKILL.md" },
+      { name: "alpha-native", description: "native alpha", location: "/native/alpha/SKILL.md" },
+    ]),
+} as unknown as OpenCodeRuntime.OpenCodeRuntime["Service"];
+
+const layerV1Workspace = Layer.mergeAll(
+  IdAllocator.layer,
+  McpProviderSessions.layer,
+  ProviderLatestVersions.layer,
+  TestProviderHost.layer(),
+  Layer.succeed(
+    ProviderEventLoggers.ProviderEventLoggers,
+    ProviderEventLoggers.NoOpProviderEventLoggers,
+  ),
+  Layer.succeed(OpenCodeRuntime.OpenCodeRuntime, openCode1WorkspaceRuntime),
+).pipe(Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)));
+
+it.layer(layer)("OpenCodeDriver cold v2 workspace snapshots", (it) => {
+  it.effect("merges bridged skills into the v2 workspace snapshot without syncing", () =>
+    withBridgedClaudeSkills((fixture) =>
+      Effect.gen(function* () {
+        const instance = yield* create(
+          { serverUrl: "http://127.0.0.1:4096", serverPassword: "secret" },
+          replayOpenCodeServer(
+            { ...OPENCODE_2_RESPONSES, ...OPENCODE_2_WORKSPACE_RESPONSES },
+            "secret",
+          ),
+        );
+        const snapshotForCwd = instance.snapshotForCwd;
+        assert.isDefined(snapshotForCwd);
+        const snapshot = yield* snapshotForCwd(fixture.cwd);
+        assert.deepStrictEqual(
+          snapshot.skills.map((skill) => skill.name),
+          ["global-review", "opencode", "plum", "project-deploy", "report"],
+        );
+        assert.deepStrictEqual(bridgedEntries(snapshot.skills), expectedBridgedEntries);
+        assert.deepStrictEqual(
+          snapshot.slashCommands?.map((command) => command.name),
+          ["compact", "init", "review", "bee"],
+        );
+        assertNoBridgeSideEffects(fixture);
+      }).pipe(Effect.scoped),
+    ),
+  );
+});
+
+it.layer(layerV1Workspace)("OpenCodeDriver cold v1 workspace snapshots", (it) => {
+  it.effect("lists native skills only in the v1 workspace snapshot without syncing", () =>
+    withBridgedClaudeSkills((fixture) =>
+      Effect.gen(function* () {
+        const instance = yield* create(
+          { serverUrl: "http://127.0.0.1:4096", serverPassword: "secret" },
+          replayOpenCodeServer(OPENCODE_1_RESPONSES, "secret"),
+        );
+        const snapshotForCwd = instance.snapshotForCwd;
+        assert.isDefined(snapshotForCwd);
+        const snapshot = yield* snapshotForCwd(fixture.cwd);
+        assert.deepStrictEqual(
+          snapshot.skills.map((skill) => skill.name),
+          ["alpha-native", "zeta-native"],
+        );
+        assert.deepStrictEqual(bridgedEntries(snapshot.skills), []);
+        assert.deepStrictEqual(
+          snapshot.slashCommands?.map((command) => command.name),
+          ["compact", "init"],
+        );
+        assertNoBridgeSideEffects(fixture);
+      }).pipe(Effect.scoped),
+    ),
   );
 });

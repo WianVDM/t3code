@@ -39,6 +39,7 @@ import {
 } from "@t3tools/provider-core/server/driver";
 import type { ServerProviderDraft } from "@t3tools/provider-core/server/snapshotProbe";
 import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/instanceEnvironment";
+import { mergeBridgedSkillsForSnapshot } from "@t3tools/provider-core/server/contextBridgeRuntime";
 import {
   makeCachedProviderMaintenanceResolution,
   makePackageManagedProviderMaintenanceResolver,
@@ -286,11 +287,22 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv, Path.Path> = {
                 ),
               ),
             ]).pipe(
-              Effect.map(([machineSnapshot, commands]) => ({
-                ...machineSnapshot,
-                ...commands,
-                slashCommandsPending: false,
-              })),
+              Effect.flatMap(([machineSnapshot, commands]) =>
+                mergeBridgedSkillsForSnapshot({
+                  host,
+                  targetDriver: "pi",
+                  cwd: workspaceCwd,
+                  environment: processEnv,
+                  nativeSkills: commands.skills,
+                }).pipe(
+                  Effect.map((skills) => ({
+                    ...machineSnapshot,
+                    ...commands,
+                    skills,
+                    slashCommandsPending: false,
+                  })),
+                ),
+              ),
             ),
       orchestrationAdapter,
       textGeneration,

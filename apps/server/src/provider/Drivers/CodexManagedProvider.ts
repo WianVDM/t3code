@@ -12,6 +12,7 @@ import * as Option from "effect/Option";
 import { ChildProcessSpawner } from "effect/process";
 import { makeCodexTextGeneration } from "../../textGeneration/CodexTextGeneration.ts";
 import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
+import { mergeBridgedSkillsForSnapshot } from "@t3tools/provider-core/server/contextBridgeRuntime";
 import { chatGptModels } from "../CodexChatGptModels.ts";
 import { makeCodexManagedRuntime } from "../CodexManagedRuntime.ts";
 import { ProviderDriverError } from "../Errors.ts";
@@ -307,6 +308,15 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
                     (machine) => machine.auth.status === "unauthenticated",
                     () => cause,
                   ),
+                  // The signed-out early return never probes, so merge bridged skills here too.
+                  Effect.flatMap((machine) =>
+                    mergeBridgedSkillsForSnapshot({
+                      host,
+                      targetDriver: "codex",
+                      cwd,
+                      nativeSkills: machine.skills,
+                    }).pipe(Effect.map((skills) => ({ ...machine, skills }))),
+                  ),
                 ),
               onSuccess: (effective) =>
                 probeCodexSkillsForCwd({
@@ -315,6 +325,7 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
                   launchArgs: effective.config.launchArgs,
                   cwd,
                   environment: effective.environment,
+                  host,
                 }).pipe(
                   Effect.flatMap((skills) =>
                     snapshot.getSnapshot.pipe(Effect.map((draft) => ({ ...draft, skills }))),
