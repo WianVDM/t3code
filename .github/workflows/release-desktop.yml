@@ -8,33 +8,6 @@ name: Release desktop build
 
 on:
   workflow_call:
-    secrets:
-      CSC_LINK:
-        required: false
-      CSC_KEY_PASSWORD:
-        required: false
-      APPLE_API_KEY:
-        required: false
-      APPLE_API_KEY_ID:
-        required: false
-      APPLE_API_ISSUER:
-        required: false
-      MACOS_PROVISIONING_PROFILE:
-        required: false
-      AZURE_TENANT_ID:
-        required: false
-      AZURE_CLIENT_ID:
-        required: false
-      AZURE_CLIENT_SECRET:
-        required: false
-      AZURE_TRUSTED_SIGNING_ENDPOINT:
-        required: false
-      AZURE_TRUSTED_SIGNING_ACCOUNT_NAME:
-        required: false
-      AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME:
-        required: false
-      AZURE_TRUSTED_SIGNING_PUBLISHER_NAME:
-        required: false
     inputs:
       label:
         required: true
@@ -108,7 +81,7 @@ on:
 # electron-builder leaves the default arch (x64) out of the unpacked app's
 # directory name.
 env:
-  UNPACKED_DIR: ${{ inputs.platform }}-${{ inputs.arch != 'x64' && format('{0}-', inputs.arch) || '' }}unpacked
+  UNPACKED_DIR: ${{ inputs.platform }}-unpacked
 
 permissions:
   # Windows builds read this run's artifact list to wait for the Linux CLI archive.
@@ -121,7 +94,9 @@ jobs:
     runs-on: ${{ inputs.runner }}
     # Windows waits for the Linux CLI archive inside its own budget (see
     # "Wait for Linux CLI archive"), so it gets that wait on top of the usual 30.
-    timeout-minutes: ${{ inputs.platform == 'win' && 70 || 30 }}
+    # macOS builds the unsigned arm64 DMG and runs the launch check, so it gets
+    # the same expanded budget as Windows.
+    timeout-minutes: ${{ (inputs.platform == 'win' || inputs.platform == 'mac') && 70 || 30 }}
     env:
       T3CODE_CLERK_PUBLISHABLE_KEY: ${{ inputs.clerk_publishable_key }}
       T3CODE_CLERK_JWT_TEMPLATE: ${{ inputs.clerk_jwt_template }}
@@ -132,8 +107,7 @@ jobs:
       # credential cleanup runs submodule foreach even with submodules disabled,
       # which fails on the orphaned gitlinks in our vendored .repos tree.
       # checkout.workers=0 writes the files on every core. Alternating both ways
-      # in one job on the Windows runners, it wrote the files about 10s faster
-      # (about 40% on arm64).
+      # in one job on the Windows runners, it wrote the files about 10s faster.
       - name: Checkout
         shell: bash
         env:
@@ -259,21 +233,6 @@ jobs:
         shell: bash
         run: cargo ${{ inputs.platform == 'win' && 'xwin build' || 'build' }} --locked --release --manifest-path native/resource-monitor/Cargo.toml --target "${{ inputs.rust_target }}"
 
-      # Off Windows, scripts/lib/windows-jsign.ts signs through jsign instead of
-      # the TrustedSigning PowerShell module.
-      - name: Install jsign
-        if: inputs.platform == 'win'
-        shell: bash
-        run: |
-          set -euo pipefail
-          dir="$RUNNER_TEMP/jsign"
-          mkdir -p "$dir"
-          curl -fsSL --retry 3 -o "$dir/jsign.jar" https://github.com/ebourg/jsign/releases/download/7.6/jsign-7.6.jar
-          echo "6cf58aa080e7ff82656f320cff8d4a3bff30408df8766806dcba3740dd839fa5  $dir/jsign.jar" | sha256sum -c -
-          printf '#!/bin/sh\nexec java -jar "%s" "$@"\n' "$dir/jsign.jar" > "$dir/jsign"
-          chmod +x "$dir/jsign"
-          echo "T3CODE_JSIGN=$dir/jsign" >> "$GITHUB_ENV"
-
       # The desktop build applies the same branding to apps/server/dist/client
       # (resolveDesktopWebAssetBrand in scripts/build-desktop-artifact.ts); the
       # CLI archive below ships that client and is now built first.
@@ -351,39 +310,8 @@ jobs:
         env:
           # The executable bundles the server again, so it needs the same stamp
           # as release.yml's JS bundle.
-          T3CODE_TELEMETRY_CHANNEL: ${{ github.repository == 'pingdotgg/t3code' && inputs.release_channel || 'dev' }}
+          T3CODE_TELEMETRY_CHANNEL: ${{ inputs.release_channel }}
         run: node apps/server/scripts/cli.ts build-exe --verbose ${{ inputs.platform == 'win' && format('--target win-{0}', inputs.arch) || '' }}
-
-      - name: Import macOS signing certificate for the CLI archive
-        if: inputs.cli_archive && inputs.platform == 'mac'
-        shell: bash
-        env:
-          CSC_LINK: ${{ secrets.CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-        run: |
-          set -euo pipefail
-          if [[ -z "$CSC_LINK" || -z "$CSC_KEY_PASSWORD" ]]; then
-            echo "macOS CLI signing disabled (missing CSC_LINK); the archive is signed ad hoc."
-            exit 0
-          fi
-          keychain="$RUNNER_TEMP/t3-cli-signing.keychain-db"
-          keychain_password="$(openssl rand -hex 16)"
-          cert_path="$RUNNER_TEMP/t3-cli-signing.p12"
-          printf '%s' "$CSC_LINK" | base64 --decode > "$cert_path"
-          security create-keychain -p "$keychain_password" "$keychain"
-          security set-keychain-settings -lut 21600 "$keychain"
-          security unlock-keychain -p "$keychain_password" "$keychain"
-          security import "$cert_path" -k "$keychain" -P "$CSC_KEY_PASSWORD" -T /usr/bin/codesign
-          security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain" >/dev/null
-          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
-          identity="$(security find-identity -v -p codesigning "$keychain" | sed -n 's/.*"\(Developer ID Application: [^"]*\)".*/\1/p' | head -n 1)"
-          if [[ -z "$identity" ]]; then
-            echo "No Developer ID Application identity found in CSC_LINK." >&2
-            exit 1
-          fi
-          echo "::add-mask::$keychain_password"
-          echo "T3CODE_CLI_MAC_SIGN_IDENTITY=$identity" >> "$GITHUB_ENV"
-          echo "macOS CLI signing enabled."
 
       - name: Stage resource monitor for the CLI archive
         if: inputs.cli_archive
@@ -414,22 +342,8 @@ jobs:
           pnpm_config_cache_dir: ${{ steps.stage_pnpm.outputs.dir }}/cache
           pnpm_config_store_dir: ${{ steps.stage_pnpm.outputs.dir }}/store
           pnpm_config_prefer_offline: "true"
-          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
-          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
-          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-          AZURE_TRUSTED_SIGNING_ENDPOINT: ${{ secrets.AZURE_TRUSTED_SIGNING_ENDPOINT }}
-          AZURE_TRUSTED_SIGNING_ACCOUNT_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_ACCOUNT_NAME }}
-          AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME }}
         run: |
           set -euo pipefail
-          if [[ "${{ inputs.platform }}" == "mac" && -n "${APPLE_API_KEY:-}" ]]; then
-            key_path="$RUNNER_TEMP/AuthKey_cli_${APPLE_API_KEY_ID}.p8"
-            printf '%s' "$APPLE_API_KEY" > "$key_path"
-            export APPLE_API_KEY="$key_path"
-          fi
           node scripts/build-cli-archive.ts \
             --platform "${{ inputs.platform }}" \
             --arch "${{ inputs.arch }}" \
@@ -536,21 +450,7 @@ jobs:
           pnpm_config_prefer_offline: "true"
           T3CODE_DESKTOP_REUSE_RESOURCE_MONITOR: true
           T3CODE_DESKTOP_REUSE_LINUX_CAPTURE_HELPERS: ${{ steps.capture_helper_cache.outputs.cache-hit == 'true' }}
-          CSC_LINK: ${{ secrets.CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
-          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
-          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
-          MACOS_PROVISIONING_PROFILE: ${{ secrets.MACOS_PROVISIONING_PROFILE }}
           T3CODE_CLERK_PASSKEY_RP_DOMAINS: ${{ vars.CLERK_PASSKEY_RP_DOMAINS }}
-          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-          AZURE_TRUSTED_SIGNING_ENDPOINT: ${{ secrets.AZURE_TRUSTED_SIGNING_ENDPOINT }}
-          AZURE_TRUSTED_SIGNING_ACCOUNT_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_ACCOUNT_NAME }}
-          AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME }}
-          AZURE_TRUSTED_SIGNING_PUBLISHER_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_PUBLISHER_NAME }}
         run: |
           args=(
             --platform "${{ inputs.platform }}"
@@ -564,56 +464,10 @@ jobs:
             args+=(--keep-stage)
           fi
 
-          has_all() {
-            for value in "$@"; do
-              if [[ -z "$value" ]]; then
-                return 1
-              fi
-            done
-            return 0
-          }
-
-          if [[ "${{ inputs.platform }}" == "mac" ]]; then
-            if has_all "$CSC_LINK" "$CSC_KEY_PASSWORD" "$APPLE_API_KEY" "$APPLE_API_KEY_ID" "$APPLE_API_ISSUER"; then
-              if ! has_all "$APPLE_TEAM_ID" "$MACOS_PROVISIONING_PROFILE"; then
-                echo "macOS signing is configured, but APPLE_TEAM_ID or MACOS_PROVISIONING_PROFILE is missing." >&2
-                exit 1
-              fi
-
-              key_path="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
-              printf '%s' "$APPLE_API_KEY" > "$key_path"
-              export APPLE_API_KEY="$key_path"
-
-              profile_path="$RUNNER_TEMP/t3code.provisionprofile"
-              printf '%s' "$MACOS_PROVISIONING_PROFILE" | base64 -D > "$profile_path"
-              security cms -D -i "$profile_path" >/dev/null
-              export T3CODE_APPLE_TEAM_ID="$APPLE_TEAM_ID"
-              export T3CODE_MACOS_PROVISIONING_PROFILE="$profile_path"
-
-              echo "macOS signing enabled."
-              args+=(--signed)
-            else
-              echo "macOS signing disabled (missing one or more Apple signing secrets)."
-            fi
-          elif [[ "${{ inputs.platform }}" == "win" ]]; then
+          if [[ "${{ inputs.platform }}" == "win" ]]; then
             # Embed the Linux CLI archive built by the same-arch Linux job as
             # the WSL runtime. Required for a working WSL backend on Windows.
             args+=(--wsl-runtime "$GITHUB_WORKSPACE"/wsl-runtime/t3-*-linux-${{ inputs.arch }}.tar.gz)
-            if has_all \
-              "$AZURE_TENANT_ID" \
-              "$AZURE_CLIENT_ID" \
-              "$AZURE_CLIENT_SECRET" \
-              "$AZURE_TRUSTED_SIGNING_ENDPOINT" \
-              "$AZURE_TRUSTED_SIGNING_ACCOUNT_NAME" \
-              "$AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME" \
-              "$AZURE_TRUSTED_SIGNING_PUBLISHER_NAME"; then
-              echo "Windows signing enabled (Azure Trusted Signing)."
-              args+=(--signed)
-            else
-              echo "Windows signing disabled (missing one or more Azure Trusted Signing secrets)."
-            fi
-          else
-            echo "Signing disabled for ${{ inputs.platform }}."
           fi
 
           vp run dist:desktop:artifact "${args[@]}"
@@ -717,24 +571,18 @@ jobs:
           if [[ "${{ inputs.release_channel }}" != "preview" ]]; then
             patterns+=("release/*.blockmap" "release/*.yml")
           fi
+          # builder-debug.yml is electron-builder's config dump, not a feed.
           for pattern in "${patterns[@]}"; do
             for file in $pattern; do
+              [[ "$file" == */builder-debug.yml ]] && continue
               cp "$file" release-publish/
             done
           done
 
-          if [[ "${{ inputs.platform }}" == "mac" && "${{ inputs.arch }}" != "arm64" ]]; then
-            shopt -s nullglob
-            for manifest in release-publish/*-mac.yml; do
-              mv "$manifest" "${manifest%.yml}-${{ inputs.arch }}.yml"
-            done
-          fi
-
           # Windows updater metadata is channel-specific (for example
-          # "latest.yml" or "nightly.yml") and carries no arch, so the x64 and
-          # arm64 jobs would upload the same name. Suffix each per-arch copy;
-          # the release job merges them back into one manifest per channel.
-          # builder-debug.yml is electron-builder's config dump, not a feed.
+          # "latest.yml" or "nightly.yml") and carries no arch. Suffix the
+          # per-arch copy; the release job renames it back into one manifest
+          # per channel.
           if [[ "${{ inputs.platform }}" == "win" ]]; then
             for manifest in release-publish/*.yml; do
               [[ "$manifest" == */builder-debug.yml ]] && continue
@@ -804,14 +652,11 @@ jobs:
         run: node verify/smoke-cli-archive.mjs --archive release-cli/* --expect-version "${{ inputs.version }}"
 
       # cargo-xwin links this binary on Linux, and nothing else runs it before users do.
-      # Node rather than pwsh: PowerShell on Windows ARM crashes intermittently
-      # (https://github.com/dotnet/runtime/issues/131636), which is why this
-      # target stopped building on Windows.
       - name: Smoke-test resource monitor
         shell: bash
         env:
           MONITOR: verify/${{ env.UNPACKED_DIR }}/resources/resource-monitor/t3-resource-monitor.exe
-          EXPECTED_ARCH: ${{ inputs.arch == 'arm64' && 'aarch64' || 'x86_64' }}
+          EXPECTED_ARCH: x86_64
         run: |
           node --input-type=module <<'EOF'
           import { spawn } from "node:child_process";

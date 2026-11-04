@@ -1,680 +1,288 @@
-# Release Checklist
+# Release runbook
 
 > For maintainers. Using T3 Code? See [docs/user](../user/).
 
-This document covers the unified release workflow for stable and nightly desktop releases.
-
-Beta is the product label, not a release channel or version suffix. Release channels
-remain stable and nightly. To ship 0.1.0 Beta, use `channel=stable` and
-`version=0.1.0`. Removing the Beta label later is a branding change independent of
-the version.
-
-## What the workflow does
-
-- Workflow: `.github/workflows/release.yml`
-- Triggers:
-  - manual `workflow_dispatch` with `channel=stable`, the normal way to ship stable. Stable
-    and nightly dispatches must select `main`; preview may select any branch. The channel defaults
-    to preview so an omitted selection cannot publish a stable release.
-  - push tag matching `v*.*.*` for a stable release of an explicit commit
-  - scheduled nightly check every 30 minutes
-  - manual `workflow_dispatch` with `channel=nightly`
-  - manual `workflow_dispatch` with `channel=preview`, the maintainers' test train. It exercises the whole release flow (build, sign, notarize, smoke, publish) for a commit that end users must never receive, which is how an unmerged branch or a risky change gets a real release run before it lands. It builds the triggering commit with nightly's versioning under the `preview` prerelease identifier (`0.0.41-preview.<date>.<run>`) and publishes a GitHub prerelease plus the npm packages under the `preview` dist-tag. Preview is not on the schedule, no default npm dist-tag points at it, its desktop builds carry no update feed, and no updater manifest (`latest*.yml`, `nightly*.yml`, blockmaps) is attached, so a stable or nightly install cannot be offered one. The only ways onto it are downloading the release by hand, `npx t3@preview`, `T3CODE_CHANNEL=preview` for the install scripts, or `t3 update --channel preview` from a terminal; each prints a warning, and the CLI asks for confirmation when the running build is not itself a preview. The release itself is named as a maintainer test build and its body is a warning rather than generated notes: a changelog of unmerged branch history is not a changelog, and nightly and stable notes are unaffected because each series resolves its previous tag within its own channel. The hosted web app, AUR, and Discord announcements are skipped. Keep it; it costs nothing when idle.
-- A manual stable release builds the commit of the latest published nightly, not `main` HEAD.
-  Nightly is the release candidate: verify the nightly, then promote it. Merges to `main` keep
-  landing while you verify and never leak into the stable build.
-  - The version defaults to the one the nightly previewed (`0.0.39-nightly.*` ships as `0.0.39`).
-    Pass the `version` input to override it, for example for a minor bump.
-  - The stable tag is created on the nightly's commit when the GitHub Release is published.
-  - Pushing a `vX.Y.Z` tag by hand still works and builds exactly the tagged commit. Use it when
-    the commit to ship is not the latest nightly, such as a cherry-picked fix on a release branch.
-- Runs lint, typecheck, and tests alongside artifact builds. Publishing waits for every check.
-- Reads the shared production T3 Connect relay URL and Clerk client configuration before packaging clients.
-- Builds the platform-independent JS (server bundle, web client, Electron main) once in the `build_bundle` job and hands it to every platform job as the `js-bundle` artifact; the platform jobs only package it, so no runner rebuilds it.
-- Builds six desktop artifacts in parallel for both channels, each as its own job (`desktop_<platform>_<arch>`, one call of `release-desktop.yml`), gated only on the bundle. macOS and Linux targets build on hardware of their own architecture. Both Windows targets build and sign (with jsign) on a Linux runner, which packages faster than Windows runners, and a Windows job of the target's architecture (`windows-2025` or `windows-11-arm`, the `verify_runner`) runs the packaged natives and the CLI archive. The Windows jobs embed the same-arch Linux CLI archive as the WSL runtime and wait for that artifact partway through, not for the whole Linux job:
-  - macOS `arm64` DMG
-  - macOS `x64` DMG
-  - Linux `x64` and `arm64` AppImage and `.deb`, from one electron-builder run. The `.deb` updates in the app through electron-updater, which installs it with `dpkg`.
-  - Windows `x64` and `arm64` NSIS installer
-- Opens the packaged Linux x64 AppImage (under Xvfb) and macOS arm64 DMG against a seeded database and opens a thread (`scripts/smoke-desktop-app.ts`). A build whose backend or bundle cannot start fails here, so nothing is published. The database in `scripts/fixtures/desktop-launch` is an old snapshot on purpose: the packaged server must migrate it forward, as it does for upgrading users. Do not regenerate it on schema changes.
-- Publishes one GitHub Release with all produced files.
-  - Stable tags with a suffix after `X.Y.Z` (for example `1.2.3-alpha.1`) are published as GitHub prereleases.
-  - Only plain stable `X.Y.Z` releases are marked as the repository's latest release.
-  - Nightly runs are always GitHub prereleases and never marked latest.
-  - Automatically generated release notes are pinned to the previous tag in the same channel, so stable compares to the previous stable tag and nightly compares to the previous nightly tag.
-  - The release job's **Write release notes** step (`scripts/generate-release-notes.ts`) builds the body: a computed header line, a short summary from `gpt-6.1-terra`, and GitHub's generated list folded under `<details>`. It needs the `OPENAI_API_KEY` secret. The desktop update popover shows up to seven highlights and the number of other fixes and performance improvements. Mobile-only commits count toward release totals but cannot be highlights. The offered release's age comes from the update feed's `releaseDate`. The nightly Discord post shows the part above `<details>`. If summary generation fails, the release uses GitHub's generated notes.
-- Includes Electron auto-update metadata (for example `latest*.yml`, `nightly*.yml`, and `*.blockmap`) in release assets.
-- Builds a self-contained CLI archive per platform (`t3-<version>-<platform>-<arch>.tar.gz`, `.zip` on Windows) in the same job as that target's desktop artifact and attaches them to the GitHub Release with a `SHA256SUMS` file, on every channel, for five targets: macOS arm64, Linux x64 and arm64, Windows x64 and arm64. Every archive is smoke-tested on hardware of its own architecture, and every one but the Windows archives is also built and signed there. There is no macOS x64 archive: Node single-executables are unsupported on x64 macOS (the SEA docs list macOS as arm64 only) and the binary segfaults on start; the x64 desktop app is Electron and unaffected.
-  - The archive holds the server as a Node single-executable (`scripts/build-cli-archive.ts`), so unpacking it needs neither Node, npm, nor a compiler. It is the only form in which T3 Code manages a runtime: the desktop's SSH environments, the boot service, `t3 update`, and the install scripts all download and verify this archive against `SHA256SUMS`. The `t3` npm package exists for people who run `npx t3` or `npm install -g t3` themselves, and it downloads this same archive too; nothing in the product installs from npm. The `curl | sh` installers are `scripts/install.sh` and `scripts/install.ps1`; the marketing site copies them into its `public/` at build time (`apps/marketing/scripts/stage-install-scripts.mjs`) and serves them at `t3.codes/install.sh` and `/install.ps1`.
-  - The root `package.json` pins `engines.node` to the exact Node version used by development, CI and standalone executables. Keep it exact: cross-target builds download that version, and native executable builds reject a different host Node version. TEMPORARY: Linux arm64 executables build only on a Linux arm64 host and are injected with postject, because Node's `--build-sea` output cannot load on 16 or 64 KiB page kernels. Revert when [nodejs/node#67048](https://github.com/nodejs/node/issues/67048) is fixed. Runtime changes need a new T3 release version because installed runtimes are cached by that version.
-  - macOS archives are signed with the Developer ID certificate and notarized when the Apple secrets are present (ad hoc otherwise, which still runs from `curl`/`tar` installs). Windows executables use the same Azure Trusted Signing setup as the installer. Every native addon in the macOS archive is signed too, since the hardened runtime refuses unsigned libraries.
-  - Each archive is extracted and executed (`scripts/smoke-cli-archive.ts`) on its build runner, or on the `verify_runner` for Windows.
-- After the GitHub Release is published, publishes the `t3` npm package with OIDC trusted publishing from the same workflow file. It is only a launcher (`scripts/npm-launcher/t3.mjs`): on first run it downloads its exact version's CLI archive from the GitHub Release, verifies it against `SHA256SUMS`, and unpacks it into `<T3 home>/runtime/versions/<version>`, the layout the install scripts and `t3 update` share. The executables are not on npm. They used to be, as `@t3code/t3-<platform>-<arch>` optional dependencies, but npm's publish-time scanning held those 80-250 MB packages back for up to an hour after the launcher was live, and every install in that window got a launcher with no executable. Those packages stay on npm at their old versions and get no new ones. Because the launcher reads from the release, `publish_cli` runs after `release`, never before.
-  - stable releases publish npm dist-tag `latest`
-  - nightly releases publish npm dist-tag `nightly`
-  - preview releases publish npm dist-tag `preview`, which nothing resolves unless asked for by name
-  - one-time setup: package `t3` needs a trusted publisher registered for this workflow file (see below).
-- Builds the hosted web app on Vercel while the desktop jobs run, and makes it live only after a release is published:
-  - stable releases are aliased to the `latest` hosted app channel
-  - nightly releases are aliased to the `nightly` hosted app channel
-- Signing is optional and auto-detected per platform from secrets.
-
-## Pull request macOS previews
-
-Labeling a PR `preview:mac` publishes a signed, notarized Apple Silicon DMG with T3 Connect enabled
-to the rolling `desktop-preview` prerelease, and works for fork PRs. The label is a one-shot request
-for the commit it is applied to: the trusted workflow removes it once the build is in hand, and later
-pushes do not build until a maintainer applies it again. Every signed preview is therefore a
-per-commit maintainer decision, which matters because the result carries the Developer ID signature.
-Vouching a contributor lets their labeled commits be signed; it is not a standing grant. The build is
-split so the Developer ID certificate never shares a job with PR code:
-
-- `.github/workflows/desktop-macos-preview.yml` runs on `pull_request` with no secrets and builds
-  only the JS bundle from the PR (the same `js-bundle` artifact `release.yml` produces).
-- `.github/workflows/desktop-macos-preview-publish.yml` runs on `workflow_run` from `main`. It
-  refuses unless the PR is open, still labeled, its head is the built commit, and the author is a
-  bot, a collaborator, or listed in `.github/VOUCHED.td` (read from the default branch, so a PR cannot vouch
-  for itself). It then packages and signs the bundle through `release-desktop.yml` checked out at
-  `main`, so packaging, native helpers, and the Electron/desktop dependencies come from `main`, not
-  the PR. Only the version and the public T3 Connect identifiers in `.env.example` are read from the
-  PR commit, as data, so the signed app's passkey entitlement matches the bundle. A PR that changes
-  packaging must use the `channel=preview` release train above instead.
-
-Before handing the bundle to the signing runner, the trusted workflow validates its ZIP entries
-and accepts only regular files under `server/dist` and `desktop/dist-electron`, plus the directory
-entries that lead to those roots. The artifact cannot
-overwrite packaging code or installed dependencies. The bundle is copied into the app, never executed,
-on the signing runner. The
-`pull_request_target` cleanup job in the publish workflow removes the download when the PR closes, or
-when the label is removed by hand before a build consumed it, and never checks out PR code.
-
-## Required release credentials
-
-Stable releases require these GitHub Actions secrets in addition to the platform and deployment
-credentials documented below:
-
-- `RELEASE_APP_ID`
-- `RELEASE_APP_PRIVATE_KEY`
-
-The finalize job uses them to commit and push aligned package versions to `main` as the Release App.
-GitHub Release publication uses the repository-scoped workflow token so it has a rate-limit quota
-independent from the shared Release App installation.
-
-## T3 Connect relay deployment
-
-The relay is a shared control plane versioned separately from client releases. Stable and nightly
-client builds must point at the same relay so users see the same linked environments when switching
-release channels.
-
-`.github/workflows/deploy-relay.yml` deploys Alchemy stage `prod` on every push to `main`. Stable
-and nightly releases read the relay URL and Clerk client configuration from the existing
-`production` GitHub Actions environment before building desktop, CLI, or hosted web artifacts. That
-environment admits only `main` and `v*` tags, so preview releases, which may run from any branch,
-take the same public identifiers from `.env.example`; keep it in step with the `production` values.
-Every channel reads the relay client tracing config from Alchemy state with the repository-level
-`CLOUDFLARE_API_TOKEN`, so moving that token into `production` would break preview releases.
-
-Required repository variables shared by relay deployments:
-
-- `CLOUDFLARE_ACCOUNT_ID`
-- `PLANETSCALE_ORGANIZATION`
-- `AXIOM_ORG_ID`
-
-Required repository secrets shared by relay deployments:
-
-- `CLOUDFLARE_API_TOKEN`
-- `PLANETSCALE_API_TOKEN_ID`
-- `PLANETSCALE_API_TOKEN`
-- `AXIOM_TOKEN`
-
-Required `production` environment variables:
-
-- `RELAY_API_ZONE_NAME`
-- `RELAY_TUNNEL_ZONE_NAME`
-- `CLERK_PUBLISHABLE_KEY`
-- `CLERK_JWT_AUDIENCE`
-- `CLERK_JWT_TEMPLATE`
-- `CLERK_CLI_OAUTH_CLIENT_ID`
-- `APNS_ENVIRONMENT`
-- `APNS_TEAM_ID`
-- `APNS_KEY_ID`
-- `APNS_BUNDLE_ID`
-
-Optional `production` environment variables:
-
-- `RELAY_DOMAIN` when overriding the derived `relay.<RELAY_API_ZONE_NAME>` domain
-- `RELAY_TUNNEL_CLEANUP_MODE` with `off`, `dry-run`, or `enabled`. Missing and blank values use
-  `off`.
-- `RELAY_LEGACY_TUNNEL_CLEANUP_MODE` with the same values, for tunnels whose host never registered
-  recovery. Missing and blank values use `off`.
-
-Required `production` environment secrets:
-
-- `CLERK_SECRET_KEY`
-- `APNS_PRIVATE_KEY`
-
-Optional `production` environment secrets:
-
-- `T3CHAT_LINK_SECRET` for the T3 Chat account link. It must match
-  `T3CODE_LINK_SECRET` on T3 Chat.
-
-After changing a variable or secret, run the **Deploy T3 Connect relay** workflow manually from
-`main` with **force** unchecked. Alchemy compares the values the Worker reads and redeploys it when
-one changed. Check **force** only to redeploy resources with no detected change.
-
-The account-scoped repository credentials are consumed by Alchemy while provisioning relay stages; they
-are not bound into the relay Worker. The production deployment uses an Axiom personal access token,
-so `AXIOM_ORG_ID` must accompany `AXIOM_TOKEN`. The `prod` stage owns the retained PlanetScale
-database. Local personal stages provision isolated branches from it and are never deployed by CI.
-Production adopts the configured relay API and tunnel DNS zones as retained Cloudflare resources.
-Personal stages reference the production-owned zones.
-
-Developers deploy personal stages locally:
-
-```sh
-vp run --filter t3code-relay deploy -- --stage "$USER" --env-file .env.local
-```
-
-A same-repository PR labeled `relay:preview` deploys stage `pr-<number>` through
-`.github/workflows/relay-preview.yml`, after approval in the `relay-preview` environment. Removing the
-label or closing the PR runs `.github/workflows/relay-preview-cleanup.yml`, which destroys the stage
-and sweeps its managed tunnels and DNS records. A nightly run destroys stages of closed labeled PRs
-whose teardown failed. Fork PRs get no preview.
-
-### Managed tunnel cleanup rollout
-
-Keep `RELAY_TUNNEL_CLEANUP_MODE=off` for the first production deploy. That deploy applies the
-nullable allocation migration and adds the recovery endpoints. Web and mobile clients need no
-coordinated release. CLI and desktop server builds must reach users before cleanup is enabled,
-because those builds register recovery and replace a deleted tunnel after wake.
-
-1. Deploy the relay and migration with cleanup `off`.
-2. Release the server build and confirm current hosts register recovery. Older hosts stay marked
-   legacy and are only candidates under the legacy switch below.
-3. Set `dry-run`, run a relay deploy, and read the sweep counters (`scanned`, `wouldDelete`,
-   `skippedLegacy`, `skippedOrphan`, `failed`, `truncated`) across several sweeps. Each sweep records
-   them, and the active `mode`, as `relay.managed_endpoint_reaper.*` attributes on its
-   `relay.managed_endpoint_reaper.sweep` span in Axiom.
-4. Run the disposable-host canary below.
-5. Set `enabled` only after the canary recovers without a server restart.
-
-The job runs every five minutes with a five-minute grace period for tunnels that lost their
-connector, so a candidate is usually removed five to ten minutes after it goes down. Tunnels that
-never connected wait an hour. One sweep attempts at most 100 deletions, so a backlog takes longer.
-Changing `RELAY_TUNNEL_CLEANUP_MODE`, including turning cleanup off during an incident, needs a relay
-deploy without force. Confirm the new `mode` on the next sweep span.
-
-To roll back, set cleanup to `off` and run a relay deploy before downgrading any host. Keep the
-recovery endpoints deployed while current server builds are in use. The nullable columns can stay.
-
-### Legacy tunnel cleanup
-
-A legacy tunnel belongs to a host that never registered recovery, usually one that went offline
-before the recovery build shipped. `RELAY_LEGACY_TUNNEL_CLEANUP_MODE` deletes these once Cloudflare
-reports them down, or never connected, for more than 7 days. It is independent of
-`RELAY_TUNNEL_CLEANUP_MODE`, and every other check still applies.
-
-A deleted legacy tunnel keeps its allocation, so its hostname is kept. When the host comes back:
-
-- On a build with recovery, the connector is rejected and the host requests a replacement tunnel at
-  the same hostname.
-- On an older build with a CLI link, startup provisions a new tunnel.
-- On an older build linked from web or mobile, the host stays offline until T3 Code on that computer
-  is updated.
-
-Ship the web and mobile builds that show the offline reason before enabling legacy cleanup, so a
-user whose host is affected sees what to do. The relay adds the `tunnel_released_at` allocation
-column in its first deploy with this change; the legacy switch stays `off` until you set it.
-
-1. Run `vp run --filter t3code-relay tunnels:census` with a read-only Cloudflare token. It counts
-   tunnels in every relay stage. The reaper only sees its own stage's tunnels, so clean up the rest
-   by hand.
-2. Set the legacy mode to `dry-run`, deploy, and read `wouldDeleteLegacy`, `legacyOver30Days`,
-   `totalDown`, and `totalInactive` on the sweep spans for a day. `wouldDeleteLegacy` counts only the
-   tunnels a sweep inspected, at most 500 per status. `totalDown` and `totalInactive` are Cloudflare's
-   counts of this stage's tunnels down for over five minutes and never connected for over an hour.
-   They include ones the reaper skips, so they are an upper bound on the backlog. The share of `wouldDeleteLegacy` in each sweep's `scanned` estimates how
-   much of that total is eligible.
-3. Run the legacy steps of the disposable-host canary below.
-4. Before enabling, confirm the web and mobile builds that show the "update T3 Code on that computer"
-   message are live. Without them, a user whose older host lost its tunnel only sees it as offline.
-5. Set the legacy mode to `enabled`. One sweep deletes at most 100 tunnels, four at a time, and
-   stops starting new deletions after 90 seconds. A backlog of 20,000 takes about 17 hours if each
-   sweep finishes its 100. Watch `deletedLegacy`, `attempted`, `failed`, and `truncated`. An
-   `attempted` well under 100 with `truncated` set means the sweep stopped early: either the time
-   budget ran out or Cloudflare rate-limited a deletion. The counters don't say which; the relay
-   logs a warning with the Cloudflare error for each failed deletion.
-
-In Axiom, filter the relay traces dataset on `name == "relay.managed_endpoint_reaper.sweep"` and
-chart the `attributes.custom.relay.managed_endpoint_reaper.*` fields over time.
-
-Set the legacy mode back to `off` and deploy if any of these happen:
-
-- `failed` stays above a few per sweep. Read the warning log for the Cloudflare error.
-- Users report an environment that is offline with the update message after they have updated T3
-  Code on that computer and restarted it.
-- Relay request errors rise while sweeps run. Deletions share the Postgres connection pool with
-  request handlers.
-
-Turning the legacy mode off stops new legacy deletions; `RELAY_TUNNEL_CLEANUP_MODE` keeps deleting
-tunnels of hosts with recovery while it is `enabled`. Deleted tunnels stay deleted; their hosts
-recover as described above.
-
-### Disposable-host canary
-
-This test has not been run against a real Cloudflare account. Run it against a disposable relay
-stage, test Cloudflare account, disposable host, and disposable T3 home. Keep production cleanup at
-`off` or `dry-run` until it passes. Do not stop a daily-use T3 server.
-
-1. Deploy the disposable stage with cleanup `dry-run`. Link a first disposable environment through
-   web or mobile settings and confirm its tunnel is healthy and recovery is registered.
-2. Stop that host and restart the same T3 home on a different local port. Confirm the public
-   hostname reaches the new port and sends nothing to the old one.
-3. Link a second disposable environment with a server build that predates recovery registration.
-   Capture its managed `cloudflared` child PID, confirm it belongs to that host, and pause only that
-   child with `kill -STOP <legacy-pid>`. Wait until Cloudflare reports it down for over five minutes.
-4. Capture the first environment's `cloudflared` child PID from its server logs, confirm ownership,
-   and pause it with `kill -STOP <first-pid>`. Wait until Cloudflare reports it down for over five
-   minutes.
-5. Confirm dry-run counts the first tunnel in `wouldDelete` and the second in `skippedLegacy`.
-6. Set cleanup `enabled` on the disposable stage and deploy. Confirm in the test Cloudflare account
-   that the first tunnel is deleted and the legacy tunnel still exists.
-7. Resume the first child with `kill -CONT <first-pid>`. Confirm the running server detects the
-   repeated rejection, requests recovery, and becomes reachable at the same hostname without a
-   restart.
-8. Resume the legacy child with `kill -CONT <legacy-pid>` and confirm its tunnel reconnects.
-9. Repeat with a physical sleep and wake cycle on a disposable laptop before broad rollout.
-
-Legacy cleanup, on the same disposable stage:
-
-10. Set `RELAY_LEGACY_TUNNEL_GRACE_MINUTES=10` and the legacy mode to `dry-run`, then deploy. The
-    override shortens the 7-day grace period and is ignored on `prod`. Pause the legacy child again
-    and wait until Cloudflare reports it down for over ten minutes.
-11. Confirm the sweep counts it in `wouldDeleteLegacy`, then set the legacy mode to `enabled` and
-    deploy. Confirm the legacy tunnel is deleted and its allocation row remains.
-12. With the legacy host still on its old build, resume the child. A CLI-linked host provisions a
-    new tunnel on its next restart; a web- or mobile-linked host stays offline.
-13. Update that host to the current build and start it. Confirm it requests recovery and is
-    reachable at the same hostname.
-14. Remove `RELAY_LEGACY_TUNNEL_GRACE_MINUTES` from the disposable stage.
-
-## Marketing site deployment
-
-On nightly releases, the release workflow builds the same commit as a staged
-production deployment of the marketing site's Vercel project while the desktop
-jobs run, and promotes it with `vercel promote` after the release is published.
-Stable releases do not deploy the marketing site because they can promote an
-older nightly commit.
-
-The job looks up the `t3code-marketing` project using the existing `VERCEL_TOKEN`
-and `VERCEL_ORG_ID` secrets. It also respects the optional `VERCEL_TEAM_SLUG`
-variable. The Vercel project's root directory must be `apps/marketing`.
-Git deployments remain disabled in `apps/marketing/vercel.ts`.
-
-## Mobile TestFlight and store releases
-
-Merges to main publish compatible OTAs and build iOS prereleases with the `testflight`
-profile at version `3.0.0`. Build numbers increment automatically. The committed app
-version remains the App Store release version; Android keeps using that version.
-
-To release iOS, dispatch **Mobile EAS Production** with `mode=build`,
-`profile=production`, `platform=ios`, and the intended version, such as `2.0.1`.
-The workflow commits and pushes the version before building and uploading it.
-Select that build in App Store Connect for App Store review.
-
-To force a TestFlight rebuild, select `profile=testflight`, `platform=ios`, and
-leave the version blank. Submit the first `3.0.0` build for external beta review
-in App Store Connect. Later builds may still require review; uploads alone do
-not guarantee external approval. TestFlight builds expire after 90 days.
-
-Both release and TestFlight binaries receive compatible production-channel OTAs,
-separated by their major-version fingerprints. Manual `mode=update` uses the
-selected profile's version. Before releasing `3.0.0` to the App Store, advance
-`build.testflight.env.T3CODE_MOBILE_VERSION` in `apps/mobile/eas.json` to the next
-unreleased major and get its first beta build approved.
-
-## Android APK mirror
-
-`.github/workflows/mobile-android-apk.yml` checks the Google Play Alpha closed-testing
-track hourly. Each new beta gets one `android-beta-<build-number>` prerelease
-containing its APK. Unchanged checks publish nothing, and interrupted draft
-uploads resume on the next check.
-
-Normal Nightly releases include the newest processed internal-testing APK available
-when the release publishes. Internal builds do not create separate Android releases.
-If Play credentials or a processed APK are unavailable, the Nightly can still publish
-without an APK. Android submissions continue to go to internal testing; promote a
-build to Alpha to publish it as a beta.
-
-The APK is the universal APK Play generates and signs from the
-uploaded bundle, so no signing key lives in GitHub. The job skips itself until
-`GOOGLE_PLAY_SERVICE_ACCOUNT_JSON` holds a Play service account key with the "Release to
-production, exclude devices, and use Play App Signing" permission, which downloading generated
-APKs requires. The job reads tracks without opening a Play edit, so it can share the service
-account EAS Submit uses.
-
-## Hosted web app release deployment
-
-The hosted app is intentionally not deployed by Vercel's Git integration. The
-web project disables automatic Git deployments in `apps/web/vercel.ts` via
-`git.deploymentEnabled: false`. `.github/workflows/release.yml` builds the web
-app with Vercel CLI as a staged production deployment (`--skip-domain`) while
-the desktop jobs run, and aliases the channel domains to it after the GitHub
-Release succeeds.
-
-Required GitHub Actions secrets:
-
-- `VERCEL_TOKEN`
-- `VERCEL_ORG_ID`
-- `VERCEL_PROJECT_ID`
-
-Optional GitHub Actions variables:
-
-- `VERCEL_TEAM_SLUG`: overrides the Vercel CLI scope when the team slug is preferred over the `VERCEL_ORG_ID` secret.
-- `T3CODE_WEB_ROUTER_URL`: defaults to `https://app.t3.codes`.
-- `T3CODE_WEB_LATEST_DOMAIN`: defaults to `latest.app.t3.codes`.
-- `T3CODE_WEB_NIGHTLY_DOMAIN`: defaults to `nightly.app.t3.codes`.
-
-Required Vercel domains:
-
-- `app.t3.codes`: the router domain users open, updated by stable releases.
-- `latest.app.t3.codes`: channel alias updated by stable releases.
-- `nightly.app.t3.codes`: channel alias updated by nightly releases.
-
-The router domain uses `apps/web/vercel.ts` routes. Users opt into a channel by
-visiting `/__t3code/channel?channel=latest` or
-`/__t3code/channel?channel=nightly`; the router stores the
-`t3code_web_channel` cookie and rewrites future requests on `app.t3.codes` to
-the matching channel alias.
-
-The release deploy job rewrites release package versions before upload so the
-hosted app's About panel renders the release version. Stable deploys alias the
-same deployment to both the `latest` channel and the router domain so the router
-rules stay current. Nightly deploys only alias the `nightly` channel. The job
-also passes `VITE_HOSTED_APP_CHANNEL=latest|nightly`, which renders the hosted
-update track selector in the About panel. Changing the selector navigates
-through `/__t3code/channel` on the router domain so the user's channel cookie is
-updated before redirecting to the hosted app root.
-
-One-time Vercel dashboard setup:
-
-1. Confirm the web project root directory remains `apps/web`.
-2. Add the three domains above to the web project.
-3. Disable automatic Git deployments in the dashboard if desired; the committed
-   `vercel.ts` setting is the source-of-truth, but disconnecting Git in the
-   dashboard is also safe.
-4. Run one stable release deployment, or manually alias the current stable
-   deployment, so `app.t3.codes` points at a deployment containing the router
-   rules in `apps/web/vercel.ts`. Future stable releases keep this alias current.
-
-## Nightly builds
-
-- Workflow: `.github/workflows/release.yml`
-- Triggers:
-  - scheduled check every 30 minutes
-  - manual `workflow_dispatch` with `channel=nightly`
-- Automatic nightlies require new commits and at least six hours since the last nightly was published, including manual nightlies.
-- Manual nightlies bypass the time and change checks. Nightly runs remain serialized. Scheduled runs wait for an active nightly to finish, then check the publication gap before building.
-- Runs the same desktop quality gates and artifact matrix as the tagged release flow.
-- Publishes a GitHub prerelease only:
-  - current tag format: `vX.Y.Z-nightly.YYYYMMDD.<run_number>`
-  - `nightly-v...` is accepted only as a legacy previous-nightly tag
-  - release name includes the short commit SHA
-  - `make_latest` is always `false`
-- Uses the next stable patch version as the nightly base. For example, `0.0.17` produces nightlies on `0.0.18-nightly.*`.
-- Publishes Electron auto-update metadata to the dedicated `nightly` updater channel, so desktop users can opt into that track independently from stable.
-- Publishes the `t3` npm launcher to the `nightly` npm dist-tag using the same nightly version.
-- Does not commit version bumps back to `main`.
-
-## Server self-update release invariant
-
-Connected servers update to the client's exact version, not to an npm dist-tag. Servers that update
-themselves download that version's CLI archive from the GitHub Release; servers run through npm are
-handed a `t3@<version>` command to run. Every released client version must therefore have its
-release archives, and then its npm launcher, available before users can receive that client.
-
-The workflow enforces this ordering:
-
-1. `release` publishes the GitHub Release with the CLI archives and `SHA256SUMS`. Every channel
-   uploads to a draft and publishes only after all assets are attached, so a new version in the
-   desktop update feed already has its archives. **Update everything** relies on this to update
-   background-service hosts before npm has the version. Rerunning `release` after publication
-   replaces assets in a public release, so service updates can fail until the upload finishes.
-2. `publish_cli` publishes the `t3@<version>` launcher, which downloads from that release, on every
-   channel.
-3. `deploy_web` depends on both before moving the hosted channel to the new client.
-   `build_web` builds that client earlier with `vercel deploy --prod --skip-domain`, which
-   leaves the custom domains alone but moves the project's own `*.vercel.app` production
-   hostname. That hostname is behind Vercel SSO, so users only get the client through the
-   custom domains.
-
-Desktop auto-update reads the GitHub Release directly, so a desktop client can see the new version
-a few minutes before `t3@<version>` is on npm. Only the copied manual command for npm-run servers
-depends on npm, and it works once `publish_cli` finishes.
-
-Preserve these dependencies when changing the release graph. Publishing a client first would leave
-the **Update server** action targeting a package version that does not exist yet.
-
-For a release smoke test, confirm `npm view t3@<version> version` returns the expected version, then
-connect the new client to a server on the previous version and verify that the update action
-reconnects to the matching server. When the release adds database migrations, verify that the
-remote update applies them and reconnects. A failed trial must restore the database snapshot and
-restart the previous server. If the installed launcher does not support the target protocol,
-verify that the update stops before restart and run `npx t3@<version> service update` once on the
-server machine. Also test the manual or desktop-managed guidance when those environments are
-available.
-
-## Desktop auto-update notes
-
-- Updater runtime: `apps/desktop/src/updates/DesktopUpdates.ts`.
-- `electron-updater` adapter: `apps/desktop/src/electron/ElectronUpdater.ts`.
-- `apps/desktop/src/main.ts` only wires the updater layers into the desktop runtime.
-- Update UX:
-  - Background checks run on startup delay + interval.
-  - No automatic download or install.
-  - The desktop UI shows a rocket update button when an update is available; click once to download, click again after download to restart/install.
-- Provider: GitHub Releases (`provider: github`) configured at build time.
-- Repository slug source:
-  - `T3CODE_DESKTOP_UPDATE_REPOSITORY` (format `owner/repo`), if set.
-  - otherwise `GITHUB_REPOSITORY` from GitHub Actions.
-- Required release assets for updater:
-  - platform installers (`.exe`, `.dmg`, `.AppImage`, `.deb`, plus macOS `.zip` for Squirrel.Mac update payloads)
-  - channel metadata: `latest*.yml` for stable releases, `nightly*.yml` for nightly releases
-  - `*.blockmap` files (used for differential downloads)
-- macOS metadata note:
-  - `electron-updater` reads `latest-mac.yml` on stable and `nightly-mac.yml` on nightly, for both Intel and Apple Silicon.
-  - The workflow merges the per-arch mac manifests into one channel-specific mac manifest before publishing the GitHub Release.
-
-### Windows payload topology and update validation
-
-Windows packages the bundled server and only its runtime-external/native
-dependency closure in `resources/server.asar`. Native modules and helper
-executables declared as unpacked by that archive must be present at the matching
-paths below `resources/server.asar.unpacked`. The Windows-native backend reads
-the archive in place through Electron. Packaged Windows builds also ship
-`resources/wsl-runtime.tar.gz` plus its SHA-256 sidecar: the Linux CLI archive
-(`t3-<version>-linux-<arch>.tar.gz`, the same arch as the Windows host) built
-by the Linux desktop job and handed to the Windows desktop build as
-`--wsl-runtime`, copied in verbatim so WSL runs the exact bytes a Linux user
-downloads. WSL verifies and extracts that archive
-into `~/.t3/wsl-runtime/sha256-<archive-digest>` inside the selected distro,
-then reuses it for later launches of the same update.
-
-Windows keeps JavaScript and package metadata inside `app.asar` and unpacks only
-native libraries and helper executables. Avoid enabling whole-package smart
-unpacking: each loose file adds work to NSIS installation and counts against
-the payload limit.
-
-The artifact builder rejects a Windows package when any of these invariants
-break:
-
-- `resources/server.asar` is absent or does not contain the server entry.
-- Any file marked unpacked in the ASAR header is absent from
-  `resources/server.asar.unpacked`.
-- On same-architecture Windows builds, the packaged primary cannot load the fff
-  native library from inside `server.asar` through its `.unpacked` sibling.
-- The isolated, extracted sidecar cannot load the server entry with plain Node.
-- A Windows build given `--wsl-runtime` omits the WSL archive or SHA-256
-  sidecar, or the sidecar digest does not match the emitted archive.
-- The emitted WSL archive is not a Linux CLI release archive: it must unpack to
-  a single `t3-<version>-linux-<arch>` directory holding `t3`, `client/`, and
-  `node_modules/` with the Linux node-pty binary, and must not carry a loose
-  server bundle (`bin.mjs`).
-- The external Windows resource monitor is absent.
-- The unpacked Windows application contains more than 80 files.
-
-Cross-architecture Windows builds retain every structural and extracted-sidecar
-check, but skip executing the target Electron binary. A same-architecture build
-for each release target must exercise the primary native-load probe.
-
-NSIS differential packaging remains enabled. A sidecar layout transition can
-produce a larger one-time download; subsequent small releases retain their
-blockmaps, with a 60 MB maximum for a representative sidecar-to-sidecar update.
-
-## 0) npm OIDC trusted publishing setup (CLI)
-
-After the GitHub Release is published, the workflow runs `node scripts/build-npm-launcher.ts`, then
-`node apps/server/scripts/cli.ts publish --packages-dir npm-packages`, which runs `npm publish` on
-`t3.tgz`. That is the only package published per release.
-
-Checklist:
-
-1. Confirm the npm org owns package `t3`.
-2. For `t3`, configure a Trusted Publisher in the npm package settings:
-   - Provider: GitHub Actions
-   - Repository: this repo
-   - Workflow file: `.github/workflows/release.yml`
-   - Environment (if used): match your npm trusted publishing config
-3. Ensure npm account and org policies allow trusted publishing for the package.
-4. Create release tag `vX.Y.Z` and push; the workflow publishes the GitHub Release and then the
-   launcher with npm dist-tag `latest`.
-5. Nightly runs publish with npm dist-tag `nightly`; preview runs with `preview`.
-
-## 1) Release validation and unsigned builds
-
-There is no dry-run tag path. Pushing any accepted non-nightly tag, including
-`v0.0.0-test.1`, classifies the run as the stable channel. It publishes `t3` with npm dist-tag
-`latest`, creates a real GitHub Release, aliases the hosted app to `latest.app.t3.codes` and
-`app.t3.codes`, and can commit a version bump to `main` in the finalize job. Do not push a test tag
-to validate the workflow.
-
-The workflow has no non-publishing `workflow_dispatch` mode. Use normal CI or local quality gates to
-validate checks and builds without shipping. To exercise the complete release graph at lower stable
-risk, manually dispatch `channel=nightly`; this still publishes a real nightly npm package, GitHub
-prerelease, desktop updater release, hosted nightly alias, and marketing site, but it does not update stable app aliases or
-commit a version bump to `main`. Only run it when a real nightly release is acceptable.
-
-Manual `channel=stable` is also a real stable-channel release. Omitting signing secrets only makes
-platform artifacts unsigned; it does not prevent publication.
-
-## 2) Apple signing + notarization setup (macOS)
-
-Required secrets used by the workflow:
-
-- `CSC_LINK`
-- `CSC_KEY_PASSWORD`
-- `APPLE_API_KEY`
-- `APPLE_API_KEY_ID`
-- `APPLE_API_ISSUER`
-- `MACOS_PROVISIONING_PROFILE` (base64-encoded provisioning profile with Associated Domains)
-
-Required repository variables:
-
-- `APPLE_TEAM_ID`
-
-Optional repository variables:
-
-- `CLERK_PASSKEY_RP_DOMAINS`: comma-separated RP-domain override. By default, the build derives the
-  domain from the production Clerk publishable key.
-
-Checklist:
-
-1. Apple Developer account access:
-   - Team has rights to create Developer ID certificates.
-2. Create an explicit App ID for `com.t3tools.t3code` and enable Associated Domains.
-3. Create a `Developer ID Application` certificate and a compatible provisioning profile for that
-   App ID with Associated Domains enabled.
-4. Export the certificate + private key as `.p12` from Keychain.
-5. Base64-encode the `.p12` and store as `CSC_LINK`.
-6. Base64-encode the provisioning profile and store it as `MACOS_PROVISIONING_PROFILE`.
-7. Store the `.p12` export password as `CSC_KEY_PASSWORD`, and set `APPLE_TEAM_ID` to the
-   10-character Apple Developer Team ID.
-8. In App Store Connect, create an API key (Team key).
-9. Add API key values:
-   - `APPLE_API_KEY`: contents of the downloaded `.p8`
-   - `APPLE_API_KEY_ID`: Key ID
-   - `APPLE_API_ISSUER`: Issuer ID
-10. Complete the Clerk Native API and AASA setup in [T3 Connect setup](./connect-setup.md#desktop-passkeys).
-11. Re-run a tag release and confirm macOS artifacts are signed/notarized and contain the expected
-    `com.apple.developer.associated-domains` entitlement.
-
-Notes:
-
-- `APPLE_API_KEY` is stored as raw key text in secrets.
-- The workflow writes it to a temporary `AuthKey_<id>.p8` file at runtime.
-- The workflow decodes `MACOS_PROVISIONING_PROFILE`, validates it with `security cms`, and passes it
-  to the desktop packager.
-- In-app browser passkeys depend on the same profile. The packager adds each entitlement only when
-  the profile grants it, because macOS will not launch an app that claims more than its profile
-  allows. The build log reports which ones it enabled.
-  - `keychain-access-groups` (`<TEAM_ID>.com.t3tools.t3code.webauthn`) enables Touch ID passkeys.
-    Profiles that grant the team's keychain groups (`<TEAM_ID>.*`) cover it.
-  - `com.apple.developer.web-browser.public-key-credential` lets the system passkey sheet (iCloud
-    Keychain, password managers, phones, security keys) serve any site. Apple grants it as a
-    managed capability: the Account Holder requests it through the
-    [macOS Browsers Passkeys form](https://developer.apple.com/contact/request/macos-browsers-passkeys/).
-    After approval, regenerate the profile and update `MACOS_PROVISIONING_PROFILE`.
-
-## 3) Azure Trusted Signing setup (Windows)
-
-Required secrets used by the workflow:
-
-- `AZURE_TENANT_ID`
-- `AZURE_CLIENT_ID`
-- `AZURE_CLIENT_SECRET`
-- `AZURE_TRUSTED_SIGNING_ENDPOINT`
-- `AZURE_TRUSTED_SIGNING_ACCOUNT_NAME`
-- `AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME`
-- `AZURE_TRUSTED_SIGNING_PUBLISHER_NAME`
-
-Checklist:
-
-1. Create Azure Trusted Signing account and certificate profile.
-2. Record ATS values:
-   - Endpoint
-   - Account name
-   - Certificate profile name
-   - Publisher name
-3. Create/choose an Entra app registration (service principal).
-4. Grant service principal permissions required by Trusted Signing.
-5. Create a client secret for the service principal.
-6. Add Azure secrets listed above in GitHub Actions secrets.
-7. Re-run a tag release and confirm Windows installer is signed.
-
-## 4) Ongoing release checklist
-
-1. Pick the latest nightly and verify it: run the smoke test above against its artifacts and
-   check the nightly channel for regressions.
-2. Dispatch the Release workflow with `channel=stable`. Leave `version` empty unless the version
-   should differ from the one the nightly previewed.
-3. Confirm the `Resolve release commit` notice names the nightly tag and commit you verified. If a
-   newer nightly published in between, the run builds that one instead.
-4. Verify workflow steps:
-   - preflight passes
-   - release quality checks pass
-   - `build_bundle` and all platform builds pass
-   - `publish_cli` publishes the exact release version before the release job
-   - release job uploads expected files
-5. Smoke test downloaded artifacts.
-
-## 5) Troubleshooting
-
-- macOS build unsigned when expected signed:
-  - Check all Apple secrets plus `APPLE_TEAM_ID` are populated and non-empty.
-  - Confirm the provisioning profile belongs to `APPLE_TEAM_ID.com.t3tools.t3code` and includes
-    Associated Domains.
-- Windows build unsigned when expected signed:
-  - Check all Azure ATS and auth secrets are populated and non-empty.
-- Build fails with signing error:
-  - Retry with secrets removed to confirm unsigned path still works.
-  - Re-check certificate/profile names and tenant/client credentials.
+This fork publishes its own desktop builds from GitHub Releases. Every release is a manual
+`workflow_dispatch` of `.github/workflows/release.yml`: no schedule, no tag trigger, and merging
+never publishes. Desktop artifacts come from GitHub-hosted runners for Windows x64, Linux x64, and
+macOS arm64, and the GitHub Release is the only distribution point. Windows and Linux x64 install
+updates from the release feed; macOS arm64 is a manual download, and no other architecture ships
+(no macOS Intel, Linux ARM, or Windows ARM build).
+
+| Channel   | Purpose                 | Version                        | Release                   |
+| --------- | ----------------------- | ------------------------------ | ------------------------- |
+| `stable`  | what users install      | `X.Y.Z-plusplus.N`             | latest, not a prerelease  |
+| `nightly` | release candidate train | `X.Y.Z-nightly.YYYYMMDD.<run>` | prerelease                |
+| `preview` | maintainer test build   | `X.Y.Z-preview.YYYYMMDD.<run>` | prerelease with a warning |
+
+`channel` defaults to `preview`, so an accidental dispatch cannot publish a stable release. The
+workflow serializes nightlies and previews in one queue and gives stable its own, so a queued stable
+dispatch is never dropped.
+
+## Versions
+
+Stable uses the fork's ++ scheme: tag and version `X.Y.Z-plusplus.N`, where `X.Y.Z` is the upstream
+base and `N` is the fork's revision on that base. User-facing text renders the display form
+`X.Y.Z · ++N`; tags, package versions, and artifact filenames keep the machine-readable form.
+
+- `N` is the part the fork owns. It increments with each stable release on the same upstream base and
+  resets to `.1` when a new upstream base arrives.
+- A ++ version is a later release of its base, not a semver prerelease: `v0.1.6-plusplus.2` supersedes
+  `v0.1.6-plusplus.1`, and both supersede a plain `v0.1.6`. Release notes resolve their previous tag
+  the same way.
+- Never reuse or move a published `X.Y.Z-plusplus.N`, even for a broken build. A stable dispatch
+  whose tag is already published is rejected. Ship the next revision.
+- Nightly and preview build the next patch of the committed base in `apps/desktop/package.json`:
+  committed `0.1.5` produces `0.1.6-nightly.<date>.<run>`. A stable dispatch with no `version` input
+  ships that same base as `0.1.6-plusplus.1`. Passing `version` picks the base, the ++ revision, and
+  the dispatched commit instead.
+- Version changes land as ordinary PRs. Nothing in the release workflow writes to `main` or commits a
+  bump back, and pushing a tag publishes nothing: the release job creates the tag.
+
+## What a run does
+
+`.github/workflows/release.yml` builds one commit and publishes it:
+
+1. **Resolve release commit.** Stable and nightly must be dispatched from `main`; preview may use any
+   branch. Nightly and preview build the dispatched commit. So does a stable dispatch with an
+   explicit `version`: it builds the dispatched default-branch commit and needs no nightly. A stable
+   dispatch with an empty `version` falls back to the commit of the latest published nightly, which
+   must be contained in the default branch.
+2. **Preflight.** Resolves the version, tag, release name, prerelease and latest flags, and the
+   previous tag in the same channel. A stable `version` that is not `X.Y.Z-plusplus.N`, or whose tag
+   is already published, fails here. The Clerk and relay values baked into clients are read from the
+   public, checked-in `.env.example`; no credential is involved.
+3. **Build JS bundle.** Builds the server bundle, web client, and Electron main once, aligns the
+   workspace package versions to the release version, and stamps the telemetry channel. Every
+   platform job packages this artifact instead of rebuilding it.
+4. **Desktop targets.** `desktop_linux_x64` and `desktop_win_x64` call
+   `.github/workflows/release-desktop.yml` on `ubuntu-24.04`; `desktop_mac_arm64` calls it on
+   `macos-15`. Each job builds its own CLI archive and smoke-tests it, then packages the app. The
+   Linux job packages the AppImage and the `.deb` together. The Windows job embeds the Linux CLI
+   archive as its WSL runtime and a `windows-2025` verify job runs the packaged natives, the CLI
+   archive, and the resource monitor. The macOS job mounts its DMG for the same launch check and
+   publishes the unsigned DMG plus the darwin arm64 CLI archive.
+5. **Required checks.** Stable and nightly run a verification job that requires the aggregate `Check`
+   workflow and `Agent Context Budget` to pass on the exact commit being built; a red or missing
+   check means nothing publishes. Preview skips that verification: it builds any branch with no CI
+   gate, and a failed required check cannot block a preview, only a stable or nightly dispatch.
+6. **Publish GitHub Release.** Writes `SHA256SUMS` from the archives it uploads, refuses updater
+   metadata on preview releases, drops any macOS updater files (`*-mac.yml`, the updater app zip,
+   the DMG blockmap) that no install is meant to follow, merges the per-arch Windows updater manifest
+   back into `latest.yml` or `nightly.yml`, and attaches every asset. A prerelease stays a draft
+   until all assets are attached.
+
+The release workflow builds no test matrix of its own; on stable and nightly the required checks are
+the gate. Dispatch a stable or nightly only once they are green on the commit you intend to ship.
+Preview runs no required-check verification and does not wait on them.
+
+Assets per release:
+
+- `T3-Code-<version>-x64.AppImage` and `T3-Code-<version>-x64.deb` (Linux),
+  `T3-Code-<version>-x64.exe` (Windows), and `T3-Code-<version>-arm64.dmg` (macOS arm64, manual
+  download only).
+- `t3-<version>-linux-x64.tar.gz`, `t3-<version>-win32-x64.zip`, and
+  `t3-<version>-darwin-arm64.tar.gz`, the self-contained CLI archives.
+- `SHA256SUMS`, written from the uploaded bytes. Installers, `t3 update`, the background service, and
+  SSH environments verify an archive against it before unpacking.
+- Stable and nightly also carry `*.blockmap` files and the electron-builder updater manifests.
+  Preview carries none: its desktop builds have no publish config, and the release job fails rather
+  than upload a feed a stable or nightly install could follow. No channel carries a macOS manifest:
+  unsigned mac builds ship no publish config, so electron-builder writes no feed for them, and the
+  release job drops any mac updater file that shows up. Nothing on a release can offer a macOS
+  update.
+
+Desktop updates read the GitHub Release directly (`apps/desktop/src/updates/DesktopUpdates.ts`): a
+`X.Y.Z-plusplus.N` build follows the `latest` manifest, a nightly build the `nightly` one. A client
+can therefore see a new version before anything else points at it, so every release must attach its
+CLI archives in the same run. The `release` job does that; there is no separate publish step to
+order around it. Unsigned macOS builds get no publish config, so the package holds no feed and its
+updater checks are disabled: nothing to read, no failed check, no version offered. A macOS user
+updates by downloading the newer `.dmg` or CLI archive.
+
+## Stable release
+
+1. Decide what ships. An empty `version` promotes the latest published nightly, so verify that
+   nightly first: run it, exercise the areas it changes, and check its assets and checksums. An
+   explicit `X.Y.Z-plusplus.N` ships the dispatched `main` commit instead and needs no nightly; check
+   that commit yourself, since nothing has run it as a release yet.
+2. Dispatch **Release** from `main` with `channel=stable`. Leave `version` empty to ship
+   `-plusplus.1` of the base the nightly previewed. Pass the full version, such as
+   `0.1.6-plusplus.2`, to pick the commit and revision yourself: an urgent fix on `main`, a base no
+   nightly covers, or a re-release after a bad build. The empty fallback always asks for `.1`, so a
+   second stable release on the same base needs the explicit revision.
+3. Read the **Resolve release commit** notice. With an empty `version` it names the nightly tag and
+   commit; confirm they are the ones you verified, since a newer nightly published in between is
+   built instead. With an explicit `version` it names the dispatched commit.
+4. Confirm the aggregate `Check` and `Agent Context Budget` runs are green on that exact commit (the
+   workflow's own verification job also enforces this for stable and nightly).
+5. Watch preflight, the bundle, all three desktop jobs, and the release job. A failed target means no
+   release: the release job needs all three.
+6. Check the published release: not a prerelease, marked latest, named `T3 Code ++ vX.Y.Z-plusplus.N`,
+   with all three installers plus the `.deb`, all three CLI archives, `SHA256SUMS`, `latest.yml`, and
+   no `*-mac.yml`.
+7. Smoke test the release itself: install it, open a thread, and confirm the previous ++ version is
+   offered the update and installs. On macOS, mount the DMG, open the app past Gatekeeper, and
+   confirm no version is offered; the DMG is the update path there. Confirm `sha256sum -c
+   SHA256SUMS` passes for a CLI archive.
+
+A stable dispatch is a real publication the moment the release job finishes. Current ++ desktop
+releases are unsigned; nothing about signing blocks or delays publication.
+
+## Nightly release
+
+Dispatch **Release** from `main` with `channel=nightly`, when you want one. Nothing publishes nightly
+on a timer, and a skipped night leaves no queue to clear. Publication requires the aggregate `Check`
+and `Agent Context Budget` runs to be green on the dispatched commit.
+
+- The version is the next patch of the committed base: committed `0.1.5` gives
+  `0.1.6-nightly.<date>.<run>`.
+- The release is always a prerelease, never marked latest, and its notes compare to the previous
+  nightly.
+- It carries the `nightly` updater feed and blockmaps, so users who opted into nightly desktop builds
+  receive it.
+- It commits nothing back to `main`. Nightlies accumulate as prereleases; delete old ones by hand
+  when the list gets long.
+
+## Preview release
+
+Preview is the maintainers' test train. It runs the whole pipeline (bundle, all three desktop jobs,
+CLI archives, checksums, release publication) for a commit end users must never receive. Use it for a
+risky branch, a packaging change, or a change to the release workflow itself.
+
+1. Dispatch **Release** with `channel=preview` (the default) and select that branch. Preview does
+   not run the required-check verification at all: it builds the branch with no CI gate, so a red or
+   missing `Check` or `Agent Context Budget` run never blocks it (or is never waited on). Stable and
+   nightly, by contrast, require those checks green on the dispatched commit.
+2. Confirm the release starts as a draft prerelease named as a maintainer test build, with the
+   warning body replacing generated notes.
+3. Confirm it carries no `.yml` or `.blockmap` assets. Their absence is what keeps stable and nightly
+   installs from ever being offered it.
+4. Install the artifacts by hand and check what the change touches. Ways onto a preview are the
+   release download, `T3CODE_CHANNEL=preview` with the install scripts, and
+   `t3 update --channel preview`, which asks for confirmation unless the running build is already a
+   preview.
+5. Delete the release and its tag when you are done. Preview builds receive no fixes and are not
+   supported.
+
+Rerunning a preview for the same commit is fine and produces a new version. Prefer it over republishing
+anything a user may already have installed.
+
+## Verifying a release
+
+- **Checksums.** `sha256sum -c SHA256SUMS` in a directory holding a CLI archive. A mismatch means the
+  upload is incomplete or wrong; do not hand out the archive.
+- **Desktop launch.** The Linux job opens the packaged AppImage under Xvfb against a seeded database
+  and opens a thread; the macOS job mounts its DMG with `hdiutil` and runs the same check against
+  `Contents/MacOS/<CFBundleExecutable>`. The database fixture in `scripts/fixtures/desktop-launch` is
+  an old snapshot on purpose: the packaged server must migrate it forward, as it does for upgrading
+  users. Do not regenerate it on schema changes.
+- **Update path.** Install the previous release of the same channel, then confirm the new one is
+  offered, downloads, and installs. For a release with migrations, confirm the app opens the existing
+  database rather than starting empty. macOS arm64 updater checks are disabled and there is no feed
+  to exercise; verify the download path below instead.
+- **macOS manual download.** Take the DMG from the release page rather than the runner, mount it, and
+  open the app: it is unsigned and unnotarized, so macOS gates the first open behind Gatekeeper
+  (right-click, **Open**) and gates each replacement the same way. Confirm the DMG holds an arm64 app,
+  that it opens and starts a thread, and that no update is offered because the updater is disabled
+  in the unsigned build. Then unpack `t3-<version>-darwin-arm64.tar.gz`, check it against
+  `SHA256SUMS`, clear the quarantine attribute macOS puts on a downloaded binary, and run
+  `t3 --version`.
+- **CLI archive.** The workflow extracts and runs each archive on its build runner, or on the
+  Windows verify runner, so the darwin archive is smoke-tested on `macos-15`. If it fails there,
+  nothing publishes.
+- **Release-only steps.** CI's Release Smoke job exercises the version alignment, nightly and
+  preview metadata, and checksum steps (`scripts/release-smoke.ts`) without publishing.
+
+## Updating from upstream
+
+Upstream stable is this fork's base. Keep that path ordinary:
+
+1. When upstream publishes a stable release, start a sync PR that carries only the upstream changes.
+   Land local fixes separately so the next sync stays clean.
+2. Let full CI pass on the sync PR, including the shared-persistence gate that compares this
+   checkout's migrations with upstream `main`. Squash merge it.
+3. Confirm `apps/desktop/package.json` names the upstream base you intend to release. A version change
+   is an ordinary PR; the workflow never edits it.
+4. Dispatch a nightly on the new base and verify it.
+5. Dispatch stable with `version` empty. The ++ revision starts again at `.1` on the new base.
+
+## Required credentials
+
+None. Current ++ desktop releases are unsigned: the Windows installer and CLI archive carry no
+code signature, so Windows shows SmartScreen warnings on install, the Linux AppImage never carried
+one, and the macOS DMG and CLI binary are neither signed nor notarized, so Gatekeeper makes the user
+confirm past it on first open and again after each replacement. The release workflow needs no
+signing secrets, paid certificates, or service accounts. Release publication uses the repository's
+automatic workflow token (`GITHUB_TOKEN`), and the relay and Clerk values baked into clients are
+public values in `.env.example`.
+
+## Windows packaging invariants
+
+Windows packages the bundled server and only its runtime-external dependency closure in
+`resources/server.asar`. Native modules and helper executables declared unpacked in that archive must
+exist at the matching paths under `resources/server.asar.unpacked`. The Windows backend reads the
+archive in place through Electron.
+
+The packaged app also ships `resources/wsl-runtime.tar.gz` with its SHA-256 sidecar: the
+`t3-<version>-linux-x64.tar.gz` archive from the Linux desktop job, copied in verbatim so WSL runs the
+exact bytes a Linux user downloads. WSL verifies and extracts it into
+`~/.t3/wsl-runtime/sha256-<archive-digest>` inside the selected distro and reuses it for later
+launches of the same update.
+
+`scripts/build-desktop-artifact.ts` rejects a Windows package when any of these break:
+
+- `resources/server.asar` is absent or lacks the server entry.
+- A file marked unpacked in the ASAR header is missing from `resources/server.asar.unpacked`.
+- The packaged primary cannot load the fff native library through its `.unpacked` sibling.
+- The extracted sidecar cannot load the server entry with plain Node.
+- `--wsl-runtime` was passed but the archive or its SHA-256 sidecar is missing, or the sidecar digest
+  does not match the emitted archive.
+- The WSL archive is not a Linux CLI release archive: it must unpack to one `t3-<version>-linux-x64`
+  directory holding `t3`, `client/`, and `node_modules/`, and must not carry a loose `bin.mjs`.
+- The external resource monitor is absent.
+- The unpacked application contains more than 80 files.
+
+Keep JavaScript and package metadata inside `app.asar` and unpack only native libraries and helper
+executables. Avoid enabling whole-package smart unpacking: each loose file adds work to NSIS
+installation and counts against the payload limit. NSIS differential packaging stays enabled, so a
+sidecar layout change costs one larger download and later releases keep small blockmap diffs.
+
+## Troubleshooting
+
+- **`No published nightly found. Stable releases build the latest nightly commit.`** The stable
+  dispatch had no `version` input, so it needs a nightly to promote. Dispatch a nightly and let it
+  publish, or pass an explicit `X.Y.Z-plusplus.N` to build the dispatched commit instead.
+- **`stable releases must be dispatched from main; selected ...`** Re-dispatch from `main`. Use
+  `channel=preview` for a branch build.
+- **`Invalid release version ... (expected X.Y.Z-plusplus.N)`** The `version` input allows only an
+  upstream base plus a ++ revision. A bare `X.Y.Z` and other suffixes are rejected.
+- **A stable version's tag already exists** A published release owns its tag and version. Bump the ++
+  revision; do not delete the release or move the tag to force the old version through.
+- **`Preview releases must not carry updater metadata`** The packaging step emitted a feed for a
+  preview version. Fix the publish-config condition; do not drop the guard.
+- **Windows verify job fails** The packaged natives, CLI archive, or resource monitor would not run
+  for users. Treat the build as broken and fix it before publishing again.
+- **Linux AppImage launch check fails** The shipped backend or bundle cannot start. The database
+  fixture must migrate forward; do not work around a failure by regenerating it.
+- **macOS launch check fails** The DMG would not mount, or the app inside could not start after
+  mounting. Treat the build as broken; macOS users would get a download that never opens.
+- **A `*-mac.yml` reaches a release** Unsigned macOS builds emit no updater metadata, so a mac
+  manifest on a release means a publish config leaked into the build or the "Drop macOS updater
+  metadata" step missed it. Fix the source of it; a mac feed advertises an update path no build is
+  verified to follow.
+
+## Recovery
+
+- **A job failed before publication.** Rerun the failed jobs; nothing is public yet and the tag does
+  not exist. Once a release is published, its version is spent.
+- **The GitHub Release is public and wrong.** Users may already have updated, so unpublishing does not
+  undo it. Ship the next `-plusplus.N` revision on the same base, or a new base, with the fix. The
+  published tag stays rejected for future dispatches, so deleting the release buys nothing.
+- **An update feed points at a bad version.** Publish a newer version rather than editing or deleting
+  the older release assets: clients compare versions, and a missing asset breaks the update instead of
+  skipping it.
+- **A preview leaked into the wrong channel.** Check for `.yml` and `.blockmap` assets on the preview
+  release. Their presence is the bug; the release job's guard is what prevents a repeat.
+- **A nightly is bad.** Stop promoting it. Nothing was marked latest, so stable users were never
+  offered it; publish the next nightly and let that one be the candidate.

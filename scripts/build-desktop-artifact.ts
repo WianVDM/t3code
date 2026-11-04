@@ -69,7 +69,7 @@ import { Command, Flag } from "effect/cli";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 const LINUX_ICON_SIZES = [16, 22, 24, 32, 48, 64, 128, 256, 512] as const;
-const DESKTOP_APP_ID = "com.t3tools.t3code";
+const DESKTOP_APP_ID = "com.t3tools.t3code.plusplus";
 const APPLE_TEAM_ID_PATTERN = /^[A-Z0-9]{10}$/u;
 
 const BuildPlatform = Schema.Literals(["mac", "linux", "win"]);
@@ -2695,6 +2695,22 @@ export function resolveDesktopRuntimeDependencies(
   );
 }
 
+// T3 Code ++ releases publish to WianVDM/t3code unless T3CODE_DESKTOP_UPDATE_REPOSITORY or GITHUB_REPOSITORY overrides it.
+const DEFAULT_UPDATE_REPOSITORY = { owner: "WianVDM", repo: "t3code" } as const;
+
+function githubPublishConfig(
+  repository: { readonly owner: string; readonly repo: string },
+  updateChannel: "latest" | "nightly",
+) {
+  return {
+    provider: "github",
+    owner: repository.owner,
+    repo: repository.repo,
+    releaseType: updateChannel === "nightly" ? "prerelease" : "release",
+    ...(updateChannel === "nightly" ? { channel: "nightly" as const } : {}),
+  };
+}
+
 export const resolveGitHubPublishConfig = Effect.fn("resolveGitHubPublishConfig")(function* (
   updateChannel: "latest" | "nightly",
   variant: DesktopBuildVariant = "official",
@@ -2713,13 +2729,7 @@ export const resolveGitHubPublishConfig = Effect.fn("resolveGitHubPublishConfig"
   const [owner, repo, ...rest] = rawRepo.split("/");
   if (!owner || !repo || rest.length > 0) return undefined;
 
-  return {
-    provider: "github",
-    owner,
-    repo,
-    releaseType: updateChannel === "nightly" ? "prerelease" : "release",
-    ...(updateChannel === "nightly" ? { channel: "nightly" as const } : {}),
-  };
+  return githubPublishConfig({ owner, repo }, updateChannel);
 });
 
 export function resolveDesktopUpdateChannel(version: string): "latest" | "nightly" {
@@ -2783,8 +2793,8 @@ export function resolveDesktopProductName(
 ): string {
   if (variant === "fork") return FORK_DESKTOP_BUILD.productName;
   return resolveDesktopUpdateChannel(version) === "nightly"
-    ? "T3 Code (Nightly)"
-    : (desktopPackageJson.productName ?? "T3 Code");
+    ? "T3 Code ++ (Nightly)"
+    : (desktopPackageJson.productName ?? "T3 Code ++");
 }
 
 export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
@@ -2837,7 +2847,8 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   const updateChannel = resolveDesktopUpdateChannel(version);
   // Missing publish config infers a GitHub feed from tokens; staging has no repository, so manifest generation would crash.
   buildConfig.publish = null;
-  if (!isDesktopPreviewVersion(version)) {
+  // Unsigned mac builds ship no updater feed (see release.yml); electron-updater would fail its signature check.
+  if (!isDesktopPreviewVersion(version) && (platform !== "mac" || signed)) {
     const publishConfig = yield* resolveGitHubPublishConfig(updateChannel, variant);
     if (publishConfig) {
       buildConfig.publish = [publishConfig];
@@ -2848,6 +2859,8 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
           url: resolveMockUpdateServerUrl(mockUpdateServerPort),
         },
       ];
+    } else {
+      buildConfig.publish = [githubPublishConfig(DEFAULT_UPDATE_REPOSITORY, updateChannel)];
     }
   }
 
@@ -2882,8 +2895,8 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       },
       protocols: [
         {
-          name: "T3 Code",
-          schemes: ["t3code", "t3code-dev"],
+          name: "T3 Code ++",
+          schemes: ["t3codeplusplus", "t3codeplusplus-dev"],
         },
         {
           name: "Web site URL",
@@ -2928,28 +2941,34 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     buildConfig.afterPack = path.join(repoRoot, "scripts/linux-after-pack.ts");
     buildConfig.linux = {
       target: target === "AppImage" ? [target, "deb"] : [target],
-      executableName: "t3code",
+      // Distinct binary, icon, and MIME names let this package install beside the stock T3 Code one
+      // without file or protocol conflicts. Both still share Chromium userData and ~/.t3 server
+      // state, so do not run them at the same time.
+      executableName: "t3codeplusplus",
       icon: "icons",
       category: "Development",
       synopsis: "Desktop GUI for coding agents",
       maintainer: "T3 Tools <hello@t3.codes>",
+      // Writes x-scheme-handler MimeType entries into the desktop entry of every target, including the AppImage.
       protocols: [
         {
-          name: "T3 Code",
-          schemes: ["t3code", "t3code-dev"],
+          name: "T3 Code ++",
+          schemes: ["t3codeplusplus", "t3codeplusplus-dev"],
         },
       ],
       desktop: {
         entry: {
-          StartupWMClass: "t3code",
+          StartupWMClass: "t3codeplusplus",
         },
       },
     };
     buildConfig.deb = {
+      // Distinct dpkg name so `apt install` cannot replace the stock T3 Code package.
+      packageName: "t3codeplusplus",
       // FPM runs outside the staged app directory, so source paths must be absolute.
       fpm: [
-        `${path.join(repoRoot, "apps/desktop/resources/linux/com.t3tools.t3code.metainfo.xml")}=/usr/share/metainfo/com.t3tools.t3code.metainfo.xml`,
-        `${path.join(repoRoot, "LICENSE")}=/usr/share/doc/t3code/copyright`,
+        `${path.join(repoRoot, "apps/desktop/resources/linux/com.t3tools.t3code.plusplus.metainfo.xml")}=/usr/share/metainfo/com.t3tools.t3code.plusplus.metainfo.xml`,
+        `${path.join(repoRoot, "LICENSE")}=/usr/share/doc/t3codeplusplus/copyright`,
       ],
       // Debian 13 and Ubuntu 24.04 use 64-bit-time names; retain old-name fallbacks.
       depends: [

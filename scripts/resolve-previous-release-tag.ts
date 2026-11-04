@@ -89,6 +89,8 @@ interface StableVersion {
   readonly minor: number;
   readonly patch: number;
   readonly prerelease: ReadonlyArray<string>;
+  /** The N of a `vX.Y.Z-plusplus.N` fork release; the upstream base tag itself counts as revision 0. */
+  readonly plusPlusRevision: number | undefined;
 }
 
 interface NightlyVersion {
@@ -118,16 +120,27 @@ const comparePrereleaseIdentifiers = (left: string, right: string): number => {
   return left.localeCompare(right);
 };
 
+// On one upstream base, `vX.Y.Z-plusplus.N` releases supersede the plain
+// `vX.Y.Z` base tag (they are later releases of it, not semver prereleases of
+// it), and a higher ++ revision supersedes a lower one. Other prerelease
+// suffixes keep semver's below-plain ordering.
+const stableRevisionRank = (version: StableVersion): number => {
+  if (version.plusPlusRevision !== undefined) return 2;
+  return version.prerelease.length > 0 ? 0 : 1;
+};
+
 const compareStableVersions = (left: StableVersion, right: StableVersion): number => {
   if (left.major !== right.major) return left.major - right.major;
   if (left.minor !== right.minor) return left.minor - right.minor;
   if (left.patch !== right.patch) return left.patch - right.patch;
 
-  const leftHasPrerelease = left.prerelease.length > 0;
-  const rightHasPrerelease = right.prerelease.length > 0;
-  if (!leftHasPrerelease && !rightHasPrerelease) return 0;
-  if (!leftHasPrerelease) return 1;
-  if (!rightHasPrerelease) return -1;
+  const leftRank = stableRevisionRank(left);
+  const rightRank = stableRevisionRank(right);
+  if (leftRank !== rightRank) return leftRank - rightRank;
+  if (leftRank === 2) {
+    return (left.plusPlusRevision ?? 0) - (right.plusPlusRevision ?? 0);
+  }
+  if (leftRank === 1) return 0;
 
   const maxLength = Math.max(left.prerelease.length, right.prerelease.length);
   for (let index = 0; index < maxLength; index += 1) {
@@ -143,6 +156,8 @@ const compareStableVersions = (left: StableVersion, right: StableVersion): numbe
   return 0;
 };
 
+const PLUSPLUS_PRERELEASE = /^plusplus\.(\d+)$/;
+
 const parseStableTag = (tag: string): StableVersion | undefined => {
   const match = /^v(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/.exec(tag);
   if (!match) return undefined;
@@ -155,11 +170,13 @@ const parseStableTag = (tag: string): StableVersion | undefined => {
     return undefined;
   }
 
+  const plusPlusRevision = PLUSPLUS_PRERELEASE.exec(prerelease ?? "")?.[1];
   return {
     major: Number(major),
     minor: Number(minor),
     patch: Number(patch),
     prerelease: prereleaseIdentifiers,
+    plusPlusRevision: plusPlusRevision === undefined ? undefined : Number(plusPlusRevision),
   };
 };
 

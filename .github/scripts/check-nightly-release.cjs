@@ -79,7 +79,12 @@ async function shouldReleaseNightly({ github, context, core, now = Date.now() })
   return true;
 }
 
-async function resolveLatestNightlyCommit({ github, context, core }) {
+async function resolveStableCommit({ github, context, core, explicitVersion }) {
+  if (explicitVersion) {
+    core.info(`Explicit stable version ${explicitVersion} builds the dispatched commit.`);
+    return { sha: context.sha };
+  }
+
   const lastNightly = await findLatestNightly({ github, context });
   if (!lastNightly) {
     throw new Error("No published nightly found. Stable releases build the latest nightly commit.");
@@ -100,5 +105,6 @@ module.exports = {
   assertCommitOnDefaultBranch,
   assertReleaseSource,
   shouldReleaseNightly,
-  resolveLatestNightlyCommit,
+  resolveStableCommit,
+  resolveLatestNightlyCommit: resolveStableCommit,
 };
