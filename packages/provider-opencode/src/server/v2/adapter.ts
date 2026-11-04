@@ -2171,8 +2171,8 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
           return yield* endExecution(state, turn, { status: "interrupted" });
         case "session.execution.failed": {
           const { type, message, status, response } = event.data.error;
-          // OpenCode types an empty balance as provider.quota too, but it answers
-          // that with HTTP 402 and it never resets. Usage windows and budgets are 429.
+          // An empty balance is also provider.quota, but it answers HTTP 402 and never resets;
+          // usage windows and budgets answer 429.
           const claudeLimit = claudeUsageLimit(message);
           const usageLimit =
             (type === "provider.quota" && status !== 402) ||

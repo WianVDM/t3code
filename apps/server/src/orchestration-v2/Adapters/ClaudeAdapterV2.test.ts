@@ -125,8 +125,7 @@ beforeEach(() => {
 
 const DEFAULT_CLAUDE_SETTINGS = Schema.decodeSync(ClaudeSettings)({});
 
-// ProviderHost is required to construct the adapter; the bridge stays off
-// under default settings.
+// Construction needs ProviderHost; default settings keep the bridge off.
 const layerTestProviderHost = TestProviderHost.layer().pipe(Layer.provide(NodeServices.layer));
 
 // Windows separators are escaped inside serialized payloads; match the escaped form.
@@ -4866,10 +4865,9 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       });
       yield* harness.runtime.startTurn(input);
 
-      // The last text block is the dispatch. Starting it with /voice runs
-      // Claude Code's built-in voice command instead of the discovered skill,
-      // and headless sessions answer unavailable_headless, so the fallback
-      // points the agent at the real SKILL.md path instead.
+      // A dispatch starting with /voice hits Claude Code's built-in command instead of
+      // the discovered skill, and headless sessions answer unavailable_headless, so the
+      // fallback names the real SKILL.md path.
       assert.deepEqual(harness.offeredMessages[0]?.message.content, [
         { type: "text", text: "Ultrathink:\n/voice read me the summary" },
         {
@@ -9348,9 +9346,8 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         const now = yield* DateTime.now;
         const resumedStartedAt = "2020-01-01T00:00:00.000Z";
 
-        // A fresh adapter process resuming a thread receives the persisted roster on the
-        // provider thread; its start stamps are the only timing the session can truthfully
-        // report.
+        // A resumed thread's persisted roster is the only start timing the session can
+        // truthfully report.
         yield* harness.runtime.startTurn(
           makeClaudeTestTurnInput({
             threadId: harness.threadId,
@@ -9384,8 +9381,8 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           ?.providerThread.pendingBackgroundTasks?.find((task) => task.taskId === WAKE_TASK_ID);
         assert.equal(replayed?.startedAt, resumedStartedAt);
 
-        // A snapshot keeps the known task's stamp and leaves a task this session never saw
-        // start — one the resumed CLI already ran — unknown.
+        // A snapshot keeps the known task's stamp, and a task only the resumed CLI saw
+        // started stays unknown.
         yield* Queue.offer(
           harness.sdkMessages,
           claudeSdkFrame({
@@ -9442,8 +9439,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         const harness = yield* makeWakeHarness;
         const now = yield* DateTime.now;
 
-        // A fresh adapter process resuming a thread whose persisted roster names a task
-        // that never had a start stamp: the task is known, its start is not.
+        // A resumed roster names a task that never had a start stamp: known, untimed.
         yield* harness.runtime.startTurn(
           makeClaudeTestTurnInput({
             threadId: harness.threadId,
@@ -9503,8 +9499,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           const now = yield* DateTime.now;
           const evictedTaskId = "evicted-task-0";
           const evictedStartedAt = "2020-06-01T00:00:00.000Z";
-          // More tasks than the bounded wake-naming cache holds, so the oldest stamp is
-          // evicted from it on seed.
+          // More tasks than the wake-naming cache holds, so seeding evicts the oldest stamp.
           const persistedTasks = [
             {
               taskId: evictedTaskId,
@@ -9534,8 +9529,8 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             }),
           );
 
-          // The roster moves on without the evicted task, so the persisted roster drops
-          // it too; only the reset-time identity snapshot still knows its stamp.
+          // The roster drops the evicted task; only the reset-time identity snapshot keeps
+          // its stamp.
           yield* Queue.offer(
             harness.sdkMessages,
             claudeSdkFrame({
@@ -9614,8 +9609,8 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         const sourceStartedAt = "2020-03-01T00:00:00.000Z";
         const forkedStartedAt = "2020-04-01T00:00:00.000Z";
         const harness = yield* makeWakeHarnessWithOptions({
-          // Forking replaces the live query; each process gets its own queue so the
-          // closing process's stream stops draining frames meant for the new one.
+          // Forking replaces the live query, so each process gets its own queue and the
+          // closing stream cannot drain frames meant for the new one.
           close: (sdkMessages) => Queue.shutdown(sdkMessages),
           freshQueueOnReopen: true,
           forkSession: () => Effect.succeed({ sessionId: forkedNativeSession }),
@@ -9673,8 +9668,8 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           }),
         );
 
-        // A replayed task_started on the forked native thread keeps its own persisted
-        // stamp instead of inheriting the source thread's.
+        // A replayed task_started keeps the fork's own persisted stamp, not the source
+        // thread's.
         yield* harness.offerAndWait(
           claudeSdkFrame({
             type: "system",

@@ -2165,7 +2165,7 @@ describe("AcpAdapterV2", () => {
       });
 
       const hostSettings = yield* TestProviderHost.TestProviderHostSettings;
-      // Disabled by default: the prompt carries no bridged block.
+      // Default settings leave the route off.
       const nativePrompt = yield* runTurn(0, "Native request.");
       assert.notInclude(nativePrompt, "<!-- t3-context-bridge -->");
       assert.include(nativePrompt, "<runtime_info>");
@@ -2203,9 +2203,8 @@ describe("AcpAdapterV2", () => {
       yield* fileSystem.makeDirectory(cwd, { recursive: true });
       yield* fileSystem.writeFileString(NodePath.join(cwd, "CLAUDE.md"), "bridged acp rules");
 
-      // Construct with real ProviderHostLive, then run turns without
-      // ProviderHost ambient — the shape that made the bridge silently
-      // no-op when settings were read via Effect.serviceOption at turn time.
+      // Real ProviderHostLive at construction, no ambient ProviderHost during turns: the
+      // shape that made turn-time Effect.serviceOption reads a silent no-op.
       const layerBridgeHost = ProviderHostLive.layer.pipe(
         Layer.provideMerge(ServerSecretStore.layer),
         Layer.provideMerge(
@@ -2289,8 +2288,8 @@ describe("AcpAdapterV2", () => {
       assert.include(bridgedPrompt, 'source="claudeAgent" target="antigravity"');
       assert.include(bridgedPrompt, "bridged acp rules");
     }).pipe(
-      // No ProviderHost here on purpose: turn-time effects must use the host
-      // captured at construction.
+      // No ProviderHost here on purpose: turn-time effects must use the
+      // construction-time host.
       Effect.provide(
         Layer.mergeAll(
           NodeServices.layer,

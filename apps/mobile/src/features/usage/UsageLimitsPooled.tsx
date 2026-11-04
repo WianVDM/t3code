@@ -72,7 +72,7 @@ function AccountChip({ email }: { readonly email: string }) {
   );
 }
 
-// Same gap-and-tick as the Limits rows: two clipped copies of the segment leave a see-through gap.
+// Two clipped copies of the segment leave the same see-through gap-and-tick as the Limits rows.
 function PaceGap({
   timeLeft,
   children,
@@ -142,7 +142,7 @@ function AccountSegment({
       }}
     >
       {size.width > 0 && size.height > 0 ? (
-        // Numeric canvas dimensions clear Android SVG geometry cached before a segment resized.
+        // Numeric dimensions clear Android's SVG geometry cached from before the segment resized.
         <Svg width={size.width} height={size.height} accessible={false}>
           <Defs>
             <Pattern id={patternId} width={6} height={6} patternUnits="userSpaceOnUse">
@@ -415,7 +415,7 @@ function hasDisplayableLimits(pool: LimitPool) {
 function PoolMonetaryAccounts({ pool }: { readonly pool: LimitPool }) {
   const rows = pool.accounts.flatMap((account) => {
     const text = monetaryUsageText(account.limits.monetaryUsage);
-    return text ? [{ account, text }] : [];
+    return text !== null ? [{ account, text }] : [];
   });
   if (rows.length === 0) return null;
   return (

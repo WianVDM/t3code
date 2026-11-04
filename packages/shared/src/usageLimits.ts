@@ -150,6 +150,13 @@ function providersWithLimits(providers: readonly ServerProvider[]): readonly Ser
   );
 }
 
+interface ExternalUsageLink {
+  readonly label: string;
+  readonly url: string;
+  readonly message: string | undefined;
+  readonly accounts: readonly string[];
+}
+
 export type LimitPresentations = ReadonlyMap<
   EnvironmentId,
   {
@@ -162,15 +169,7 @@ export type LimitPresentations = ReadonlyMap<
 >;
 
 export function collectExternalUsageLinks(presentations: LimitPresentations) {
-  const links = new Map<
-    string,
-    {
-      readonly label: string;
-      readonly url: string;
-      readonly message: string | undefined;
-      readonly accounts: readonly string[];
-    }
-  >();
+  const links = new Map<string, ExternalUsageLink>();
   const add = (
     external: { readonly label: string; readonly url: string } | undefined,
     message: string | undefined,
@@ -193,9 +192,9 @@ export function collectExternalUsageLinks(presentations: LimitPresentations) {
         provider.usageLimits?.unavailable?.message,
         `${name} on ${on}`,
       );
-      // Upstream accounts (e.g. OpenRouter) hang the same destination off each account entry.
+      // Upstream accounts (e.g. OpenRouter) repeat the same destination on every entry.
       for (const account of provider.usageAccounts ?? []) {
-        const accountName = account.email?.trim() || account.id.replace(/\.json$/i, "");
+        const accountName = account.email?.trim() || accountIdLabel(account.id);
         add(
           account.usageLimits.externalUsage,
           account.usageLimits.unavailable?.message,
@@ -205,6 +204,15 @@ export function collectExternalUsageLinks(presentations: LimitPresentations) {
     }
   }
   return [...links.values()];
+}
+
+// Upstream account ids are credential file names, so the `.json` suffix is not part of the name.
+function accountIdLabel(id: string): string {
+  return id.replace(/\.json$/i, "");
+}
+
+function isFresherRead(next: string, previous: string): boolean {
+  return Date.parse(next) > Date.parse(previous);
 }
 
 function accountKey(
@@ -276,38 +284,29 @@ export function collectLimitAccounts(presentations: LimitPresentations): readonl
   const creditSources = new Map<string, LimitAccount>();
   const hubRedeems = new Map<string, LimitAccount>();
   const planSources = new Map<string, LimitAccount>();
+  const preferFreshest = (
+    tracked: Map<string, LimitAccount>,
+    key: string,
+    candidate: LimitAccount | null,
+  ) => {
+    if (!candidate) return;
+    const previous = tracked.get(key);
+    if (!previous || isFresherRead(candidate.limits.checkedAt, previous.limits.checkedAt)) {
+      tracked.set(key, candidate);
+    }
+  };
   const merge = (key: string, next: LimitAccount) => {
-    // Prefer hub redemption to clear its routing cooldown too; displayed balance still follows the freshest read.
-    const previousHub = hubRedeems.get(key);
-    if (
-      next.redeem &&
-      "sourceId" in next.redeem.input &&
-      (!previousHub || Date.parse(next.limits.checkedAt) > Date.parse(previousHub.limits.checkedAt))
-    ) {
-      hubRedeems.set(key, next);
-    }
-    const previousCredit = creditSources.get(key);
-    if (
-      next.limits.resetCredits &&
-      (!previousCredit ||
-        Date.parse(next.limits.checkedAt) > Date.parse(previousCredit.limits.checkedAt))
-    ) {
-      creditSources.set(key, next);
-    }
-    const previousPlan = planSources.get(key);
-    if (
-      next.plan &&
-      (!previousPlan ||
-        Date.parse(next.limits.checkedAt) > Date.parse(previousPlan.limits.checkedAt))
-    ) {
-      planSources.set(key, next);
-    }
+    // Prefer hub redemption: it also clears the routing cooldown.
+    // The displayed balance still follows the freshest read.
+    preferFreshest(hubRedeems, key, next.redeem && "sourceId" in next.redeem.input ? next : null);
+    preferFreshest(creditSources, key, next.limits.resetCredits ? next : null);
+    preferFreshest(planSources, key, next.plan ? next : null);
     const previous = accounts.get(key);
     if (!previous) {
       accounts.set(key, next);
       return;
     }
-    const fresher = Date.parse(next.limits.checkedAt) > Date.parse(previous.limits.checkedAt);
+    const fresher = isFresherRead(next.limits.checkedAt, previous.limits.checkedAt);
     const environments = [
       ...previous.environments,
       ...next.environments.filter(
@@ -366,7 +365,7 @@ export function collectLimitAccounts(presentations: LimitPresentations): readonl
         merge(resolveKey(account) ?? key, {
           key,
           driver: account.driver,
-          displayName: account.email ? null : account.id.replace(/\.json$/i, ""),
+          displayName: account.email ? null : accountIdLabel(account.id),
           email: account.email,
           plan: account.plan,
           accentColor: provider.accentColor,
@@ -390,7 +389,7 @@ export function collectLimitAccounts(presentations: LimitPresentations): readonl
         merge(resolveKey(account) ?? key, {
           key,
           driver: account.driver,
-          displayName: account.email ? null : account.id.replace(/\.json$/i, ""),
+          displayName: account.email ? null : accountIdLabel(account.id),
           email: account.email,
           plan: account.plan,
           accentColor: undefined,
@@ -426,12 +425,12 @@ export function collectLimitNotices(presentations: LimitPresentations): readonly
         const notice = limitsNotice(provider.usageLimits);
         if (notice) notices.add(`${label(environmentLabel, name)}: ${notice}`);
       }
-      // A failed upstream account is skipped from the account list, so its notice is its only report.
+      // A failed upstream account is dropped from the account list, so a notice is its only report.
       for (const account of provider.usageAccounts ?? []) {
         if (account.usageLimits.unavailable?.reason === "unsupported") continue;
         const notice = limitsNotice(account.usageLimits);
         if (!notice) continue;
-        const accountName = account.email?.trim() || account.id.replace(/\.json$/i, "");
+        const accountName = account.email?.trim() || accountIdLabel(account.id);
         notices.add(`${label(environmentLabel, `${name} · ${accountName}`)}: ${notice}`);
       }
     }
@@ -563,7 +562,7 @@ function poolMember(account: LimitAccount, reported: ServerProviderUsageWindow, 
   const cutoff = Math.max(now, Date.parse(account.limits.checkedAt));
   let resetsAt: string | undefined;
   let refillPercent = 0;
-  // A stale or missing clock cannot tell us when blocked quota becomes usable.
+  // A stale or missing clock cannot say when blocked quota becomes usable.
   if (
     weeklyReset !== null &&
     sessionReset !== null &&
@@ -817,12 +816,11 @@ export function collectProviderUsageLimits(
       !previous ||
       (usable && !previousUsable) ||
       (usable === previousUsable &&
-        Date.parse(snapshot.limits.checkedAt) > Date.parse(previous.usage.limits.checkedAt));
+        isFresherRead(snapshot.limits.checkedAt, previous.usage.limits.checkedAt));
     const previousCredit = previous?.credits;
     const credits =
       snapshot.limits.resetCredits &&
-      (!previousCredit ||
-        Date.parse(snapshot.limits.checkedAt) > Date.parse(previousCredit.limits.checkedAt))
+      (!previousCredit || isFresherRead(snapshot.limits.checkedAt, previousCredit.limits.checkedAt))
         ? snapshot
         : (previousCredit ?? null);
     nativeByAccount.set(key, {
@@ -861,8 +859,7 @@ export function collectProviderUsageLimits(
     const showHubCredits =
       hubCredits &&
       (!credits ||
-        Date.parse(hubCredits.account.usageLimits.checkedAt) >
-          Date.parse(credits.limits.checkedAt));
+        isFresherRead(hubCredits.account.usageLimits.checkedAt, credits.limits.checkedAt));
     const shownCredits = showHubCredits
       ? hubCredits.account.usageLimits.resetCredits
       : credits?.limits.resetCredits;

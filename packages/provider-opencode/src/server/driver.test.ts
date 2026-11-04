@@ -286,7 +286,7 @@ it.layer(layer)("OpenCodeDriver runtime selection", (it) => {
           Deferred.await(releaseResponse).pipe(Effect.andThen(server.execute(request))),
         ),
       );
-      // Wait for startup and its maintenance enrichment, both of which probe.
+      // Startup and its maintenance enrichment both probe.
       const rejected = yield* instance.snapshot.streamChanges.pipe(
         Stream.filter(
           (snapshot) => snapshot.status === "error" && snapshot.versionAdvisory !== undefined,

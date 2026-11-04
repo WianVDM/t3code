@@ -81,6 +81,8 @@ function unavailableAccount(
   };
 }
 
+const PROBE_CONCURRENCY = 4;
+
 export const probeUpstreamUsage = Effect.fn("probeUpstreamUsage")(function* <R>(input: {
   readonly driver: ProviderDriverKind;
   readonly credentials: ReadonlyArray<StoredUpstreamCredential>;
@@ -102,22 +104,23 @@ export const probeUpstreamUsage = Effect.fn("probeUpstreamUsage")(function* <R>(
           return Effect.succeed(unavailableAccount(context, "unsupported"));
         }
         return reader(context).pipe(
-          Effect.catchCause((cause) =>
-            Cause.hasInterrupts(cause)
-              ? Effect.failCause(
-                  Cause.fromReasons<never>(cause.reasons.filter(Cause.isInterruptReason)),
-                )
-              : Effect.succeed(
-                  unavailableAccount(
-                    context,
-                    "probeFailed",
-                    `${credential.providerId} could not read usage.`,
-                  ),
-                ),
-          ),
+          Effect.catchCause((cause) => {
+            const interruptionReasons = cause.reasons.filter(Cause.isInterruptReason);
+            // Cancellation is not a failed read, so it surfaces instead of a probeFailed account.
+            if (interruptionReasons.length > 0) {
+              return Effect.failCause(Cause.fromReasons<never>(interruptionReasons));
+            }
+            return Effect.succeed(
+              unavailableAccount(
+                context,
+                "probeFailed",
+                `${credential.providerId} could not read usage.`,
+              ),
+            );
+          }),
         );
       }),
     // One stalled reader must not serialize the rest behind its timeout.
-    { concurrency: 4 },
+    { concurrency: PROBE_CONCURRENCY },
   );
 });

@@ -1,4 +1,4 @@
-// User-wide ~/.pi/agent state makes continuation identity use default instance grouping.
+// Pi keeps state in user-wide ~/.pi/agent, so continuation identity uses default instance grouping.
 import { ProviderDriverKind, type ServerProvider } from "@t3tools/contracts";
 import { PiSettings } from "../settings.ts";
 import * as Effect from "effect/Effect";
@@ -187,7 +187,7 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv, Path.Path> = {
       agentDir ? expandHomePath(agentDir, home) : pathService.join(home, ".pi", "agent"),
       "auth.json",
     );
-    const upstreamUsageAccounts = discoverUpstreamCredentials(upstreamAuthPath).pipe(
+    const readUpstreamUsageAccounts = discoverUpstreamCredentials(upstreamAuthPath).pipe(
       // A malformed or unreadable auth file must not affect provider health.
       Effect.orElseSucceed((): StoredUpstreamCredential[] => []),
       Effect.flatMap((credentials) =>
@@ -211,7 +211,7 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv, Path.Path> = {
           }
           const [{ usageLimits }, usageAccounts] = yield* Effect.all([
             readKimiCodeAccount(processEnv),
-            upstreamUsageAccounts,
+            readUpstreamUsageAccounts,
           ]);
           return {
             ...draft,

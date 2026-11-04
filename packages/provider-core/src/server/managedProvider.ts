@@ -173,23 +173,23 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
             });
         const workspaceId =
           usageLimits === probedSnapshot.usageLimits ? undefined : state.snapshot.auth.workspaceId;
-        // Drivers fold auth-file read failures into empty account lists, so an empty
-        // probe means "no fresh data", not "cleared" (as in applyUsageLimitsUpdate).
-        // Sign-out, uninstall, and account switches still drop the retained accounts.
+        const probedAccountCount = probedSnapshot.usageAccounts?.length ?? 0;
+        // Drivers fold auth-file read failures into empty account lists, so empty means no
+        // fresh data; sign-out, uninstall, and account switches still drop the accounts.
         const retainedAccounts =
           !switchedAccount &&
           probedSnapshot.installed &&
           probedSnapshot.auth.status === "authenticated" &&
-          !probedSnapshot.usageAccounts?.length &&
-          state.snapshot.usageAccounts?.length
+          probedAccountCount === 0 &&
+          (state.snapshot.usageAccounts?.length ?? 0) > 0
             ? state.snapshot.usageAccounts
             : undefined;
-        const based =
+        const withWorkspace =
           workspaceId && !probedSnapshot.auth.workspaceId
             ? { ...probedSnapshot, auth: { ...probedSnapshot.auth, workspaceId } }
             : probedSnapshot;
         const snapshot = withUsageLimits(
-          retainedAccounts ? { ...based, usageAccounts: retainedAccounts } : based,
+          retainedAccounts ? { ...withWorkspace, usageAccounts: retainedAccounts } : withWorkspace,
           usageLimits,
         );
         return [
@@ -298,8 +298,7 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
 
   const shouldRefreshOnInterval = Effect.gen(function* () {
     const state = yield* Ref.get(snapshotStateRef);
-    // A disabled instance has nothing to probe; a periodic check would only
-    // republish a snapshot that differs in checkedAt.
+    // A disabled instance has nothing to probe, and a check only republishes a differing checkedAt.
     if (
       !state.snapshot.enabled ||
       (!needsUsageRecovery(state.snapshot) && !needsProviderRefresh(state.snapshot))

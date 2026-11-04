@@ -255,9 +255,8 @@ function SegmentPopover({
 }
 
 /**
- * Every segment on the page shares one popover, so hovering or clicking another
- * segment moves it instead of opening a second one. The payload is the segment
- * it currently describes.
+ * One popover is shared by every segment, so hovering another segment moves it
+ * rather than opening a second one. The payload names the segment it describes.
  */
 type SegmentPayload = Omit<Parameters<typeof SegmentPopover>[0], "now" | "onRedeem">;
 const SegmentPopoverContext = createContext<ReturnType<
@@ -288,9 +287,9 @@ function ActiveSegmentPopover({
       ),
     ),
   );
-  // The trigger is gone, so the popup has nothing to anchor to: an exit transition would
-  // slide it to the viewport origin. Unmount it outright, which also clears Base UI's
-  // active-trigger bookkeeping so the segment can open again when it comes back.
+  // The trigger is gone, so an exit transition would slide the popup to the viewport
+  // origin. Unmounting it also clears Base UI's active-trigger bookkeeping, so the
+  // segment can open again when it returns.
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- closes the popover handle and unmounts the Base UI popup before paint when its trigger is gone
   useLayoutEffect(() => {
     if (available) return;
@@ -351,7 +350,7 @@ function RedeemableSegment({
         onConfirm={() => void redeem.redeem()}
         disabled={!redeem.canManageProviders}
       />
-      {/* The popover closed before the confirm, so progress and the outcome need a home outside it. */}
+      {/* The popover closes before the confirm, so progress and outcome live here. */}
       {redeem.busy || redeem.status ? (
         <span role="status" className="col-span-full text-xs text-muted-foreground">
           <AccountName account={props.account} className="font-medium text-foreground" />{" "}
@@ -403,7 +402,7 @@ function SegmentTriggers({
         }
       >
         <div aria-hidden className="absolute inset-0 overflow-hidden rounded-md">
-          {/* Clipped inside the rounded clip so the bar's own corners keep their antialiasing. */}
+          {/* Inside the rounded clip so the bar's corners keep their antialiasing. */}
           <div className="absolute inset-0" style={paceMark?.gap}>
             <div
               aria-hidden

@@ -126,7 +126,15 @@ const makePiSpawner = Effect.fnUntraced(function* (
   return { spawner, launches, pendingCommand };
 });
 
-const create = (config: Partial<PiSettings> = {}, enabled = true, agentDir = "/isolated-pi") =>
+const create = ({
+  config = {},
+  enabled = true,
+  agentDir = "/isolated-pi",
+}: {
+  config?: Partial<PiSettings>;
+  enabled?: boolean;
+  agentDir?: string | undefined;
+} = {}) =>
   PiDriver.create({
     instanceId: ProviderInstanceId.make("pi-workspace-test"),
     displayName: "My Pi",
@@ -140,9 +148,9 @@ it.layer(layerTest)("PiDriver workspace discovery", (it) => {
   it.effect("keeps each workspace's skills and commands separate from the machine catalog", () =>
     Effect.gen(function* () {
       const { spawner, launches } = yield* makePiSpawner();
-      const instance = yield* create({ launchArgs: '--approve --skill "extra skill"' }).pipe(
-        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-      );
+      const instance = yield* create({
+        config: { launchArgs: '--approve --skill "extra skill"' },
+      }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner));
       yield* instance.snapshot.refresh;
       assert.isDefined(instance.snapshotForCwd);
       const [first, second] = yield* Effect.all(
@@ -187,7 +195,7 @@ it.layer(layerTest)("PiDriver workspace discovery", (it) => {
 
   it.effect("does not run a disabled provider's workspace probe", () =>
     Effect.gen(function* () {
-      const instance = yield* create({}, false).pipe(
+      const instance = yield* create({ enabled: false }).pipe(
         Effect.provideService(
           ChildProcessSpawner.ChildProcessSpawner,
           ChildProcessSpawner.make(() => Effect.die("Disabled Pi must not spawn")),
@@ -273,7 +281,7 @@ it.layer(layerTest)("PiDriver workspace discovery", (it) => {
         return Effect.die(`Unexpected HTTP ${request.url}`);
       });
       const { spawner } = yield* makePiSpawner();
-      const instance = yield* create({}, true, agentDir).pipe(
+      const instance = yield* create({ agentDir }).pipe(
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
         Effect.provideService(HttpClient.HttpClient, httpClient),
       );
@@ -354,7 +362,7 @@ it.layer(layerTest)("PiDriver bridged skills", (it) => {
     const userHome = yield* fileSystem.makeTempDirectoryScoped({ prefix: "pi-bridge-home-" });
     const workspaceCwd = yield* fileSystem.makeTempDirectoryScoped({ prefix: "pi-bridge-ws-" });
     const { spawner, launches } = yield* makePiSpawner({}, [workspaceCwd]);
-    const instance = yield* create({}, true, agentDir ?? "/isolated-pi").pipe(
+    const instance = yield* create({ agentDir }).pipe(
       Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
     );
     return { settingsControl, userHome, workspaceCwd, launches, instance };

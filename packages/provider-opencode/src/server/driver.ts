@@ -92,15 +92,17 @@ const readKimiUsage = (context: UpstreamUsageReaderContext) =>
     checkedAt: context.checkedAt,
   });
 
+const readOpenRouterUsage = (context: UpstreamUsageReaderContext) =>
+  readOpenRouterUsageAccount({
+    driver: context.driver,
+    credential: { provider: context.credential.providerId, key: context.credential.secret ?? "" },
+    checkedAt: context.checkedAt,
+  });
+
 const upstreamUsageReaders = {
   kimi: readKimiUsage,
   "kimi-coding": readKimiUsage,
-  openrouter: (context: UpstreamUsageReaderContext) =>
-    readOpenRouterUsageAccount({
-      driver: context.driver,
-      credential: { provider: context.credential.providerId, key: context.credential.secret ?? "" },
-      checkedAt: context.checkedAt,
-    }),
+  openrouter: readOpenRouterUsage,
 };
 
 const readUpstreamUsageAccounts = Effect.fn("readUpstreamUsageAccounts")(function* (input: {
@@ -110,21 +112,17 @@ const readUpstreamUsageAccounts = Effect.fn("readUpstreamUsageAccounts")(functio
   readonly serverUrl: string;
   readonly environment: NodeJS.ProcessEnv;
 }) {
+  const usesExternalServer = input.serverUrl.trim().length > 0;
   // External servers own their credentials; an uninstalled or signed-out CLI has none to probe.
-  if (!input.enabled || !input.installed || !input.authenticated || input.serverUrl.trim()) {
+  if (!input.enabled || !input.installed || !input.authenticated || usesExternalServer) {
     return [];
   }
   // A malformed or unreadable auth file must not break provider status.
   return yield* Effect.gen(function* () {
     const path = yield* Path.Path;
     const env = input.environment;
-    const dataHome =
-      env.XDG_DATA_HOME ||
-      path.join(
-        env.HOME || env.USERPROFILE || (yield* HostProcess.HomeDirectory),
-        ".local",
-        "share",
-      );
+    const home = env.HOME || env.USERPROFILE || (yield* HostProcess.HomeDirectory);
+    const dataHome = env.XDG_DATA_HOME || path.join(home, ".local", "share");
     const credentials = yield* discoverUpstreamCredentials(
       path.join(dataHome, "opencode", "auth.json"),
     );
@@ -438,12 +436,9 @@ export const OpenCodeDriver: ProviderDriver<
           Effect.map((usageAccounts) => ({ provider, usageLimits, usageAccounts })),
         ),
       ),
-      Effect.map(({ provider, usageLimits, usageAccounts }) => ({
-        ...provider,
-        usageLimits,
-        usageAccounts,
-      })),
-      Effect.map(stampIdentity),
+      Effect.map(({ provider, usageLimits, usageAccounts }) =>
+        stampIdentity({ ...provider, usageLimits, usageAccounts }),
+      ),
       Effect.provideService(OpenCodeServerOwner.OpenCodeServerOwner, serverOwner),
       Effect.provideService(OpenCodeRuntime.OpenCodeRuntime, openCodeRuntime),
     );
