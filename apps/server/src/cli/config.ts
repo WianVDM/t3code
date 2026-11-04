@@ -1,3 +1,4 @@
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NetService from "@t3tools/shared/Net";
 import {
   OtlpHeadersFromString,
@@ -26,6 +27,7 @@ import { readBootstrapEnvelope } from "../bootstrap.ts";
 import { resolveServiceLauncherMode } from "../cloud/serviceLauncherClient.ts";
 import * as ServerConfig from "../config.ts";
 import { expandHomePath, resolveBaseDir } from "../os-jank.ts";
+import { mergeOldForkDatabase } from "../persistence/importOldFork.ts";
 import { isProcessAlive, readPersistedServerRuntimeState } from "../serverRuntimeState.ts";
 
 const modeFlag = Flag.Literals("mode", ServerConfig.RuntimeMode.literals).pipe(
@@ -260,6 +262,28 @@ const loadPersistedObservabilitySettings = Effect.fn(function* (settingsPath: st
   return parsePersistedServerObservabilitySettings(raw);
 });
 
+// Only the default production home migrates: an explicit base dir, worktree state, or a dev
+// URL is a deliberate installation, and the marker keeps the merge to one attempt.
+const mergeOldForkHome = Effect.fn("config.mergeOldForkHome")(function* (baseDir: string) {
+  const path = yield* Path.Path;
+  const fs = yield* FileSystem.FileSystem;
+  const homeDirectory = yield* HostProcess.HomeDirectory;
+  if (baseDir !== path.join(homeDirectory, ".t3")) return;
+  const sourceHome = path.join(homeDirectory, ".t3-fork");
+  const markerPath = path.join(baseDir, "userdata", "old-fork-import-plus-plus-v1.json");
+  const sourceExists = yield* fs.exists(sourceHome).pipe(Effect.orElseSucceed(() => false));
+  const markerExists = yield* fs.exists(markerPath).pipe(Effect.orElseSucceed(() => false));
+  if (!sourceExists || markerExists) return;
+  yield* mergeOldForkDatabase({ sourceHome, destinationHome: baseDir, markerPath }).pipe(
+    Effect.catchTags({
+      OldForkImportError: (error) =>
+        Effect.logWarning("Old fork database merge failed; continuing startup.").pipe(
+          Effect.annotateLogs("cause", error.message),
+        ),
+    }),
+  );
+});
+
 export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(function* (
   flags: CliServerFlags,
   cliLogLevel: Option.Option<LogLevel.LogLevel>,
@@ -358,6 +382,9 @@ export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(funct
   }
   yield* fs.makeDirectory(cwd, { recursive: true });
   yield* ServerConfig.ensureServerDirectories(derivedPaths);
+  if (devUrl === undefined && Option.isNone(explicitBaseDir)) {
+    yield* mergeOldForkHome(baseDir);
+  }
   const persistedObservabilitySettings = yield* loadPersistedObservabilitySettings(
     derivedPaths.settingsPath,
   );

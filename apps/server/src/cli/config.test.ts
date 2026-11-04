@@ -5,10 +5,12 @@ import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 
 import { assert, expect, it } from "@effect/vitest";
+import { beforeEach, vi } from "vite-plus/test";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Redacted from "effect/Redacted";
@@ -31,7 +33,15 @@ import {
   SERVICE_LAUNCHER_PROTOCOL,
 } from "../cloud/serviceProtocol.ts";
 import { deriveServerPaths } from "../config.ts";
+import { OldForkImportError, type MergeOldForkInput } from "../persistence/importOldFork.ts";
 import { resolveServerConfig } from "./config.ts";
+
+const mergeOldForkDatabaseMock = vi.hoisted(() => vi.fn());
+
+vi.mock("../persistence/importOldFork.ts", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../persistence/importOldFork.ts")>();
+  return { ...actual, mergeOldForkDatabase: mergeOldForkDatabaseMock };
+});
 
 const deriveExplicitServerPaths = (baseDir: string, devUrl: URL | undefined) =>
   deriveServerPaths(baseDir, devUrl, { baseDirIsExplicit: true });
@@ -101,6 +111,11 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
     otelEnvironment: OtelEnvironment.none,
     devAllowedOrigins: [],
   } as const;
+
+  beforeEach(() => {
+    mergeOldForkDatabaseMock.mockReset();
+    mergeOldForkDatabaseMock.mockImplementation(() => Effect.void);
+  });
 
   const openBootstrapFd = Effect.fn(function* (payload: DesktopBackendBootstrapValue) {
     const fs = yield* FileSystem.FileSystem;
@@ -929,4 +944,197 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
       });
     }),
   );
+
+  type MinimalWebFlags = ReturnType<typeof minimalWebFlags>;
+
+  const seedOldForkSource = Effect.fn(function* (homeDir: string) {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const sourcePath = path.join(homeDir, ".t3-fork", "userdata", "statev2.sqlite");
+    yield* fs.makeDirectory(path.dirname(sourcePath), { recursive: true });
+    yield* fs.writeFileString(sourcePath, "old fork placeholder");
+    return sourcePath;
+  });
+
+  const writeOldForkMarker = Effect.fn(function* (homeDir: string) {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const markerPath = path.join(homeDir, ".t3", "userdata", "old-fork-import-plus-plus-v1.json");
+    yield* fs.makeDirectory(path.dirname(markerPath), { recursive: true });
+    yield* fs.writeFileString(markerPath, "{}\n");
+  });
+
+  const resolveForHome = (
+    homeDir: string,
+    input: {
+      readonly flags?: Partial<MinimalWebFlags>;
+      readonly env?: Record<string, string>;
+      readonly logger?: Logger.Logger<unknown, void>;
+    } = {},
+  ) => {
+    const baseLayers = Layer.mergeAll(
+      ConfigProvider.layer(ConfigProvider.fromEnv({ env: input.env ?? {} })),
+      NetService.layer,
+    );
+    return resolveServerConfig(
+      {
+        ...minimalWebFlags(NodeOS.tmpdir()),
+        baseDir: Option.none(),
+        ...input.flags,
+      },
+      Option.none(),
+    ).pipe(
+      Effect.provide(
+        input.logger
+          ? Layer.merge(baseLayers, Logger.layer([input.logger], { mergeWithExisting: false }))
+          : baseLayers,
+      ),
+      Effect.provideService(HostProcess.HomeDirectory, homeDir),
+    );
+  };
+
+  it.effect("merges the old fork once on the default production ~/.t3 home", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const homeDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-cli-old-fork-home-" });
+      yield* seedOldForkSource(homeDir);
+
+      const resolved = yield* resolveForHome(homeDir);
+
+      expect(resolved.baseDir).toBe(path.join(homeDir, ".t3"));
+      expect(mergeOldForkDatabaseMock).toHaveBeenCalledTimes(1);
+      expect(mergeOldForkDatabaseMock).toHaveBeenCalledWith({
+        sourceHome: path.join(homeDir, ".t3-fork"),
+        destinationHome: path.join(homeDir, ".t3"),
+        markerPath: path.join(homeDir, ".t3", "userdata", "old-fork-import-plus-plus-v1.json"),
+      });
+    }),
+  );
+
+  it.effect("skips the old fork merge when the old fork database is missing", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const homeDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-cli-old-fork-missing-" });
+
+      const resolved = yield* resolveForHome(homeDir);
+
+      expect(resolved.baseDir).toBe(path.join(homeDir, ".t3"));
+      expect(mergeOldForkDatabaseMock).not.toHaveBeenCalled();
+    }),
+  );
+
+  it.effect("skips the old fork merge once its one-time marker exists", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const homeDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-cli-old-fork-marked-" });
+      yield* seedOldForkSource(homeDir);
+      yield* writeOldForkMarker(homeDir);
+
+      const resolved = yield* resolveForHome(homeDir);
+
+      expect(resolved.baseDir).toBe(path.join(homeDir, ".t3"));
+      expect(mergeOldForkDatabaseMock).not.toHaveBeenCalled();
+    }),
+  );
+
+  it.effect("never merges the old fork while serving a dev URL", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const homeDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-cli-old-fork-dev-" });
+      yield* seedOldForkSource(homeDir);
+
+      yield* resolveForHome(homeDir, {
+        flags: { devUrl: Option.some(new URL("http://127.0.0.1:5173")) },
+      });
+
+      expect(mergeOldForkDatabaseMock).not.toHaveBeenCalled();
+    }),
+  );
+
+  it.effect("never merges the old fork for an explicit T3CODE_HOME", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const homeDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-cli-old-fork-env-" });
+      const customHome = path.join(homeDir, "custom-home");
+      yield* seedOldForkSource(homeDir);
+
+      const resolved = yield* resolveForHome(homeDir, {
+        env: { T3CODE_HOME: customHome },
+      });
+
+      expect(resolved.baseDir).toBe(customHome);
+      expect(mergeOldForkDatabaseMock).not.toHaveBeenCalled();
+    }),
+  );
+
+  it.effect("never merges the old fork for an explicit --base-dir", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const homeDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-cli-old-fork-basedir-" });
+      const customBaseDir = path.join(homeDir, "custom-base");
+      yield* seedOldForkSource(homeDir);
+
+      const resolved = yield* resolveForHome(homeDir, {
+        flags: { baseDir: Option.some(customBaseDir) },
+      });
+
+      expect(resolved.baseDir).toBe(customBaseDir);
+      expect(mergeOldForkDatabaseMock).not.toHaveBeenCalled();
+    }),
+  );
+
+  it.effect("never merges the old fork for a worktree-like data directory", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const homeDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-cli-old-fork-worktree-" });
+      const worktreeBaseDir = path.join(
+        homeDir,
+        ".t3-fork",
+        "worktrees",
+        "t3code",
+        "t3-0cf328b3",
+        ".t3",
+      );
+      yield* seedOldForkSource(homeDir);
+
+      yield* resolveForHome(homeDir, { flags: { baseDir: Option.some(worktreeBaseDir) } });
+
+      expect(mergeOldForkDatabaseMock).not.toHaveBeenCalled();
+    }),
+  );
+
+  it.effect("logs a failed old fork merge and still resolves the rest of the config", () => {
+    const messages: Array<string> = [];
+    const logger = Logger.make<unknown, void>(({ message }) => {
+      messages.push(String(message));
+    });
+
+    return Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const homeDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-cli-old-fork-failure-" });
+      yield* seedOldForkSource(homeDir);
+      mergeOldForkDatabaseMock.mockImplementationOnce((input: MergeOldForkInput) =>
+        Effect.fail(
+          new OldForkImportError({
+            sourcePath: path.join(input.sourceHome, "userdata", "statev2.sqlite"),
+            destinationPath: path.join(input.destinationHome, "userdata", "statev2.sqlite"),
+            cause: new Error("disk full"),
+          }),
+        ),
+      );
+
+      const resolved = yield* resolveForHome(homeDir, { logger });
+
+      expect(resolved.baseDir).toBe(path.join(homeDir, ".t3"));
+      expect(mergeOldForkDatabaseMock).toHaveBeenCalledTimes(1);
+      expect(messages.join("\n")).toMatch(/old.fork/i);
+    });
+  });
 });
