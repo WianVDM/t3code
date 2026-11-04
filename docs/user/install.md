@@ -55,6 +55,53 @@ If `t3` or `t3 start` reports an already running server, connect to that server
 instead. Stop it before starting a replacement, or use a different `--base-dir`
 for an independent server.
 
+### Importing your old fork
+
+On first start, if `~/.t3-fork` exists, T3 Code merges it into `~/.t3`. This
+runs once for the default home and only when no `--base-dir` is set; an explicit
+data directory or dev URL never triggers it.
+
+What you get:
+
+- **Old fork wins where they overlap.** Its settings, themes, keybindings, and
+  shared conversation history replace this installation's copies; sessions and
+  threads that only exist here are kept.
+- **Provider sign-ins come across.** Credentials required by your old fork's
+  settings are copied so providers keep working. This installation's identity,
+  cloud link, session tokens, and other server secrets are never imported.
+- **Live work does not resume.** Running turns, scheduled tasks, and pairing
+  sessions from the old fork are dropped, not restarted.
+
+Stop every T3 Code server and the desktop app on both homes before the first
+start. A server still running against either home blocks the merge; running two
+servers over the same data is never safe.
+
+The merge records its progress in `~/.t3/userdata/old-fork-import-plus-plus-v1.json`.
+When it finishes, the marker stops any further attempt. A blocked merge stops
+too and is not retried on later starts, even after you fix the cause. A merge
+that finds another process still working reports busy and waits for the next
+start.
+
+To retry a blocked merge, stop both servers, then run:
+
+```bash
+t3 retry-old-fork-merge --base-dir ~/.t3
+```
+
+This re-runs only the steps that are safe to repeat. It never resumes or
+deletes running work.
+
+To bring an old fork into a different data directory instead, use the manual
+command with an explicit destination:
+
+```bash
+t3 import-old-fork --source ~/.t3-fork/userdata/statev2.sqlite --base-dir /path/to/home
+```
+
+The manual command copies the database as-is when the destination is empty. It
+never overwrites an existing database, so it is also how you set up a second
+server from old-fork history.
+
 ### From an archive
 
 Every release also carries the CLI on its own: a `.tar.gz` for Linux x64 and

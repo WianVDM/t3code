@@ -1,3 +1,6 @@
+// @effect-diagnostics nodeBuiltinImport:off - O_EXCL lock creation and owned release need native fs.
+import * as NodeCrypto from "node:crypto";
+import * as NodeFS from "node:fs";
 import * as NodeSqlite from "node:sqlite";
 
 import { isWindowsRenameLock, writeFileStringAtomically } from "@t3tools/shared/atomicWrite";
@@ -31,8 +34,11 @@ export class OldForkImportError extends Schema.TaggedError<OldForkImportError>()
   }
 }
 
+const isOldForkImportError = Schema.is(OldForkImportError);
+
 class OldForkMergeError extends Schema.TaggedError<OldForkMergeError>()("OldForkMergeError", {
   reason: Schema.String,
+  terminal: Schema.Boolean,
 }) {
   override get message() {
     return this.reason;
@@ -144,7 +150,13 @@ export interface MergeOldForkInput {
   readonly sourceHome: string;
   readonly destinationHome: string;
   readonly markerPath: string;
+  readonly retryTerminal?: boolean;
 }
+
+export type MergeOldForkOutcome =
+  | { readonly status: "done" }
+  | { readonly status: "blocked"; readonly reason: string }
+  | { readonly status: "busy" };
 
 // Far beyond any real sequence; parks destination rows while merged rows take the low numbers.
 const MERGE_SEQUENCE_OFFSET = 1_000_000_000_000;
@@ -191,6 +203,27 @@ const mergeCanonicalHistory = (sourcePath: string, candidatePath: string): void 
   const source = new NodeSqlite.DatabaseSync(sourcePath, { readOnly: true });
   const candidate = new NodeSqlite.DatabaseSync(candidatePath);
   try {
+    const tableInfo = (database: NodeSqlite.DatabaseSync) =>
+      database.prepare("PRAGMA table_info('orchestration_events')").all() as Array<{
+        readonly cid: number;
+        readonly name: string;
+        readonly type: string;
+        readonly notnull: number;
+        readonly dflt_value: NodeSqlite.SQLInputValue;
+        readonly pk: number;
+      }>;
+    const sourceColumns = tableInfo(source);
+    const destinationColumns = tableInfo(candidate);
+    if (JSON.stringify(sourceColumns) !== JSON.stringify(destinationColumns)) {
+      throw new Error(
+        "The source and destination event tables have different columns; this history cannot be merged.",
+      );
+    }
+    const eventColumns = sourceColumns.map((column) => column.name);
+    const quotedEventColumns = eventColumns
+      .map((name) => `"${name.replaceAll('"', '""')}"`)
+      .join(", ");
+
     const metadataSql = `
       SELECT sequence, event_id, aggregate_kind, stream_id, command_id, causation_event_id
       FROM orchestration_events ORDER BY sequence ASC
@@ -224,13 +257,14 @@ const mergeCanonicalHistory = (sourcePath: string, candidatePath: string): void 
       }
       selectedEventIds.add(event.row.event_id);
     }
+    const discardedDestinationEventIds = new Set(discarded.map((row) => row.event_id));
     for (const event of selected) {
       const causation = event.row.causation_event_id;
-      if (causation !== null && !selectedEventIds.has(causation)) {
-        throw new Error(
-          `Event ${event.row.event_id} was caused by ${causation}, which the merged history does not contain.`,
-        );
-      }
+      if (causation === null || selectedEventIds.has(causation)) continue;
+      if (event.origin === "destination" && discardedDestinationEventIds.has(causation)) continue;
+      throw new Error(
+        `Event ${event.row.event_id} was caused by ${causation}, which the merged history does not contain.`,
+      );
     }
     // Destination live work must not point at history the merge discards.
     const discardedCommandIds = new Set<string>();
@@ -373,11 +407,8 @@ const mergeCanonicalHistory = (sourcePath: string, candidatePath: string): void 
         )
         .run(MERGE_SEQUENCE_OFFSET, MERGE_SEQUENCE_OFFSET);
       const insertEvent = candidate.prepare(`
-        INSERT INTO orchestration_events (
-          sequence, event_id, aggregate_kind, stream_id, stream_version, event_type, occurred_at,
-          command_id, causation_event_id, correlation_id, actor_kind, payload_json, metadata_json,
-          application_event_version
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO orchestration_events (${quotedEventColumns})
+        VALUES (${eventColumns.map(() => "?").join(", ")})
       `);
       const sourceFull = source.prepare(`SELECT * FROM orchestration_events WHERE sequence = ?`);
       const candidateFull = candidate.prepare(
@@ -403,24 +434,24 @@ const mergeCanonicalHistory = (sourcePath: string, candidatePath: string): void 
         if (full === undefined) {
           throw new Error(`Event ${event.row.event_id} vanished while merging.`);
         }
-        insertEvent.run(
-          ...([
-            event.newSequence,
-            full.event_id,
-            full.aggregate_kind,
-            full.stream_id,
-            event.newStreamVersion,
-            full.event_type,
-            full.occurred_at,
-            full.command_id,
-            full.causation_event_id,
-            full.correlation_id,
-            full.actor_kind,
-            remapPromptSequence(String(full.payload_json), event.origin, event.row.event_id),
-            full.metadata_json,
-            full.application_event_version,
-          ] as NodeSqlite.SQLInputValue[]),
-        );
+        const causationEventId = full.causation_event_id;
+        const mergedCausationEventId =
+          event.origin === "destination" &&
+          typeof causationEventId === "string" &&
+          discardedDestinationEventIds.has(causationEventId) &&
+          !selectedEventIds.has(causationEventId)
+            ? null
+            : causationEventId;
+        const values = eventColumns.map((name): NodeSqlite.SQLInputValue => {
+          if (name === "sequence") return event.newSequence;
+          if (name === "stream_version") return event.newStreamVersion;
+          if (name === "payload_json") {
+            return remapPromptSequence(String(full.payload_json), event.origin, event.row.event_id);
+          }
+          if (name === "causation_event_id") return mergedCausationEventId ?? null;
+          return full[name] ?? null;
+        });
+        insertEvent.run(...values);
       }
       candidate
         .prepare(`DELETE FROM orchestration_events WHERE sequence >= ?`)
@@ -500,6 +531,7 @@ const rebuildAndValidateCandidate = Effect.fn("mergeOldForkDatabase.rebuildProje
     if (!verification.valid) {
       return yield* new OldForkMergeError({
         reason: `Rebuilt projections failed verification: ${verification.missingThreadIds.length} missing, ${verification.unexpectedThreadIds.length} unexpected, ${verification.unreadableThreadIds.length} unreadable threads; projection sequence ${verification.projectionSequence} of ${verification.expectedSequence}.`,
+        terminal: true,
       });
     }
     yield* rebuildMessageSearch(sql);
@@ -507,12 +539,14 @@ const rebuildAndValidateCandidate = Effect.fn("mergeOldForkDatabase.rebuildProje
     if (foreignKeys.length > 0) {
       return yield* new OldForkMergeError({
         reason: "The merged database failed its foreign key check and was discarded.",
+        terminal: true,
       });
     }
     const integrity = yield* sql<{ readonly integrity_check: string }>`PRAGMA integrity_check`;
     if (integrity[0]?.integrity_check !== "ok") {
       return yield* new OldForkMergeError({
         reason: `The merged database failed its integrity check (${integrity[0]?.integrity_check ?? "unknown"}) and was discarded.`,
+        terminal: true,
       });
     }
   }).pipe(
@@ -541,9 +575,36 @@ const refuseLiveServer = Effect.fn("mergeOldForkDatabase.refuseLiveServer")(func
   ) {
     return yield* new OldForkMergeError({
       reason: `A T3 Code server for the ${label} home is still running (pid ${runtime.value.pid} at ${runtime.value.origin}). Stop it before merging.`,
+      terminal: false,
     });
   }
 });
+
+const SQLITE_BUSY = 5;
+const SQLITE_LOCKED = 6;
+
+const sqliteErrcode = (error: unknown): number | null =>
+  typeof error === "object" &&
+  error !== null &&
+  "errcode" in error &&
+  typeof error.errcode === "number"
+    ? error.errcode & 0xff
+    : null;
+
+/** Contention clears when the other process exits; a database SQLite cannot read never will. */
+const destinationReadError = (databasePath: string, error: unknown) => {
+  const errcode = sqliteErrcode(error);
+  if (errcode === SQLITE_BUSY || errcode === SQLITE_LOCKED) {
+    return new OldForkMergeError({
+      reason: `Another process has ${databasePath} open. Stop every T3 Code server and desktop app before merging.`,
+      terminal: false,
+    });
+  }
+  return new OldForkMergeError({
+    reason: `The database at ${databasePath} could not be read: ${describeCause(error)}. Repair or restore that file before retrying the merge.`,
+    terminal: true,
+  });
+};
 
 /** Fails while any other connection holds the database, even without a runtime-state file. */
 const assertNoOtherConnection = Effect.fn("mergeOldForkDatabase.assertNoOtherConnection")(
@@ -557,14 +618,7 @@ const assertNoOtherConnection = Effect.fn("mergeOldForkDatabase.assertNoOtherCon
       } finally {
         database.close();
       }
-    }).pipe(
-      Effect.mapError(
-        () =>
-          new OldForkMergeError({
-            reason: `Another process has ${databasePath} open. Stop every T3 Code server and desktop app before merging.`,
-          }),
-      ),
-    );
+    }).pipe(Effect.mapError((error) => destinationReadError(databasePath, error)));
   },
 );
 
@@ -583,7 +637,7 @@ const publishCandidate = Effect.fn("mergeOldForkDatabase.publish")(function* (
         database.close();
       }
     },
-    catch: (error) => new OldForkMergeError({ reason: describeCause(error) }),
+    catch: (error) => new OldForkMergeError({ reason: describeCause(error), terminal: false }),
   });
   for (const suffix of ["-wal", "-shm", "-journal"]) {
     yield* fs.remove(candidatePath + suffix, { force: true });
@@ -650,11 +704,214 @@ const overlayOldForkFiles = Effect.fn("mergeOldForkDatabase.overlay")(function* 
   }
 });
 
+type MergeLifecycleStatus = "published" | "done" | "blocked";
+
+const writeLifecycleMarker = Effect.fn("mergeOldForkDatabase.writeMarker")(function* (input: {
+  readonly filePath: string;
+  readonly sourceHome: string;
+  readonly destinationHome: string;
+  readonly status: MergeLifecycleStatus;
+  readonly reason?: string;
+}) {
+  const now = yield* DateTime.now;
+  yield* writeFileStringAtomically({
+    filePath: input.filePath,
+    contents: `${encodeJson({
+      version: 2,
+      status: input.status,
+      recordedAt: DateTime.formatIso(now),
+      sourceHome: input.sourceHome,
+      destinationHome: input.destinationHome,
+      ...(input.reason === undefined ? {} : { reason: input.reason }),
+    })}\n`,
+  });
+});
+
+const readLifecycleState = Effect.fn("mergeOldForkDatabase.readState")(function* (
+  statePath: string,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const contents = yield* fs.readFileString(statePath).pipe(
+    Effect.catchIf(
+      (error) => error.reason._tag === "NotFound",
+      () => Effect.succeed(null),
+    ),
+    Effect.mapError(
+      (error) => new OldForkMergeError({ reason: describeCause(error), terminal: false }),
+    ),
+  );
+  if (contents === null) return null;
+  return yield* Effect.try({
+    try: () => {
+      const decoded: unknown = decodeJson(contents);
+      if (typeof decoded !== "object" || decoded === null) {
+        throw new Error("The old fork merge state is not an object.");
+      }
+      const state = decoded as Record<string, unknown>;
+      if (state.version !== 2) throw new Error("The old fork merge state has an unknown version.");
+      if (state.status === "published" || state.status === "done") {
+        return { status: state.status };
+      }
+      if (state.status === "blocked" && typeof state.reason === "string") {
+        return { status: "blocked", reason: state.reason };
+      }
+      throw new Error("The old fork merge state is invalid.");
+    },
+    catch: (error) => new OldForkMergeError({ reason: describeCause(error), terminal: false }),
+  });
+});
+
+interface MergeLock {
+  readonly filePath: string;
+  readonly token: string;
+  readonly contents: string;
+}
+
+const errorCode = (error: unknown) =>
+  typeof error === "object" && error !== null && "code" in error ? String(error.code) : undefined;
+
+const readLockContents = (filePath: string): string | null => {
+  try {
+    return NodeFS.readFileSync(filePath, "utf8");
+  } catch (error) {
+    if (errorCode(error) === "ENOENT") return null;
+    throw error;
+  }
+};
+
+const parseLockContents = (contents: string) => {
+  try {
+    const decoded: unknown = JSON.parse(contents);
+    if (typeof decoded !== "object" || decoded === null) return null;
+    const lock = decoded as Record<string, unknown>;
+    if (
+      typeof lock.pid !== "number" ||
+      !Number.isInteger(lock.pid) ||
+      lock.pid <= 0 ||
+      typeof lock.token !== "string"
+    ) {
+      return null;
+    }
+    const createdAt = typeof lock.createdAt === "string" ? Date.parse(lock.createdAt) : NaN;
+    return {
+      pid: lock.pid,
+      token: lock.token,
+      createdAt: Number.isFinite(createdAt) ? createdAt : null,
+    };
+  } catch {
+    return null;
+  }
+};
+
+// A live pid alone cannot prove a merge is running: a reboot or a recycled pid outlives the
+// process that wrote the lock, so anything this old is reclaimable.
+const MERGE_LOCK_STALE_AFTER_MS = 60 * 60 * 1000;
+const MERGE_LOCK_MAX_ATTEMPTS = 8;
+const MERGE_LOCK_RETRY_DELAY = "25 millis";
+
+const isMergeLockActive = (
+  lock: { readonly pid: number; readonly createdAt: number | null },
+  now: DateTime.DateTime,
+): boolean => {
+  if (!isProcessAlive(lock.pid)) return false;
+  if (lock.createdAt === null) return false;
+  return DateTime.toEpochMillis(now) - lock.createdAt < MERGE_LOCK_STALE_AFTER_MS;
+};
+
+const removeLockIfUnchanged = (filePath: string, expectedContents: string): void => {
+  try {
+    if (readLockContents(filePath) !== expectedContents) return;
+    NodeFS.unlinkSync(filePath);
+  } catch (error) {
+    if (errorCode(error) !== "ENOENT") throw error;
+  }
+};
+
+type MergeLockAttempt =
+  | { readonly status: "acquired"; readonly lock: MergeLock }
+  | { readonly status: "busy" }
+  | { readonly status: "retry"; readonly contended: boolean };
+
+const attemptMergeLock = (filePath: string, now: DateTime.DateTime): MergeLockAttempt => {
+  const token = NodeCrypto.randomUUID();
+  const contents = JSON.stringify({
+    pid: process.pid,
+    token,
+    createdAt: DateTime.formatIso(now),
+  });
+  let descriptor: number;
+  try {
+    descriptor = NodeFS.openSync(
+      filePath,
+      NodeFS.constants.O_CREAT | NodeFS.constants.O_EXCL | NodeFS.constants.O_WRONLY,
+      0o600,
+    );
+  } catch (error) {
+    if (errorCode(error) !== "EEXIST") throw error;
+    const existingContents = readLockContents(filePath);
+    if (existingContents === null) return { status: "retry", contended: true };
+    const existing = parseLockContents(existingContents);
+    if (existing !== null && isMergeLockActive(existing, now)) return { status: "busy" };
+    removeLockIfUnchanged(filePath, existingContents);
+    return { status: "retry", contended: false };
+  }
+  try {
+    NodeFS.writeFileSync(descriptor, contents, "utf8");
+  } finally {
+    NodeFS.closeSync(descriptor);
+  }
+  return { status: "acquired", lock: { filePath, token, contents } };
+};
+
+const acquireMergeLock = Effect.fn("mergeOldForkDatabase.acquireLock")(function* (
+  filePath: string,
+) {
+  for (let attempt = 0; attempt < MERGE_LOCK_MAX_ATTEMPTS; attempt += 1) {
+    const now = yield* DateTime.now;
+    const outcome = yield* Effect.try({
+      try: () => attemptMergeLock(filePath, now),
+      catch: (error) => new OldForkMergeError({ reason: describeCause(error), terminal: false }),
+    });
+    if (outcome.status === "acquired") return outcome.lock;
+    if (outcome.status === "busy") return null;
+    // Reclaiming a dead lock retries at once; only a lost race waits, so racers do not spin on EEXIST.
+    if (outcome.contended && attempt + 1 < MERGE_LOCK_MAX_ATTEMPTS) {
+      yield* Effect.sleep(MERGE_LOCK_RETRY_DELAY);
+    }
+  }
+  return null;
+});
+
+const releaseMergeLock = (lock: MergeLock): void => {
+  const contents = readLockContents(lock.filePath);
+  if (contents === null || parseLockContents(contents)?.token !== lock.token) return;
+  removeLockIfUnchanged(lock.filePath, contents);
+};
+
+const isEmptyDatabase = (databasePath: string): boolean => {
+  const database = new NodeSqlite.DatabaseSync(databasePath, { readOnly: true });
+  try {
+    const tables = database
+      .prepare(
+        `SELECT name FROM sqlite_master
+         WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name != 'effect_sql_migrations'`,
+      )
+      .all();
+    for (const table of tables) {
+      const name = String(table.name);
+      const quotedName = `"${name.replaceAll('"', '""')}"`;
+      if (database.prepare(`SELECT 1 FROM ${quotedName} LIMIT 1`).get() !== undefined) return false;
+    }
+    return true;
+  } finally {
+    database.close();
+  }
+};
+
 /**
  * Merges an old fork's T3 home into this installation's home: the canonical event log with
  * complete old-fork streams winning, destination live state kept, settings and themes overlaid.
- * The destination is only ever replaced by a fully validated candidate, and the marker is written
- * last, so a missing marker means the merge can simply run again.
+ * The sidecar records publication and terminal conflicts; the original marker means fully done.
  */
 export const mergeOldForkDatabase = Effect.fn("mergeOldForkDatabase")(function* (
   input: MergeOldForkInput,
@@ -662,82 +919,151 @@ export const mergeOldForkDatabase = Effect.fn("mergeOldForkDatabase")(function* 
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const markerPath = path.resolve(input.markerPath);
-  if (yield* fs.exists(markerPath)) return;
+  const statePath = `${markerPath}.state`;
+  const lockPath = `${markerPath}.lock`;
   const sourceHome = path.resolve(input.sourceHome);
   const destinationHome = path.resolve(input.destinationHome);
   const sourceUserdata = path.join(sourceHome, "userdata");
   const destinationUserdata = path.join(destinationHome, "userdata");
   const sourcePath = path.join(sourceUserdata, "statev2.sqlite");
   const destinationPath = path.join(destinationUserdata, "statev2.sqlite");
-  const sameFile =
-    sourcePath === destinationPath ||
-    (yield* Effect.gen(function* () {
-      return (yield* fs.realPath(sourcePath)) === (yield* fs.realPath(destinationPath));
-    }).pipe(Effect.orElseSucceed(() => false)));
-  if (sameFile) {
-    return yield* new OldForkImportError({
-      sourcePath,
-      destinationPath,
-      cause: new Error("The old fork home and this installation share the same database file."),
-    });
-  }
-  if (!(yield* fs.exists(sourcePath))) {
-    return yield* new OldForkImportError({
-      sourcePath,
-      destinationPath,
-      cause: new Error("No old fork database was found to merge."),
-    });
-  }
-  if (!(yield* fs.exists(destinationPath))) {
-    return yield* new OldForkImportError({
-      sourcePath,
-      destinationPath,
-      cause: new Error(
-        "No destination database was found to merge into; import the old fork database instead.",
-      ),
-    });
-  }
-  yield* Effect.gen(function* () {
-    yield* refuseLiveServer(destinationHome, "destination");
-    yield* refuseLiveServer(sourceHome, "old fork");
-    yield* Effect.scoped(
-      Effect.gen(function* () {
-        const temporaryDirectory = yield* fs.makeTempDirectoryScoped({
-          directory: path.dirname(destinationPath),
-          prefix: `.v2-import-${process.pid}-`,
-        });
-        const snapshotPath = path.join(temporaryDirectory, "source-snapshot.sqlite");
-        const candidatePath = path.join(temporaryDirectory, "candidate.sqlite");
-        // Every later step reads the snapshot, so the source file itself is never written.
-        yield* Effect.tryPromise(() => backupDatabase(sourcePath, snapshotPath));
-        yield* assertNoOtherConnection(destinationPath);
-        yield* Effect.tryPromise(() => backupDatabase(destinationPath, candidatePath));
-        yield* runMigrations().pipe(
-          Effect.provide(NodeSqliteClient.layer({ filename: snapshotPath })),
-        );
-        yield* runMigrations().pipe(
-          Effect.provide(NodeSqliteClient.layer({ filename: candidatePath })),
-        );
-        yield* Effect.try({
-          try: () => mergeCanonicalHistory(snapshotPath, candidatePath),
-          catch: (error) => new OldForkMergeError({ reason: describeCause(error) }),
-        });
-        yield* rebuildAndValidateCandidate(candidatePath);
-        yield* publishCandidate(candidatePath, destinationPath);
-      }),
-    );
+
+  const complete = Effect.gen(function* () {
     yield* overlayOldForkFiles(sourceUserdata, destinationUserdata);
-    const now = yield* DateTime.now;
-    yield* writeFileStringAtomically({
+    yield* writeLifecycleMarker({
       filePath: markerPath,
-      contents: `${encodeJson({
-        version: 1,
-        mergedAt: DateTime.formatIso(now),
+      sourceHome: input.sourceHome,
+      destinationHome: input.destinationHome,
+      status: "done",
+    });
+    yield* fs.remove(statePath, { force: true });
+    return { status: "done" } as const;
+  });
+
+  const merge = Effect.gen(function* () {
+    if (yield* fs.exists(markerPath)) {
+      yield* fs.remove(statePath, { force: true });
+      return { status: "done" };
+    }
+    const state = yield* readLifecycleState(statePath);
+    if (state?.status === "blocked" && input.retryTerminal !== true) return state;
+    if (state?.status === "published") return yield* complete;
+    if (state?.status === "done") {
+      yield* writeLifecycleMarker({
+        filePath: markerPath,
         sourceHome: input.sourceHome,
         destinationHome: input.destinationHome,
-      })}\n`,
+        status: "done",
+      });
+      yield* fs.remove(statePath, { force: true });
+      return { status: "done" };
+    }
+    if (state?.status === "blocked") yield* fs.remove(statePath);
+
+    const sameFile =
+      sourcePath === destinationPath ||
+      (yield* Effect.gen(function* () {
+        return (yield* fs.realPath(sourcePath)) === (yield* fs.realPath(destinationPath));
+      }).pipe(Effect.orElseSucceed(() => false)));
+    if (sameFile) {
+      return yield* new OldForkImportError({
+        sourcePath,
+        destinationPath,
+        cause: new Error("The old fork home and this installation share the same database file."),
+      });
+    }
+    if (!(yield* fs.exists(sourcePath))) {
+      return yield* new OldForkImportError({
+        sourcePath,
+        destinationPath,
+        cause: new Error("No old fork database was found to merge."),
+      });
+    }
+
+    yield* refuseLiveServer(destinationHome, "destination");
+    yield* refuseLiveServer(sourceHome, "old fork");
+    const destinationExists = yield* fs.exists(destinationPath);
+    const adoptEmptyDestination =
+      destinationExists &&
+      (yield* Effect.try({
+        try: () => isEmptyDatabase(destinationPath),
+        catch: (error) => destinationReadError(destinationPath, error),
+      }));
+    if (!destinationExists || adoptEmptyDestination) {
+      if (destinationExists) {
+        yield* assertNoOtherConnection(destinationPath);
+        yield* fs.remove(destinationPath);
+        for (const suffix of ["-wal", "-shm", "-journal"]) {
+          yield* fs.remove(destinationPath + suffix, { force: true });
+        }
+      }
+      yield* importOldForkDatabase(sourcePath, destinationPath);
+    } else {
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const temporaryDirectory = yield* fs.makeTempDirectoryScoped({
+            directory: path.dirname(destinationPath),
+            prefix: `.v2-import-${process.pid}-`,
+          });
+          const snapshotPath = path.join(temporaryDirectory, "source-snapshot.sqlite");
+          const candidatePath = path.join(temporaryDirectory, "candidate.sqlite");
+          // Every later step reads the snapshot, so the source file itself is never written.
+          yield* Effect.tryPromise(() => backupDatabase(sourcePath, snapshotPath));
+          yield* assertNoOtherConnection(destinationPath);
+          yield* Effect.tryPromise(() => backupDatabase(destinationPath, candidatePath)).pipe(
+            Effect.mapError((error) => destinationReadError(destinationPath, error)),
+          );
+          yield* runMigrations().pipe(
+            Effect.provide(NodeSqliteClient.layer({ filename: snapshotPath })),
+          );
+          yield* runMigrations().pipe(
+            Effect.provide(NodeSqliteClient.layer({ filename: candidatePath })),
+          );
+          yield* Effect.try({
+            try: () => mergeCanonicalHistory(snapshotPath, candidatePath),
+            catch: (error) =>
+              new OldForkMergeError({ reason: describeCause(error), terminal: true }),
+          });
+          yield* rebuildAndValidateCandidate(candidatePath);
+          yield* publishCandidate(candidatePath, destinationPath);
+        }),
+      );
+    }
+
+    yield* writeLifecycleMarker({
+      filePath: statePath,
+      sourceHome: input.sourceHome,
+      destinationHome: input.destinationHome,
+      status: "published",
     });
+    return yield* complete;
   }).pipe(
-    Effect.mapError((cause) => new OldForkImportError({ sourcePath, destinationPath, cause })),
+    Effect.catchTags({
+      OldForkMergeError: (error) => {
+        if (!error.terminal) return Effect.fail(error);
+        return Effect.gen(function* () {
+          yield* writeLifecycleMarker({
+            filePath: statePath,
+            sourceHome: input.sourceHome,
+            destinationHome: input.destinationHome,
+            status: "blocked",
+            reason: error.reason,
+          });
+          return yield* error;
+        });
+      },
+    }),
+  );
+
+  return yield* Effect.gen(function* () {
+    const lock = yield* acquireMergeLock(lockPath);
+    if (lock === null) return { status: "busy" } as const;
+    return yield* merge.pipe(Effect.ensuring(Effect.sync(() => releaseMergeLock(lock))));
+  }).pipe(
+    Effect.mapError((cause) =>
+      isOldForkImportError(cause)
+        ? cause
+        : new OldForkImportError({ sourcePath, destinationPath, cause }),
+    ),
   );
 });

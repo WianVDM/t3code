@@ -263,7 +263,8 @@ const loadPersistedObservabilitySettings = Effect.fn(function* (settingsPath: st
 });
 
 // Only the default production home migrates: an explicit base dir, worktree state, or a dev
-// URL is a deliberate installation, and the marker keeps the merge to one attempt.
+// URL is a deliberate installation, and the marker keeps the merge to one attempt. Startup skips
+// the database entirely once a terminal block is recorded, so only `done` proceeds to settings.
 const mergeOldForkHome = Effect.fn("config.mergeOldForkHome")(function* (baseDir: string) {
   const path = yield* Path.Path;
   const fs = yield* FileSystem.FileSystem;
@@ -274,14 +275,33 @@ const mergeOldForkHome = Effect.fn("config.mergeOldForkHome")(function* (baseDir
   const sourceExists = yield* fs.exists(sourceHome).pipe(Effect.orElseSucceed(() => false));
   const markerExists = yield* fs.exists(markerPath).pipe(Effect.orElseSucceed(() => false));
   if (!sourceExists || markerExists) return;
-  yield* mergeOldForkDatabase({ sourceHome, destinationHome: baseDir, markerPath }).pipe(
+  const outcome = yield* mergeOldForkDatabase({
+    sourceHome,
+    destinationHome: baseDir,
+    markerPath,
+  }).pipe(
     Effect.catchTags({
       OldForkImportError: (error) =>
-        Effect.logWarning("Old fork database merge failed; continuing startup.").pipe(
-          Effect.annotateLogs("cause", error.message),
+        Effect.as(
+          Effect.logWarning("Old fork database merge failed; continuing startup.").pipe(
+            Effect.annotateLogs("cause", error.message),
+          ),
+          undefined,
         ),
     }),
   );
+  if (outcome === undefined) return;
+  if (outcome.status === "busy") {
+    return yield* new CliError.UserError({
+      cause:
+        "The old fork database import is still running in another process. Wait for it to finish, then start this server again.",
+    });
+  }
+  if (outcome.status === "blocked") {
+    yield* Effect.logWarning("Old fork database merge is blocked; continuing startup.").pipe(
+      Effect.annotateLogs("reason", outcome.reason),
+    );
+  }
 });
 
 export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(function* (

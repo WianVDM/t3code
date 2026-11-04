@@ -14,8 +14,10 @@ import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Redacted from "effect/Redacted";
+import * as References from "effect/References";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
+import * as CliError from "effect/cli/CliError";
 
 import {
   DesktopBackendBootstrap,
@@ -64,6 +66,7 @@ const minimalDesktopFlags = (baseDir: string) => ({
 
 const encodeDesktopBootstrap = Schema.encodeEffect(Schema.fromJsonString(DesktopBackendBootstrap));
 const encodeUnknownJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
+const isCliUserError = Schema.is(CliError.UserError);
 
 const makeDesktopBootstrap = (
   overrides: Partial<DesktopBackendBootstrapValue> = {},
@@ -112,9 +115,16 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
     devAllowedOrigins: [],
   } as const;
 
+  // The outcome contract mergeOldForkDatabase reports to startup.
+  const mergeOutcome = {
+    done: () => ({ status: "done" as const }),
+    blocked: (reason: string) => ({ status: "blocked" as const, reason }),
+    busy: () => ({ status: "busy" as const }),
+  };
+
   beforeEach(() => {
     mergeOldForkDatabaseMock.mockReset();
-    mergeOldForkDatabaseMock.mockImplementation(() => Effect.void);
+    mergeOldForkDatabaseMock.mockImplementation(() => Effect.succeed(mergeOutcome.done()));
   });
 
   const openBootstrapFd = Effect.fn(function* (payload: DesktopBackendBootstrapValue) {
@@ -964,6 +974,17 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
     yield* fs.writeFileString(markerPath, "{}\n");
   });
 
+  const captureLogs = () => {
+    const entries: Array<{ message: string; annotations: Record<string, unknown> }> = [];
+    const logger = Logger.make<unknown, void>(({ message, fiber }) => {
+      entries.push({
+        message: String(message),
+        annotations: { ...fiber.getRef(References.CurrentLogAnnotations) },
+      });
+    });
+    return { entries, logger };
+  };
+
   const resolveForHome = (
     homeDir: string,
     input: {
@@ -1137,4 +1158,104 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
       expect(messages.join("\n")).toMatch(/old.fork/i);
     });
   });
+
+  it.effect("retries the old fork merge on the next startup after a transient failure", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const homeDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-cli-old-fork-retry-" });
+      yield* seedOldForkSource(homeDir);
+      mergeOldForkDatabaseMock.mockImplementationOnce((input: MergeOldForkInput) =>
+        Effect.fail(
+          new OldForkImportError({
+            sourcePath: path.join(input.sourceHome, "userdata", "statev2.sqlite"),
+            destinationPath: path.join(input.destinationHome, "userdata", "statev2.sqlite"),
+            cause: new Error("disk full"),
+          }),
+        ),
+      );
+
+      const first = yield* resolveForHome(homeDir);
+      const second = yield* resolveForHome(homeDir);
+
+      expect(first.baseDir).toBe(path.join(homeDir, ".t3"));
+      expect(second.baseDir).toBe(path.join(homeDir, ".t3"));
+      expect(mergeOldForkDatabaseMock).toHaveBeenCalledTimes(2);
+    }),
+  );
+
+  it.effect("refuses to start while another process owns the old fork merge", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const homeDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-cli-old-fork-busy-" });
+      yield* seedOldForkSource(homeDir);
+      mergeOldForkDatabaseMock.mockImplementationOnce(() => Effect.succeed(mergeOutcome.busy()));
+
+      const error = yield* resolveForHome(homeDir).pipe(Effect.flip);
+
+      assert.isTrue(isCliUserError(error));
+      expect(String(error)).toMatch(/old fork|merge|import/i);
+      expect(mergeOldForkDatabaseMock).toHaveBeenCalledTimes(1);
+    }),
+  );
+
+  it.effect(
+    "logs a blocked old fork merge reason and keeps starting from the existing home",
+    () => {
+      const { entries, logger } = captureLogs();
+
+      return Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const homeDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-cli-old-fork-blocked-" });
+        yield* seedOldForkSource(homeDir);
+        const settingsPath = path.join(homeDir, ".t3", "userdata", "settings.json");
+        yield* fs.makeDirectory(path.dirname(settingsPath), { recursive: true });
+        yield* fs.writeFileString(
+          settingsPath,
+          `${JSON.stringify({ observability: { otlpLogsUrl: "http://existing:4318/v1/logs" } })}\n`,
+        );
+        mergeOldForkDatabaseMock.mockImplementationOnce(() =>
+          Effect.succeed(mergeOutcome.blocked("Shared history has an unsupported conflict.")),
+        );
+
+        const resolved = yield* resolveForHome(homeDir, { logger });
+
+        expect(resolved.baseDir).toBe(path.join(homeDir, ".t3"));
+        expect(resolved.otlpLogsUrl).toBe("http://existing:4318/v1/logs");
+        expect(mergeOldForkDatabaseMock).toHaveBeenCalledTimes(1);
+        const logged = entries
+          .map(({ message, annotations }) => `${message} ${Object.values(annotations).join(" ")}`)
+          .join("\n");
+        expect(logged).toContain("Shared history has an unsupported conflict.");
+      });
+    },
+  );
+
+  it.effect("resolves settings published by a successful old fork merge", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const homeDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-cli-old-fork-done-" });
+      yield* seedOldForkSource(homeDir);
+      mergeOldForkDatabaseMock.mockImplementationOnce((input: MergeOldForkInput) =>
+        Effect.gen(function* () {
+          const settingsPath = path.join(input.destinationHome, "userdata", "settings.json");
+          yield* fs.makeDirectory(path.dirname(settingsPath), { recursive: true });
+          yield* fs.writeFileString(
+            settingsPath,
+            `${JSON.stringify({ observability: { otlpLogsUrl: "http://merged:4318/v1/logs" } })}\n`,
+          );
+          return mergeOutcome.done();
+        }),
+      );
+
+      const resolved = yield* resolveForHome(homeDir);
+
+      expect(resolved.baseDir).toBe(path.join(homeDir, ".t3"));
+      expect(mergeOldForkDatabaseMock).toHaveBeenCalledTimes(1);
+      expect(resolved.otlpLogsUrl).toBe("http://merged:4318/v1/logs");
+      expect(resolved.otlpLogsSource).toBe("settings");
+    }),
+  );
 });

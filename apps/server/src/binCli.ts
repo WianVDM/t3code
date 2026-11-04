@@ -29,7 +29,7 @@ import { claudeHistoryCommand } from "./cli/claudeHistory.ts";
 import { sshHelperCommand } from "./cli/sshHelper.ts";
 import { serviceCommand } from "./cli/service.ts";
 import { servicePreflightCommand } from "./cli/servicePreflight.ts";
-import { importOldForkCommand } from "./cli/importOldFork.ts";
+import { importOldForkCommand, retryOldForkMergeCommand } from "./cli/importOldFork.ts";
 import { themeCommand } from "./cli/theme.ts";
 import { traceCommand } from "./cli/trace.ts";
 import { triageCommand } from "./cli/triage.ts";
@@ -99,6 +99,7 @@ export const makeCli = ({ cloudEnabled = hasCloudPublicConfig } = {}) =>
       traceCommand,
       doctorCommand,
       importOldForkCommand,
+      retryOldForkMergeCommand,
       policyCommand,
       triageCommand,
       cloudEnabled ? connectCommand : connectUnavailableCommand,
