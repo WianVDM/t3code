@@ -1,23 +1,27 @@
-import { defineConfig, type CodeRabbitContext } from "@coderabbitai/config";
+import { defineConfig } from "@coderabbitai/config";
 
-const UNGATED_AUTHORS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
-const isGated = ({ pr }: CodeRabbitContext) => !UNGATED_AUTHORS.has(pr?.authorAssociation ?? "");
-
-export default defineConfig((ctx) => ({
+export default defineConfig({
   reviews: {
+    profile: "chill",
     high_level_summary: false,
     review_status: false,
+    commit_status: false,
     request_changes_workflow: false,
-    allow_author_approval: !isGated(ctx),
+    allow_author_approval: false,
     auto_review: {
       enabled: true,
+      drafts: false,
     },
     pre_merge_checks: {
       docstrings: { mode: "off" },
-      override_requested_reviewers_only: isGated(ctx),
     },
     path_filters: ["!.repos/**"],
     path_instructions: [
+      {
+        path: "**",
+        instructions:
+          "Formatting, import order, naming and other lint-covered nits are enforced by CI. Never comment on them.",
+      },
       {
         path: "{apps,packages,infra}/**/*.ts",
         instructions: "Hold changed code to the rules in docs/internals/effect-services.md.",
@@ -42,4 +46,4 @@ export default defineConfig((ctx) => ({
       ],
     },
   },
-}));
+});

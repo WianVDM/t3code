@@ -1,39 +1,38 @@
 <!--
-Read CONTRIBUTING.md before opening a PR. Review capacity is limited, and meeting
-the requirements does not guarantee review or merging. Solve one underlying problem.
-The same requirements apply to drafts. Draft status does not defer triage or closure.
-Use a conventional commit title in plain language, such as "fix(web): new threads no longer spike CPU".
+T3 Code (fork) is solo-maintained for personal use. External PRs are handled
+best-effort and are most likely to land as a small, single-problem change.
+Use a conventional commit title in plain language, such as
+"fix(web): new threads no longer spike CPU". PRs are squash merged, so the
+title becomes the commit message.
 -->
 
 ## Problem
 
-<!-- Explain the problem in a sentence or two. Include expected behavior and
-reproduction steps or environment where relevant. -->
+<!-- One or two sentences. Expected behavior plus reproduction steps or
+environment where relevant. -->
 
 ## Change
 
-<!-- Explain how this fixes the problem. If it spans components or clients,
-explain why those changes are needed for the same fix. Split independent fixes. -->
+<!-- How this fixes the problem. If it spans components or clients, say why
+each change is needed for the same fix. Independent fixes belong in separate
+PRs.
 
-## Scope and approval
+Stacked PR? Name the base branch or parent PR here. -->
 
-<!-- Link the triaged bug issue or the discussion with explicit maintainer approval
-of direction and scope, including the approval comment. For a very small, focused
-fix of an obvious bug, explain why it qualifies without a prior issue or discussion.
-For focused configuration of an established capability, explain what already exists,
-what the option controls, and why its effects stay within that capability. Adding a
-setting alone is not a new feature or an approval exemption; broader workflow or
-behavior changes still need approval. Scope and verification requirements still apply.
-There is no line-count or file-count cutoff. -->
+## Compatibility
+
+<!-- Required if the change touches persisted or shared state: thread/project
+data, the sqlite schema, event or outbox shapes, contracts, provider session
+state, or anything an existing client or environment reads. State whether
+existing data and mixed-version clients keep working, and how you know. -->
 
 ## Verification
 
-<!-- Describe the focused tests or manual checks you ran and the observed results
-for the changed behavior. State anything you could not check. "Tests pass" alone
-is insufficient; broad repo-wide checks are not required.
+<!-- The focused tests or manual checks you ran for the changed behavior, with
+observed results. Say what you could not check. "Tests pass" alone is not
+enough; CI plus the specific check that covers this change is.
 
-For UI changes, include clear before/after screenshots. Include a short recording
-when motion, timing, transitions, or interaction details are needed to demonstrate
-the change. Upload evidence to GitHub and embed or link it here. Never commit PR-only assets. -->
+UI changes: before/after screenshots. Motion, timing, or interaction details:
+a short recording. Attach to the PR body, never to the repo. -->
 
-<!-- If you used an agent, end with the model and harness that did the work. -->
+<!-- If an agent did the work, end with the model and harness. -->
