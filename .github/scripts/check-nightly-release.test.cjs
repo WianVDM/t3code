@@ -657,6 +657,24 @@ test("release-desktop.yml collects the DMG the macOS target builds", () => {
   assert.match(collecting.text, /release\/\*\.dmg/, "the macOS DMG must reach the release assets");
 });
 
+test("the Linux launch check runs the ++ AppImage binary, not the stock t3code", () => {
+  const desktop = loadWorkflow(DESKTOP_WORKFLOW);
+  const launch = jobsOf(desktop)
+    .flatMap((job) => stepTexts(desktop, job.id))
+    .find((step) => /Launch check/.test(step.text));
+  assert.ok(launch, "release-desktop.yml must launch the packaged app");
+  assert.match(
+    launch.text,
+    /--executable "\$RUNNER_TEMP\/squashfs-root\/t3codeplusplus"/,
+    "the AppImage launch check must run the t3codeplusplus binary",
+  );
+  assert.doesNotMatch(
+    launch.text,
+    /squashfs-root\/t3code(?![a-z])/,
+    "the stock t3code path is not in the ++ AppImage and fails with ENOENT",
+  );
+});
+
 test("releases publish a GitHub Release with checksums", () => {
   const publishing = jobsOf(release).find((job) =>
     /action-gh-release|gh release (create|edit|upload)/.test(job.text),
