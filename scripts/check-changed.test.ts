@@ -16,6 +16,8 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import * as TestClock from "effect/testing/TestClock";
 
 import {
+  checkJobResults,
+  ciOnlyJobs,
   comparisonBase,
   defaultConcurrency,
   docReaderTests,
@@ -142,6 +144,96 @@ describe("check:changed", () => {
       );
     }),
   );
+
+  it("lists the CI-only jobs the remaining gates keep, in summary order", () => {
+    assert.deepStrictEqual(
+      ciOnlyJobs({ test: true, build: true, rust: true, release_smoke: true }),
+      ["full test suites", "build", "rust", "release smoke"],
+    );
+    assert.deepStrictEqual(ciOnlyJobs({ test_server: true }), ["full test suites"]);
+    assert.deepStrictEqual(ciOnlyJobs({ test_web: true }), ["full test suites"]);
+  });
+
+  it("omits CI-only jobs whose gate is off", () => {
+    assert.deepStrictEqual(ciOnlyJobs({ test: false, build: true, rust: false }), ["build"]);
+    assert.deepStrictEqual(ciOnlyJobs({}), []);
+  });
+
+  it("never reinstates the deleted mobile native gate", () => {
+    // The fork's free CI graph has no mobile native job; a stray mobile_native
+    // gate must not put the label back in the summary.
+    const staleGate: Record<string, boolean> = { mobile_native: true };
+    assert.deepStrictEqual(ciOnlyJobs(staleGate), []);
+  });
+
+  it("passes the CI graph when every needed job succeeds", () => {
+    const results = {
+      changes: { result: "success" },
+      lint: { result: "success" },
+      build: { result: "success" },
+      test: { result: "success" },
+      test_web: { result: "success" },
+      test_server: { result: "success" },
+      rust: { result: "success" },
+      release_smoke: { result: "success" },
+      shared_persistence_compat: { result: "success" },
+    };
+    assert.isTrue(checkJobResults(results, { lint: "true" }));
+  });
+
+  it("allows a skipped job only when changes turned off every gate it represents", () => {
+    // Build merges the build and typecheck gates, so both must be off.
+    const skipped = { result: "skipped" };
+    assert.isTrue(
+      checkJobResults({ changes: { result: "success" }, lint: skipped }, { lint: "false" }),
+    );
+    assert.isTrue(
+      checkJobResults(
+        { changes: { result: "success" }, build: skipped, test: { result: "success" } },
+        { build: "false", typecheck: "false" },
+      ),
+    );
+  });
+
+  it("fails a skipped job while any of its gates is on", () => {
+    const skipped = { result: "skipped" };
+    assert.isFalse(
+      checkJobResults({ changes: { result: "success" }, lint: skipped }, { lint: "true" }),
+    );
+    assert.isFalse(
+      checkJobResults(
+        { changes: { result: "success" }, build: skipped },
+        { build: "true", typecheck: "false" },
+      ),
+    );
+  });
+
+  it("fails closed on cancelled and failed jobs, whatever the gates say", () => {
+    const gates = { lint: "false", test: "false" };
+    assert.isFalse(
+      checkJobResults({ changes: { result: "success" }, lint: { result: "cancelled" } }, gates),
+    );
+    assert.isFalse(
+      checkJobResults({ changes: { result: "success" }, test: { result: "failure" } }, gates),
+    );
+    assert.isFalse(checkJobResults({ changes: { result: "cancelled" } }, {}));
+  });
+
+  it("fails a skip no gate explains, including deleted jobs", () => {
+    // mobile_native_static_analysis left the graph, so no gate can excuse its
+    // skip; a stale entry in needs must fail rather than pass silently.
+    const staleJob: Record<string, { result: string }> = {
+      changes: { result: "success" },
+      mobile_native_static_analysis: { result: "skipped" },
+    };
+    assert.isFalse(
+      checkJobResults(staleJob, { mobile_native_static_analysis: "false", mobile_native: "false" }),
+    );
+    // A gate the changes job never emitted explains nothing either.
+    assert.isFalse(
+      checkJobResults({ changes: { result: "success" }, lint: { result: "skipped" } }, {}),
+    );
+  });
 
   it("runs the .github/scripts node:test files with node --test, not vitest", () => {
     assert.deepStrictEqual(

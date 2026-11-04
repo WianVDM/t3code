@@ -201,6 +201,44 @@ const override = Effect.fn("checkChanged.override")(function* (
   return value;
 });
 
+// Work this branch still owes CI, in summary order, with the gates that decide
+// each. `changes` only emits a gate it checked, so an absent one is off.
+const CI_ONLY_JOBS: ReadonlyArray<readonly [string, ReadonlyArray<string>]> = [
+  ["full test suites", ["test", "test_web", "test_server"]],
+  ["build", ["build"]],
+  ["rust", ["rust"]],
+  ["release smoke", ["release_smoke"]],
+];
+
+export const ciOnlyJobs = (gates: Record<string, unknown>) =>
+  CI_ONLY_JOBS.flatMap(([job, keys]) => (keys.some((key) => gates[key] === true) ? [job] : []));
+
+// ci.yml's `Check` job passes when every job succeeds, or skips because
+// `changes` turned off every gate it represents (`build` merges build and
+// typecheck). A job this map does not know cannot skip, so one left in `needs`
+// after its job was deleted fails instead of passing silently.
+const JOB_GATES: Record<string, ReadonlyArray<string>> = {
+  lint: ["lint"],
+  build: ["build", "typecheck"],
+  test: ["test"],
+  test_web: ["test_web"],
+  test_server: ["test_server"],
+  rust: ["rust"],
+  release_smoke: ["release_smoke"],
+  shared_persistence_compat: ["shared_persistence_compat"],
+};
+
+export const checkJobResults = (
+  results: Readonly<Record<string, { readonly result: string }>>,
+  gates: Readonly<Record<string, string | undefined>>,
+) =>
+  Object.entries(results).every(([job, { result }]) => {
+    if (result === "success") return true;
+    if (result !== "skipped") return false;
+    const required = JOB_GATES[job];
+    return required !== undefined && required.every((gate) => gates[gate] === "false");
+  });
+
 // Tests that read a doc; a changed doc has no test beside it to select them.
 export const docReaderTests = (files: ReadonlyArray<string>) =>
   files.includes("docs/user/t3-connect-troubleshooting.md")
@@ -549,13 +587,7 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
         "Raise --timeout or lower --concurrency.",
     );
   }
-  const ciOnly = Object.entries({
-    "full test suites": outputs.test || outputs.test_web || outputs.test_server,
-    build: outputs.build,
-    rust: outputs.rust,
-    "mobile native lint": outputs.mobile_native,
-    "release smoke": outputs.release_smoke,
-  }).flatMap(([job, runs]) => (runs ? [job] : []));
+  const ciOnly = ciOnlyJobs(outputs);
   if (ciOnly.length > 0) summary.push(`  CI also runs: ${ciOnly.join(", ")}`);
   if (!runPatchCheck) summary.push("  unused patch check skipped: no dependency files changed");
   if (!runKnip) summary.push("  knip skipped: no code or manifest changed");

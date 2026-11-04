@@ -3,16 +3,22 @@ name: Agent Context Budget
 # Fails when a PR raises a value in agentContextBudget.json above main's. AgentContextBudget.test.ts
 # keeps that file equal to the measured context, so the context cannot grow by editing the file.
 # To accept growth on purpose, a maintainer adds the agent-context-increase label.
+# Pushes to main run this too, only to publish the `Agent context budget` check that
+# release.yml verify_ci requires on the squash-merged commit. There the committed file
+# is already main's reference, so the comparison passes.
 on:
   pull_request:
     types: [opened, synchronize, reopened, labeled, unlabeled]
+  push:
+    branches:
+      - main
 
 permissions:
   contents: read
 
 concurrency:
-  group: agent-context-budget-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+  group: agent-context-budget-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   budget:

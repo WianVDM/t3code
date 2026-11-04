@@ -7,7 +7,7 @@ const root = path.resolve(__dirname, "../..");
 
 const INERT = [
   /^docs\//,
-  /^\.(agents|cursor|vscode|devcontainer|macroscope|repos)\//,
+  /^\.(agents|cursor|vscode|devcontainer|repos)\//,
   /^[^/]+\.md$/,
   /^LICENSE$/,
 ];
@@ -47,9 +47,6 @@ const TEST_ONLY_DEPS = {
 };
 // The server bundles the web build without importing it.
 const BUILD_ONLY_DEPS = { t3: ["@t3tools/web"] };
-
-const MOBILE_NATIVE =
-  /^apps\/mobile\/.*\.(swift|kt|kts)$|^apps\/mobile\/(\.swiftlint\.yml|detekt\.yml|\.editorconfig|Brewfile)$|^scripts\/mobile-native-static-check\.ts$|^package\.json$|^\.github\/workflows\/ci\.yml$|^\.github\/scripts\/ci-changes\.cjs$|^\.github\/actions\/ci-changes\//;
 
 const OWN_TEST_JOB = new Set(["t3", "@t3tools/web", "@t3tools/monorepo"]);
 
@@ -164,7 +161,6 @@ function decide(files, packages, full) {
       test_server: has("t3"),
       rust: everything || rust,
       release_smoke: scriptsChanged,
-      mobile_native: files === null || files.some((file) => MOBILE_NATIVE.test(file)),
     },
   };
 }

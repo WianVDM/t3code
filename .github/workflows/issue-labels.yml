@@ -37,6 +37,11 @@ jobs:
                 color: "fbca04",
                 description: "Issue needs maintainer review and initial categorization.",
               },
+              {
+                name: "agent-context-increase",
+                color: "5319e7",
+                description: "Permits an intentionally larger agent context budget.",
+              },
             ];
 
             for (const label of managedLabels) {
