@@ -63,7 +63,7 @@ describe.skipIf(HostProcess.Platform.defaultValue() !== "linux")("installer home
 // regression: #22490
 describe.skipIf(HostProcess.Platform.defaultValue() !== "linux")("installer channel lookup", () => {
   it.each([
-    ["stable", "1.2.3"],
+    ["stable", "1.2.3-plusplus.4"],
     ["preview", "1.2.4-preview.20261019.50"],
   ])("finds the newest %s release behind a full page of nightlies", async (channel, version) => {
     const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-install-index-"));
@@ -71,10 +71,10 @@ describe.skipIf(HostProcess.Platform.defaultValue() !== "linux")("installer chan
     const server = NodeHttp.createServer((request, response) => {
       const url = new URL(request.url ?? "/", "http://fixture");
       const body =
-        url.pathname === "/pingdotgg/t3code/releases/latest" &&
+        url.pathname === "/WianVDM/t3code/releases/latest" &&
         request.headers.accept === "application/json"
-          ? { tag_name: "v1.2.3" }
-          : url.pathname === "/repos/pingdotgg/t3code/releases"
+          ? { tag_name: "v1.2.3-plusplus.4" }
+          : url.pathname === "/repos/WianVDM/t3code/releases"
             ? { "1": nightlies, "2": [{ tag_name: `v${version}` }, { tag_name: "v1.2.3" }] }[
                 url.searchParams.get("page") ?? ""
               ]
@@ -119,7 +119,81 @@ describe.skipIf(HostProcess.Platform.defaultValue() !== "linux")("installer chan
         },
       );
       expect(code, output).toBe(0);
-      expect(output).toContain(`Installed T3 Code ${version}`);
+      expect(output).toContain(`Installed T3 Code ++ ${version}`);
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await NodeFSP.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("selects stable plusplus tags from the fork release repo, including upstream base rollover", async () => {
+    const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-install-plusplus-"));
+    const home = NodePath.join(root, "home");
+    const forkRepo = "WianVDM/t3code";
+    const versions = ["0.1.5-plusplus.1", "0.1.5-plusplus.2", "0.1.6-plusplus.1"];
+    let latest = versions[0] as string;
+    const requests: string[] = [];
+    const server = NodeHttp.createServer((request, response) => {
+      const url = new URL(request.url ?? "/", "http://fixture");
+      requests.push(url.pathname);
+      const body =
+        url.pathname === `/${forkRepo}/releases/latest` &&
+        request.headers.accept === "application/json"
+          ? { tag_name: `v${latest}` }
+          : url.pathname === `/repos/${forkRepo}/releases`
+            ? versions
+                .slice(versions.indexOf(latest))
+                .reverse()
+                .map((version) => ({ tag_name: `v${version}` }))
+            : undefined;
+      if (body === undefined) response.statusCode = 404;
+      response.end(JSON.stringify(body ?? [], null, 2));
+    });
+    try {
+      for (const version of versions) {
+        const target = NodePath.join(home, "runtime/versions", version);
+        await NodeFSP.mkdir(target, { recursive: true });
+        await NodeFSP.writeFile(NodePath.join(target, ".install-complete"), `${version}\n`);
+      }
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("Expected a TCP listener");
+      const origin = `http://127.0.0.1:${address.port}`;
+      const source = await NodeFSP.readFile(
+        NodePath.resolve(import.meta.dirname, "install.sh"),
+        "utf8",
+      );
+      const installer = NodePath.join(root, "install.sh");
+      await NodeFSP.writeFile(installer, source.replace(/https:\/\/(api\.)?github\.com/g, origin));
+      for (const version of versions) {
+        latest = version;
+        const { code, output } = await new Promise<{ code: number | null; output: string }>(
+          (resolve, reject) => {
+            const child = NodeChildProcess.spawn("sh", [installer], {
+              env: {
+                ...process.env,
+                T3CODE_VERSION: "",
+                T3CODE_CHANNEL: "stable",
+                T3CODE_HOME: home,
+                T3CODE_INSTALL_BIN_DIR: NodePath.join(root, "bin"),
+                // A wrong version must fail here instead of downloading a real release.
+                T3CODE_RELEASE_BASE_URL: origin,
+              },
+              stdio: ["ignore", "pipe", "pipe"],
+            });
+            let output = "";
+            child.stdout.on("data", (chunk: Buffer) => (output += chunk.toString()));
+            child.stderr.on("data", (chunk: Buffer) => (output += chunk.toString()));
+            child.on("error", reject);
+            child.on("close", (code) => resolve({ code, output }));
+          },
+        );
+        expect(code, output).toBe(0);
+        expect(output).toContain(`Installed T3 Code ++ ${version}`);
+      }
+      expect(requests.every((path) => path.startsWith(`/${forkRepo}/`))).toBe(true);
+      expect(requests.join("\n")).not.toContain("pingdotgg");
     } finally {
       server.closeAllConnections();
       await new Promise<void>((resolve) => server.close(() => resolve()));

@@ -1,5 +1,6 @@
 ---
 import LegalPage from "../components/LegalPage.astro";
+import { FORK_REPOSITORY_URL, PRODUCT_NAME } from "../lib/site";
 
 const sections = [
   ["introduction", "Introduction"],
@@ -26,14 +27,30 @@ const sections = [
 ---
 
 <LegalPage
-  title="Terms of Service | T3 Code"
-  description="The terms that govern your use of T3 Code, app.t3.codes, T3 Connect, and t3.codes."
+  title="Terms of Service (upstream) | T3 Code"
+  description="The upstream T3 Tools, Inc. terms for T3 Code, app.t3.codes, T3 Connect, and t3.codes, reproduced for reference by the T3 Code ++ fork."
   heading="T3 Code Terms of Service"
   lede="These Terms govern your use of T3 Code, including its desktop, mobile, and hosted applications, the optional T3 Connect service, and the t3.codes website."
   effectiveDate="2026-07-15"
   lastUpdated="2026-07-15"
   sections={sections}
 >
+  <aside class="scope-notice" aria-labelledby="scope-notice-heading">
+    <p class="section-number">Scope</p>
+    <h2 id="scope-notice-heading">These are the upstream terms, not the {PRODUCT_NAME} terms</h2>
+    <p>
+      {PRODUCT_NAME} is an independent fork of T3 Code. The terms below are the ones T3 Tools,
+      Inc. publishes for the services it operates, including{" "}<a href="https://t3.codes"
+        >t3.codes</a
+      >, {" "}<a href="https://app.t3.codes">app.t3.codes</a>, and T3 Connect. They are
+      reproduced here for reference and describe those services, which the fork does not operate.
+      They do not govern {PRODUCT_NAME} itself.
+    </p>
+    <p>
+      Fork-specific questions go to{" "}<a href={FORK_REPOSITORY_URL}>WianVDM/t3code</a>.
+    </p>
+  </aside>
+
   <section id="introduction">
     <p class="section-number">01</p>
     <h2>Introduction</h2>
@@ -392,5 +409,48 @@ const sections = [
       United States
     </address>
     <a class="contact-link" href="mailto:legal@t3.tools">legal@t3.tools</a>
+    <p class="fork-contact-note">
+      These details belong to T3 Tools, Inc., which does not operate {PRODUCT_NAME}. For
+      fork-specific questions, open an issue at{" "}<a href={FORK_REPOSITORY_URL}
+        >WianVDM/t3code</a
+      >.
+    </p>
   </section>
 </LegalPage>
+
+<style>
+  .scope-notice {
+    margin-bottom: 82px;
+    padding: 28px 30px 30px;
+    border: 1px solid var(--border-strong);
+    border-left: 2px solid var(--accent);
+    border-radius: var(--radius);
+    background: var(--bg-card);
+  }
+
+  .scope-notice h2 {
+    margin: 10px 0 18px;
+    color: var(--fg);
+    font-size: clamp(1.25rem, 2.2vw, 1.6rem);
+    font-weight: 500;
+    letter-spacing: -0.03em;
+    line-height: 1.2;
+  }
+
+  .scope-notice p:last-child {
+    margin-top: 18px;
+  }
+
+  .fork-contact-note {
+    margin-top: 18px;
+    padding-top: 18px;
+    border-top: 1px solid var(--border);
+  }
+
+  @media (max-width: 820px) {
+    .scope-notice {
+      margin-bottom: 62px;
+      padding: 24px 22px 26px;
+    }
+  }
+</style>
