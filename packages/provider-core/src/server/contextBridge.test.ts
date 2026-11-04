@@ -628,6 +628,78 @@ describe("resolveBridgedInstructions", () => {
     expect(resolution!.files).toHaveLength(1);
     expect(resolution!.files[0]).toMatchObject({ status: "skipped", reason: "native-path" });
   });
+
+  it("injects bridged instructions for a kiro target over generic ACP", () => {
+    // Kiro loads no instruction files natively through its generic ACP
+    // session, so every existing source file must arrive as injected
+    // rather than be skipped as native-path or native-content.
+    writeFixture("home/.claude/CLAUDE.md", "global claude rules");
+    writeFixture("project/CLAUDE.md", "project claude rules");
+
+    const settings = decodeSettings({
+      enabled: true,
+      routes: { kiro: { instructions: "claudeAgent" } },
+    });
+    expect(resolveContextBridgeSource(settings, "kiro", "instructions")).toBe("claudeAgent");
+
+    const resolution = resolveBridgedInstructions({
+      settings,
+      targetDriver: "kiro",
+      cwd,
+      userHome,
+    });
+
+    expect(resolution).not.toBeNull();
+    expect(resolution!.source).toBe("claudeAgent");
+    expect(resolution!.block).toContain("global claude rules");
+    expect(resolution!.block).toContain("project claude rules");
+
+    const byPath = new Map(resolution!.files.map((file) => [file.path, file]));
+    expect(byPath.get(NodePath.join(userHome, ".claude", "CLAUDE.md"))).toMatchObject({
+      tier: "global",
+      status: "injected",
+    });
+    expect(byPath.get(NodePath.join(cwd, "CLAUDE.md"))).toMatchObject({
+      tier: "project",
+      status: "injected",
+    });
+  });
+
+  it("injects bridged instructions for a fx target over generic ACP", () => {
+    // Fx loads no instruction files natively through its generic ACP
+    // session, so every existing source file must arrive as injected
+    // rather than be skipped as native-path or native-content.
+    writeFixture("home/.claude/CLAUDE.md", "global claude rules");
+    writeFixture("project/CLAUDE.md", "project claude rules");
+
+    const settings = decodeSettings({
+      enabled: true,
+      routes: { fx: { instructions: "claudeAgent" } },
+    });
+    expect(resolveContextBridgeSource(settings, "fx", "instructions")).toBe("claudeAgent");
+
+    const resolution = resolveBridgedInstructions({
+      settings,
+      targetDriver: "fx",
+      cwd,
+      userHome,
+    });
+
+    expect(resolution).not.toBeNull();
+    expect(resolution!.source).toBe("claudeAgent");
+    expect(resolution!.block).toContain("global claude rules");
+    expect(resolution!.block).toContain("project claude rules");
+
+    const byPath = new Map(resolution!.files.map((file) => [file.path, file]));
+    expect(byPath.get(NodePath.join(userHome, ".claude", "CLAUDE.md"))).toMatchObject({
+      tier: "global",
+      status: "injected",
+    });
+    expect(byPath.get(NodePath.join(cwd, "CLAUDE.md"))).toMatchObject({
+      tier: "project",
+      status: "injected",
+    });
+  });
 });
 
 describe("resolveBridgedSkillRoots", () => {
@@ -668,24 +740,35 @@ describe("resolveBridgedSkillRoots", () => {
     });
   });
 
-  it("filters roots the target already loads natively", () => {
-    // pi loads ~/.claude/skills by itself; bridging claudeAgent's skills into
-    // pi must not register that root a second time.
+  it("bridges the claudeAgent global skill root into pi", () => {
+    // pi does not load ~/.claude/skills by itself, so the claudeAgent global
+    // root must arrive through the bridge rather than be filtered as native.
     const settings = decodeSettings({
       enabled: true,
       routes: { pi: { skills: "claudeAgent" } },
     });
     expect(resolveBridgedSkillRoots({ settings, targetDriver: "pi", cwd, userHome })).toEqual({
-      global: [],
+      global: [NodePath.join(userHome, ".claude", "skills")],
       project: [NodePath.join(cwd, ".claude", "skills")],
     });
   });
 
+  it("still filters the roots pi loads natively", () => {
+    // pi discovers .agents/skills at the project root itself; the bridged
+    // root must not register it a second time.
+    const settings = decodeSettings({
+      enabled: true,
+      routes: { pi: { skills: "codex" } },
+    });
+    expect(resolveBridgedSkillRoots({ settings, targetDriver: "pi", cwd, userHome })).toEqual({
+      global: [NodePath.join(userHome, ".codex", "skills")],
+      project: [NodePath.join(cwd, ".codex", "skills")],
+    });
+  });
+
   it("keeps the claudeAgent global root when pi's nativeHome is a custom agent dir", () => {
-    // With a custom PI_CODING_AGENT_DIR, pi's native skill discovery is
-    // rooted at that dir and no longer loads ~/.claude/skills by itself.
-    // The bridge must still include the claudeAgent global root so skills
-    // like /voice stay discoverable, instead of filtering it as native.
+    // nativeHome remaps only pi's own global roots; the claudeAgent source
+    // root must not be expanded against it or dropped from the bridge.
     const nativeHome = NodePath.join(tempRoot, "pi-agent");
     const settings = decodeSettings({
       enabled: true,
@@ -739,6 +822,58 @@ describe("resolveBridgedSkillRoots", () => {
     ).toEqual({
       global: [NodePath.join(userHome, ".codex", "skills")],
       project: [NodePath.join(nestedCwd, ".codex", "skills")],
+    });
+  });
+
+  it("contributes no instruction or skill roots when kiro is the source", () => {
+    // Kiro exports no native instructions or skills, so a route sourced
+    // from kiro stays routable but yields an empty bridge, never a null
+    // that would silently bypass the route.
+    const settings = decodeSettings({
+      enabled: true,
+      routes: { codex: { instructions: "kiro", skills: "kiro" } },
+    });
+    expect(resolveContextBridgeSource(settings, "codex", "instructions")).toBe("kiro");
+    expect(resolveContextBridgeSource(settings, "codex", "skills")).toBe("kiro");
+
+    const resolution = resolveBridgedInstructions({
+      settings,
+      targetDriver: "codex",
+      cwd,
+      userHome,
+    });
+    expect(resolution).toMatchObject({ source: "kiro", block: "" });
+    expect(resolution!.files).toEqual([]);
+
+    expect(resolveBridgedSkillRoots({ settings, targetDriver: "codex", cwd, userHome })).toEqual({
+      global: [],
+      project: [],
+    });
+  });
+
+  it("contributes no instruction or skill roots when fx is the source", () => {
+    // Fx exports no native instructions or skills, so a route sourced
+    // from fx stays routable but yields an empty bridge, never a null
+    // that would silently bypass the route.
+    const settings = decodeSettings({
+      enabled: true,
+      routes: { codex: { instructions: "fx", skills: "fx" } },
+    });
+    expect(resolveContextBridgeSource(settings, "codex", "instructions")).toBe("fx");
+    expect(resolveContextBridgeSource(settings, "codex", "skills")).toBe("fx");
+
+    const resolution = resolveBridgedInstructions({
+      settings,
+      targetDriver: "codex",
+      cwd,
+      userHome,
+    });
+    expect(resolution).toMatchObject({ source: "fx", block: "" });
+    expect(resolution!.files).toEqual([]);
+
+    expect(resolveBridgedSkillRoots({ settings, targetDriver: "codex", cwd, userHome })).toEqual({
+      global: [],
+      project: [],
     });
   });
 });

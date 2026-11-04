@@ -1,4 +1,6 @@
+// @effect-diagnostics nodeBuiltinImport:off -- Session file keys need a bounded synchronous SHA-256 before they become path components.
 import { tokenizeCliArgs } from "@t3tools/shared/cliArgs";
+import * as NodeCrypto from "node:crypto";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 
@@ -226,8 +228,15 @@ function piT3McpExtensionDestPath(cacheDir: string): string {
   return `${cacheDir.replace(/\\/g, "/")}/${PI_T3_MCP_EXTENSION_FILENAME}`;
 }
 
+// NTFS rejects a single component over 255 bytes, and jiti caches each extension
+// as `<name>.<hash>.mjs`, so a session id must be hashed before it becomes a name.
+const MAX_SESSION_FILE_KEY_LENGTH = 64;
+
 function sanitizedSessionFileKey(sessionId: string): string {
-  return sessionId.replace(/[^A-Za-z0-9_-]/g, "_");
+  if (sessionId.length <= MAX_SESSION_FILE_KEY_LENGTH) {
+    return sessionId.replace(/[^A-Za-z0-9_-]/g, "_");
+  }
+  return NodeCrypto.createHash("sha256").update(sessionId).digest("hex").slice(0, 32);
 }
 
 /**

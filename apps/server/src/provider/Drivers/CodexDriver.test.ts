@@ -7,7 +7,14 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodePath from "node:path";
 import { expect, it } from "@effect/vitest";
-import { EnvironmentId, ProviderInstanceId, ProviderSessionId, ThreadId } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  ProviderInstanceId,
+  ProviderSessionId,
+  ThreadId,
+  DEFAULT_SERVER_SETTINGS,
+  type ServerSettings as ServerSettingsContract,
+} from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -42,6 +49,16 @@ import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProviderCredentialStore from "../ProviderCredentialStore.ts";
 import * as ProviderHostLive from "../ProviderHostLive.ts";
+import * as TestProviderHost from "@t3tools/provider-testing/TestProviderHost";
+
+const bridgedManagedSettings: ServerSettingsContract = {
+  ...DEFAULT_SERVER_SETTINGS,
+  contextBridge: {
+    enabled: true,
+    defaultSource: "claudeAgent",
+    routes: { codex: { skills: "claudeAgent" } },
+  },
+};
 
 const layerDeps = ServerConfig.layerTest(process.cwd(), {
   prefix: "t3-codex-driver-maintenance-",
@@ -336,6 +353,91 @@ it.layer(layerTest)("CodexDriver", (it) => {
     "managed catalog keeps its account label and token together: %s",
     checkManagedAccount,
   );
+
+  it.effect("managed signed-out scans merge bridged skills without spawning app-server", () => {
+    const credentials = new Map<string, Uint8Array>();
+    const secrets = ServerSecretStore.ServerSecretStore.of({
+      get: (key) => Effect.sync(() => Option.fromUndefinedOr(credentials.get(key))),
+      set: (key, value) =>
+        Effect.sync(() => {
+          credentials.set(key, value);
+        }),
+      remove: (key) =>
+        Effect.sync(() => {
+          credentials.delete(key);
+        }),
+      create: () => Effect.die("unused"),
+      getOrCreateRandom: () => Effect.die("unused"),
+    });
+    return Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const tempDir = yield* fs
+        .makeTempDirectoryScoped({ prefix: "t3-codex-managed-bridge-" })
+        .pipe(Effect.flatMap((directory) => fs.realPath(directory)));
+      const userHome = NodePath.join(tempDir, "home");
+      const projectDir = NodePath.join(tempDir, "project");
+      const skillDir = NodePath.join(userHome, ".claude", "skills", "bridged-managed");
+      yield* fs.makeDirectory(skillDir, { recursive: true });
+      yield* fs.makeDirectory(projectDir, { recursive: true });
+      yield* fs.writeFileString(
+        NodePath.join(skillDir, "SKILL.md"),
+        "---\nname: bridged-managed\ndescription: Bridged managed skill\n---\n\nBody.\n",
+      );
+      const installation = yield* CodexInstallation.CodexInstallation;
+      const executable = {
+        executablePath: "/user/bin/codex",
+        managedVersionDirectory: null,
+        source: "local" as const,
+        version: "0.156.1",
+      };
+      const spawns: Array<string> = [];
+      const instance = yield* CodexDriver.create({
+        instanceId: ProviderInstanceId.make("managed-bridged-skills"),
+        displayName: "Managed bridged skills",
+        enabled: true,
+        environment: [],
+        config: {
+          ...CodexDriver.defaultConfig(),
+          setupMode: "managed",
+          homePath: NodePath.join(tempDir, "codex-home"),
+        },
+      }).pipe(
+        Effect.provideService(ServerSecretStore.ServerSecretStore, secrets),
+        Effect.provideService(
+          CodexInstallation.CodexInstallation,
+          CodexInstallation.CodexInstallation.of({
+            ...installation,
+            managedDirectory: "unused-managed-installation",
+            resolve: () => Effect.succeed(executable),
+            acquire: () => Effect.succeed(executable),
+          }),
+        ),
+        Effect.provideService(
+          ChildProcessSpawner.ChildProcessSpawner,
+          ChildProcessSpawner.make((command) =>
+            Effect.sync(() =>
+              spawns.push(ChildProcess.isStandardCommand(command) ? command.command : "unknown"),
+            ).pipe(
+              Effect.andThen(
+                Effect.die("A signed-out managed scan must not spawn the Codex app-server"),
+              ),
+            ),
+          ),
+        ),
+      );
+      const machine = yield* instance.snapshot.refresh;
+      expect(machine.auth.status).toBe("unauthenticated");
+      const scan = yield* instance.snapshotForCwd!(projectDir).pipe(
+        Effect.provideService(HostProcess.HomeDirectory, userHome),
+      );
+      expect(scan.skills.map((skill) => skill.name)).toEqual(["bridged-managed"]);
+      expect(scan.skills[0]?.scope).toBe("user");
+      expect(spawns).toEqual([]);
+    }).pipe(
+      Effect.provide(TestProviderHost.layer({ settings: bridgedManagedSettings })),
+      Effect.scoped,
+    );
+  });
 
   it.effect.skipIf(windowsHost)(
     "runs the standalone updater against the shared home, not the shadow home",

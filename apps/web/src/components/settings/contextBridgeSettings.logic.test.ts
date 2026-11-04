@@ -105,7 +105,7 @@ describe("contextBridgeSettings.logic", () => {
       expect(supportsContextBridgeHooks("claudeAgent")).toBe(false);
       expect(supportsContextBridgeHooks("pi")).toBe(false);
     });
-    it.each(["cursor", "grok", "opencode", "unknownDriver"])(
+    it.each(["cursor", "fx", "grok", "kiro", "opencode", "unknownDriver"])(
       "returns false for non-antigravity driver %s",
       (driver) => {
         expect(supportsContextBridgeHooks(driver)).toBe(false);
@@ -120,7 +120,7 @@ describe("contextBridgeSettings.logic", () => {
         expect(supportsContextBridgeSkills(driver)).toBe(true);
       },
     );
-    it.each(["muse", "grok", "unknownDriver"])(
+    it.each(["muse", "fx", "grok", "kiro", "unknownDriver"])(
       "returns false for non-allowlisted driver %s",
       (driver) => {
         expect(supportsContextBridgeSkills(driver)).toBe(false);
