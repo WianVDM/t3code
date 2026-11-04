@@ -2,9 +2,7 @@
 
 Server features are Effect services. Transports call them: WebSocket RPC handlers in
 [`ws.ts`](../../apps/server/src/ws.ts), HTTP routes, MCP tools, scheduled tasks, and the CLI. This
-page holds the rules for writing them. The
-[Effect Service Conventions](../../.macroscope/check-run-agents/effect-service-conventions.md)
-review check enforces the same rules; keep the two in step.
+page holds the rules for writing them.
 
 ## Where a feature lives
 

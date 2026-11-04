@@ -159,8 +159,6 @@ export default defineConfig({
     ignorePatterns: [
       ".repos/**",
       "infra/task-cache/vendor/**",
-      // Macroscope requires one glob per line; Markdown formatting corrupts it.
-      ".macroscope/ignore.md",
       ".alchemy",
       "dist",
       "dist-electron",
@@ -360,14 +358,6 @@ export default defineConfig({
       {
         files: ["packages/shared/src/HostProcess.ts"],
         rules: { "t3code/no-global-process-runtime": "off" },
-      },
-      {
-        // The `t3` npm launcher is published as plain, dependency-free Node.
-        files: ["scripts/npm-launcher/**"],
-        rules: {
-          "t3code/no-global-process-runtime": "off",
-          "t3code/namespace-node-imports": "off",
-        },
       },
       {
         files: ["apps/server/src/mcp/McpHttpServer.ts"],
