@@ -146,7 +146,7 @@ function providersWithLimits(providers: readonly ServerProvider[]): readonly Ser
       provider.enabled &&
       provider.installed &&
       isProviderAvailable(provider) &&
-      provider.usageLimits !== undefined,
+      (provider.usageLimits !== undefined || (provider.usageAccounts?.length ?? 0) > 0),
   );
 }
 
@@ -171,16 +171,36 @@ export function collectExternalUsageLinks(presentations: LimitPresentations) {
       readonly accounts: readonly string[];
     }
   >();
+  const add = (
+    external: { readonly label: string; readonly url: string } | undefined,
+    message: string | undefined,
+    account: string,
+  ) => {
+    if (!external) return;
+    links.set(external.url, {
+      ...external,
+      message,
+      accounts: [...new Set([...(links.get(external.url)?.accounts ?? []), account])],
+    });
+  };
   for (const presentation of presentations.values()) {
+    const on = presentation.entry.target.label;
     for (const provider of providersWithLimits(presentation.serverConfig?.providers ?? [])) {
-      const external = provider.usageLimits?.externalUsage;
-      if (external && provider.auth.status === "authenticated") {
-        const account = `${provider.displayName ?? provider.instanceId} on ${presentation.entry.target.label}`;
-        links.set(external.url, {
-          ...external,
-          message: provider.usageLimits?.unavailable?.message,
-          accounts: [...new Set([...(links.get(external.url)?.accounts ?? []), account])],
-        });
+      if (provider.auth.status !== "authenticated") continue;
+      const name = provider.displayName ?? provider.instanceId;
+      add(
+        provider.usageLimits?.externalUsage,
+        provider.usageLimits?.unavailable?.message,
+        `${name} on ${on}`,
+      );
+      // Upstream accounts (e.g. OpenRouter) hang the same destination off each account entry.
+      for (const account of provider.usageAccounts ?? []) {
+        const accountName = account.email?.trim() || account.id.replace(/\.json$/i, "");
+        add(
+          account.usageLimits.externalUsage,
+          account.usageLimits.unavailable?.message,
+          `${name} · ${accountName} on ${on}`,
+        );
       }
     }
   }
@@ -317,28 +337,45 @@ export function collectLimitAccounts(presentations: LimitPresentations): readonl
   };
   const resolveKey = accountKeyResolver(
     [...presentations.values()].flatMap((presentation) => [
-      ...(presentation.serverConfig?.providers ?? [])
-        .filter((provider) => provider.enabled)
-        .map(nativeReport),
+      ...(presentation.serverConfig?.providers ?? []).flatMap((provider) =>
+        provider.enabled ? [nativeReport(provider), ...(provider.usageAccounts ?? [])] : [],
+      ),
       ...(presentation.serverConfig?.usageLimitSources ?? []).flatMap((source) => source.accounts),
     ]),
   );
   for (const [environmentId, presentation] of presentations) {
     const label = presentation.entry.target.label;
     for (const provider of providersWithLimits(presentation.serverConfig?.providers ?? [])) {
-      if (!provider.usageLimits || limitsNotice(provider.usageLimits) !== null) continue;
-      merge(resolveKey(nativeReport(provider)) ?? `${environmentId}:${provider.instanceId}`, {
-        key: `${environmentId}:${provider.instanceId}`,
-        driver: provider.driver,
-        displayName: provider.displayName?.trim() || null,
-        email: provider.auth.email,
-        plan: provider.auth.label,
-        accentColor: provider.accentColor,
-        environments: [{ environmentId, label }],
-        sourceLabel: null,
-        redeem: { environmentId, input: { instanceId: provider.instanceId } },
-        limits: provider.usageLimits,
-      });
+      if (provider.usageLimits && limitsNotice(provider.usageLimits) === null) {
+        merge(resolveKey(nativeReport(provider)) ?? `${environmentId}:${provider.instanceId}`, {
+          key: `${environmentId}:${provider.instanceId}`,
+          driver: provider.driver,
+          displayName: provider.displayName?.trim() || null,
+          email: provider.auth.email,
+          plan: provider.auth.label,
+          accentColor: provider.accentColor,
+          environments: [{ environmentId, label }],
+          sourceLabel: null,
+          redeem: { environmentId, input: { instanceId: provider.instanceId } },
+          limits: provider.usageLimits,
+        });
+      }
+      for (const account of provider.usageAccounts ?? []) {
+        if (limitsNotice(account.usageLimits) !== null) continue;
+        const key = `${environmentId}:${provider.instanceId}:${account.id}`;
+        merge(resolveKey(account) ?? key, {
+          key,
+          driver: account.driver,
+          displayName: account.email ? null : account.id.replace(/\.json$/i, ""),
+          email: account.email,
+          plan: account.plan,
+          accentColor: provider.accentColor,
+          environments: [{ environmentId, label }],
+          sourceLabel: null,
+          redeem: null,
+          limits: account.usageLimits,
+        });
+      }
     }
   }
   const labelEnvironment = presentations.size > 1;
@@ -380,24 +417,33 @@ export function collectLimitAccounts(presentations: LimitPresentations): readonl
 export function collectLimitNotices(presentations: LimitPresentations): readonly string[] {
   const label = (environmentLabel: string, subject: string) =>
     presentations.size > 1 ? `${environmentLabel} · ${subject}` : subject;
-  const notices: string[] = [];
+  const notices = new Set<string>();
   for (const presentation of presentations.values()) {
     const environmentLabel = presentation.entry.target.label;
     for (const provider of providersWithLimits(presentation.serverConfig?.providers ?? [])) {
-      if (provider.usageLimits?.unavailable?.reason === "unsupported") continue;
-      const notice = provider.usageLimits ? limitsNotice(provider.usageLimits) : null;
       const name = provider.displayName?.trim() || String(provider.driver);
-      if (notice) notices.push(`${label(environmentLabel, name)}: ${notice}`);
+      if (provider.usageLimits && provider.usageLimits.unavailable?.reason !== "unsupported") {
+        const notice = limitsNotice(provider.usageLimits);
+        if (notice) notices.add(`${label(environmentLabel, name)}: ${notice}`);
+      }
+      // A failed upstream account is skipped from the account list, so its notice is its only report.
+      for (const account of provider.usageAccounts ?? []) {
+        if (account.usageLimits.unavailable?.reason === "unsupported") continue;
+        const notice = limitsNotice(account.usageLimits);
+        if (!notice) continue;
+        const accountName = account.email?.trim() || account.id.replace(/\.json$/i, "");
+        notices.add(`${label(environmentLabel, `${name} · ${accountName}`)}: ${notice}`);
+      }
     }
     for (const source of presentation.serverConfig?.usageLimitSources ?? []) {
       if (source.error) {
-        notices.push(`${label(environmentLabel, source.label)}: ${source.error}`);
+        notices.add(`${label(environmentLabel, source.label)}: ${source.error}`);
       } else if (source.accounts.length === 0) {
-        notices.push(`${label(environmentLabel, source.label)}: No accounts reported.`);
+        notices.add(`${label(environmentLabel, source.label)}: No accounts reported.`);
       }
     }
   }
-  return notices;
+  return [...notices];
 }
 
 export interface LimitPoolMember {
@@ -563,7 +609,7 @@ function poolWindows(accounts: readonly LimitAccount[], now: number): readonly L
     const first = members[0]!.window;
     const id = members[0]!.account.driver === "codex" ? key : first.id;
     const usedPercent = members.reduce((sum, m) => sum + m.window.usedPercent, 0) / members.length;
-    // Judge pace only for windows with reset clocks; others add spend without elapsed time.
+    // A window with no reset clock adds spend but no elapsed time.
     const timed = members.flatMap((m) => {
       const share = elapsedShare(m.window, now);
       return share === null ? [] : [{ used: m.window.usedPercent, elapsed: share }];
@@ -609,7 +655,12 @@ export function limitsNotice(limits: ServerProviderUsageLimits): string | null {
   if (limits.unavailable?.reason === "probeFailed") {
     return limits.unavailable.message ?? "Could not read limits.";
   }
-  return limits.windows.length === 0 ? "No limits reported." : null;
+  if (limits.windows.length > 0) return null;
+  const monetary = limits.monetaryUsage;
+  if (monetary !== undefined && Object.values(monetary).some((value) => value !== undefined)) {
+    return null;
+  }
+  return "No limits reported.";
 }
 
 export function remainingPercent(window: ServerProviderUsageWindow): number {
@@ -834,6 +885,23 @@ export function collectProviderUsageLimits(
       ...(provider.auth.email ? { email: provider.auth.email } : {}),
       limits: shownCredits ? { ...limits, resetCredits: shownCredits } : limits,
     });
+  }
+  for (const provider of providersWithLimits(providers)) {
+    if (provider.driver !== selected.driver) continue;
+    const providerLabel = provider.displayName?.trim() || String(provider.instanceId);
+    for (const account of provider.usageAccounts ?? []) {
+      if (limitsNotice(account.usageLimits) !== null) continue;
+      accounts.push({
+        id: `${provider.instanceId}:${account.id}`,
+        driver: account.driver,
+        label: `${providerLabel} · ${account.id}`,
+        sourceLabel: providerLabel,
+        ...(account.plan ? { plan: account.plan } : {}),
+        ...(account.email ? { email: account.email } : {}),
+        ...(provider.accentColor ? { accentColor: provider.accentColor } : {}),
+        limits: account.usageLimits,
+      });
+    }
   }
   for (const source of sources) {
     const matching = source.accounts.filter((account) => account.driver === selected.driver);

@@ -13,6 +13,7 @@ import {
   paceRemainingPercent,
   remainingPercent,
   type LimitAccount,
+  type LimitPool,
   type LimitPoolWindow,
 } from "@t3tools/shared/usageLimits";
 import { Fragment, type ReactNode, useId, useState } from "react";
@@ -26,7 +27,7 @@ import { AppText as Text } from "../../components/ui/AppText";
 import { ProviderIcon } from "../../components/ProviderIcon";
 import { SettingsScreen } from "../settings/components/SettingsScreen";
 import { environmentPresentations } from "../../state/presentation";
-import { ResetCredits } from "./UsageLimitsSection";
+import { ResetCredits, monetaryUsageText } from "./UsageLimitsSection";
 import { usageProviderKind, useProviderColors } from "./usageProviders";
 
 const DRIVER_LABEL: Partial<Record<string, string>> = {
@@ -404,6 +405,33 @@ function PoolWindowCard({
   );
 }
 
+function hasDisplayableLimits(pool: LimitPool) {
+  return (
+    displayLimitWindows(pool).length > 0 ||
+    pool.accounts.some((account) => monetaryUsageText(account.limits.monetaryUsage) !== null)
+  );
+}
+
+function PoolMonetaryAccounts({ pool }: { readonly pool: LimitPool }) {
+  const rows = pool.accounts.flatMap((account) => {
+    const text = monetaryUsageText(account.limits.monetaryUsage);
+    return text ? [{ account, text }] : [];
+  });
+  if (rows.length === 0) return null;
+  return (
+    <View className="gap-2 rounded-[24px] border-continuous bg-grouped-card p-4">
+      {rows.map(({ account, text }) => (
+        <View key={account.key} className="flex-row items-baseline justify-between gap-3">
+          <Text numberOfLines={1} className="min-w-0 shrink text-sm font-t3-medium text-foreground">
+            {accountName(account)}
+          </Text>
+          <Text className="shrink-0 text-sm tabular-nums text-foreground-muted">{text}</Text>
+        </View>
+      ))}
+    </View>
+  );
+}
+
 export function UsageLimitsSection({
   now,
   failedLabels,
@@ -422,7 +450,7 @@ export function UsageLimitsSection({
     selectedEnvironmentIds === null
       ? presentations
       : new Map([...presentations].filter(([id]) => selectedEnvironmentIds.has(id)));
-  const pools = collectLimitPools(collectLimitAccounts(selected), now);
+  const pools = collectLimitPools(collectLimitAccounts(selected), now).filter(hasDisplayableLimits);
   const notices = collectLimitNotices(selected);
   const externalLinks = collectExternalUsageLinks(selected);
   const colors = useProviderColors();
@@ -474,6 +502,7 @@ export function UsageLimitsSection({
                   />
                 );
               })}
+              <PoolMonetaryAccounts pool={pool} />
             </View>
           </Fragment>
         );

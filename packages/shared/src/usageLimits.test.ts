@@ -647,6 +647,139 @@ describe("pools", () => {
     ]);
   });
 
+  it("exposes each supported provider usage account beside the legacy native limits entry", () => {
+    const multi = provider({
+      driver: claude,
+      instanceId: ProviderInstanceId.make("claude"),
+      auth: { status: "authenticated", email: "main@example.com" },
+      usageLimits: { checkedAt, windows: [window] },
+      usageAccounts: [
+        {
+          id: "first@example.com.json",
+          driver: claude,
+          email: "first@example.com",
+          usageLimits: { checkedAt, windows: [{ ...window, usedPercent: 15 }] },
+        },
+        {
+          id: "second@example.com.json",
+          driver: claude,
+          email: "second@example.com",
+          usageLimits: { checkedAt, windows: [{ ...window, usedPercent: 60 }] },
+        },
+        {
+          id: "unsupported@example.com.json",
+          driver: claude,
+          email: "unsupported@example.com",
+          usageLimits: {
+            checkedAt,
+            windows: [],
+            unavailable: { reason: "unsupported" as const },
+          },
+        },
+      ],
+    });
+    const input = new Map([
+      [EnvironmentId.make("env-a"), { ...laptop, serverConfig: { providers: [multi] } }],
+    ]);
+    const accounts = collectLimitAccounts(input);
+    expect(accounts.map((account) => account.key)).toEqual([
+      "env-a:claude",
+      "env-a:claude:first@example.com.json",
+      "env-a:claude:second@example.com.json",
+    ]);
+    expect(accounts[0]).toMatchObject({
+      email: "main@example.com",
+      redeem: { environmentId: "env-a", input: { instanceId: "claude" } },
+      environments: [{ environmentId: "env-a", label: "Laptop" }],
+    });
+    expect(accounts.map((account) => account.limits.windows[0]?.usedPercent)).toEqual([40, 15, 60]);
+    expect(accounts.slice(1).map((account) => account.redeem)).toEqual([null, null]);
+  });
+
+  it("exposes upstream usage accounts when the provider reports no native limits", () => {
+    const pi = ProviderDriverKind.make("pi");
+    const upstreamOnly = provider({
+      driver: pi,
+      instanceId: ProviderInstanceId.make("pi"),
+      auth: { status: "authenticated" },
+      usageAccounts: [
+        {
+          id: "upstream@example.com.json",
+          driver: pi,
+          email: "upstream@example.com",
+          usageLimits: { checkedAt, windows: [window] },
+        },
+      ],
+    });
+    const input = new Map([
+      [EnvironmentId.make("env-a"), { ...laptop, serverConfig: { providers: [upstreamOnly] } }],
+    ]);
+    const accounts = collectLimitAccounts(input);
+    expect(accounts.map((account) => account.key)).toEqual(["env-a:pi:upstream@example.com.json"]);
+    expect(accounts[0]).toMatchObject({
+      email: "upstream@example.com",
+      environments: [{ environmentId: "env-a", label: "Laptop" }],
+    });
+  });
+
+  it("reports a failed upstream account probe without inventing limits", () => {
+    const multi = provider({
+      driver: claude,
+      instanceId: ProviderInstanceId.make("claude"),
+      displayName: "Claude",
+      auth: { status: "authenticated", email: "main@example.com" },
+      usageLimits: { checkedAt, windows: [window] },
+      usageAccounts: [
+        {
+          id: "metered@example.com.json",
+          driver: claude,
+          email: "metered@example.com",
+          usageLimits: { checkedAt, windows: [], monetaryUsage: { usedUsd: 1.25 } },
+        },
+        {
+          id: "broken@example.com.json",
+          driver: claude,
+          email: "broken@example.com",
+          usageLimits: {
+            checkedAt,
+            windows: [{ ...window, usedPercent: 99 }],
+            unavailable: { reason: "probeFailed" as const, message: "401 unauthorized" },
+          },
+        },
+        {
+          id: "unreadable.json",
+          driver: claude,
+          usageLimits: {
+            checkedAt,
+            windows: [],
+            unavailable: { reason: "probeFailed" as const },
+          },
+        },
+        {
+          id: "unsupported@example.com.json",
+          driver: claude,
+          email: "unsupported@example.com",
+          usageLimits: {
+            checkedAt,
+            windows: [],
+            unavailable: { reason: "unsupported" as const },
+          },
+        },
+      ],
+    });
+    const input = new Map([
+      [EnvironmentId.make("env-a"), { ...laptop, serverConfig: { providers: [multi] } }],
+    ]);
+    expect(collectLimitAccounts(input).map((account) => account.email)).toEqual([
+      "main@example.com",
+      "metered@example.com",
+    ]);
+    expect(collectLimitNotices(input)).toEqual([
+      "Claude · broken@example.com: 401 unauthorized",
+      "Claude · unreadable: Could not read limits.",
+    ]);
+  });
+
   it("keys a hub account without an email by hub, so two environments on one hub share it", () => {
     const seat = {
       id: "claude-team-seat.json",
@@ -1289,6 +1422,78 @@ describe("/usage-limits", () => {
     ).toBeNull();
   });
 
+  it("lists native usage accounts beside the instance entry with upstream identity and no credit input", () => {
+    const driver = selected.driver;
+    const multi = provider({
+      usageLimits: limits,
+      auth: { status: "authenticated", email: "main@example.com" },
+      usageAccounts: [
+        {
+          id: "first@example.com.json",
+          driver,
+          email: "first@example.com",
+          plan: "Pro",
+          usageLimits: { ...limits, windows: [{ ...window, usedPercent: 15 }] },
+        },
+        {
+          id: "second@example.com.json",
+          driver,
+          email: "second@example.com",
+          usageLimits: { ...limits, windows: [{ ...window, usedPercent: 60 }] },
+        },
+        {
+          id: "metered@example.com.json",
+          driver,
+          email: "metered@example.com",
+          usageLimits: {
+            ...limits,
+            windows: [],
+            monetaryUsage: { usedUsd: 1.25, remainingUsd: 8.75 },
+          },
+        },
+        {
+          id: "unsupported@example.com.json",
+          driver,
+          email: "unsupported@example.com",
+          usageLimits: {
+            ...limits,
+            windows: [],
+            unavailable: { reason: "unsupported" as const },
+          },
+        },
+      ],
+    });
+    const report = collectProviderUsageLimits(multi.instanceId, [multi], [], now);
+    expect(report?.accounts.map((account) => account.id)).toEqual([
+      "codex",
+      "codex:first@example.com.json",
+      "codex:second@example.com.json",
+      "codex:metered@example.com.json",
+    ]);
+    expect(report?.accounts[0]).toMatchObject({
+      email: "main@example.com",
+      resetCreditInput: { instanceId: "codex" },
+    });
+    const upstream = report?.accounts.slice(1);
+    expect(
+      upstream?.map((account) => [
+        account.email,
+        account.plan,
+        account.limits.windows[0]?.usedPercent,
+      ]),
+    ).toEqual([
+      ["first@example.com", "Pro", 15],
+      ["second@example.com", undefined, 60],
+      ["metered@example.com", undefined, undefined],
+    ]);
+    expect(upstream?.[2]?.limits.monetaryUsage).toEqual({ usedUsd: 1.25, remainingUsd: 8.75 });
+    expect(upstream?.map((account) => account.resetCreditInput)).toEqual([
+      undefined,
+      undefined,
+      undefined,
+    ]);
+  });
+
   it("surfaces source errors only for sources that carry the selected driver", () => {
     const failing = { ...sources[0]!, error: "token expired" };
     expect(
@@ -1415,6 +1620,43 @@ describe("external usage settings", () => {
     ]);
     expect(collectLimitAccounts(presentations)).toEqual([]);
     expect(collectLimitNotices(presentations)).toEqual([]);
+  });
+  it("collects an upstream account destination alongside native provider links", () => {
+    const activityUrl = "https://openrouter.ai/activity";
+    const openRouter = ProviderDriverKind.make("openrouter");
+    const pool = provider({
+      driver: openRouter,
+      instanceId: ProviderInstanceId.make("openrouter"),
+      usageLimits: { checkedAt: "2026-09-03T11:00:00.000Z", windows: [] },
+      usageAccounts: [
+        {
+          id: "openrouter",
+          driver: openRouter,
+          email: "pool@example.com",
+          usageLimits: {
+            checkedAt: "2026-09-03T11:00:00.000Z",
+            windows: [],
+            unavailable: { reason: "unsupported", message: "No credit limit set." },
+            externalUsage: { label: "OpenRouter activity", url: activityUrl },
+          },
+        },
+      ],
+    });
+    const presentations = new Map([
+      [
+        EnvironmentId.make("a"),
+        { entry: { target: { label: "A" } }, serverConfig: { providers: [pool] } },
+      ],
+    ]);
+    expect(collectExternalUsageLinks(presentations)).toEqual([
+      {
+        label: "OpenRouter activity",
+        url: activityUrl,
+        message: "No credit limit set.",
+        accounts: ["openrouter · pool@example.com on A"],
+      },
+    ]);
+    expect(collectLimitAccounts(presentations)).toEqual([]);
   });
 });
 

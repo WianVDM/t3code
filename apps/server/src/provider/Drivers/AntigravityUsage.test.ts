@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import { ProviderInstanceId } from "@t3tools/contracts";
@@ -13,7 +14,11 @@ import { AntigravityUsage, layer as AntigravityUsageLayer } from "./AntigravityU
 
 const hostLayer = TestProviderHost.layer().pipe(Layer.provide(NodeServices.layer));
 const testLayer = Layer.mergeAll(
-  AntigravityUsageLayer.pipe(Layer.provide(hostLayer), Layer.provide(NodeServices.layer)),
+  AntigravityUsageLayer.pipe(
+    Layer.provide(hostLayer),
+    Layer.provide(NodeServices.layer),
+    Layer.provide(NodeCrypto.layer),
+  ),
   hostLayer,
   NodeServices.layer,
 );

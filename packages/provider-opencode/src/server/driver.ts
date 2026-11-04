@@ -1,6 +1,7 @@
 import { ProviderDriverKind } from "@t3tools/contracts";
 import { OpenCodeSettings } from "../settings.ts";
-import * as Crypto from "effect/Crypto";
+import * as Digest from "effect/crypto/Digest";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -22,6 +23,14 @@ import type { ProviderTextGeneration } from "@t3tools/provider-core/server/textG
 import { ProviderDriverError } from "@t3tools/provider-core/server/errors";
 import { openCodeUsageReader, type OpenCodeUsageReaderEnv } from "./usage.ts";
 import { readOpenCodeGoUsageLimits } from "./usageLimits.ts";
+import {
+  discoverUpstreamCredentials,
+  probeUpstreamUsage,
+  type UpstreamUsageReaderContext,
+} from "@t3tools/provider-core/server/upstreamUsage";
+import { readKimiCodeUsageAccount } from "@t3tools/provider-core/server/kimiUsage";
+import { readOpenRouterUsageAccount } from "@t3tools/provider-core/server/openRouterUsage";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { loadOpenCode2Catalog } from "./openCode2Catalog.ts";
 import {
   checkOpenCodeProviderStatus,
@@ -75,6 +84,58 @@ function isOpenCodeNativeCommandPath(commandPath: string): boolean {
   );
 }
 
+const readKimiUsage = (context: UpstreamUsageReaderContext) =>
+  readKimiCodeUsageAccount({
+    driver: context.driver,
+    credential: { provider: context.credential.providerId, key: context.credential.secret ?? "" },
+    checkedAt: context.checkedAt,
+  });
+
+const upstreamUsageReaders = {
+  kimi: readKimiUsage,
+  "kimi-coding": readKimiUsage,
+  openrouter: (context: UpstreamUsageReaderContext) =>
+    readOpenRouterUsageAccount({
+      driver: context.driver,
+      credential: { provider: context.credential.providerId, key: context.credential.secret ?? "" },
+      checkedAt: context.checkedAt,
+    }),
+};
+
+const readUpstreamUsageAccounts = Effect.fn("readUpstreamUsageAccounts")(function* (input: {
+  readonly enabled: boolean;
+  readonly installed: boolean;
+  readonly authenticated: boolean;
+  readonly serverUrl: string;
+  readonly environment: NodeJS.ProcessEnv;
+}) {
+  // External servers own their credentials; an uninstalled or signed-out CLI has none to probe.
+  if (!input.enabled || !input.installed || !input.authenticated || input.serverUrl.trim()) {
+    return [];
+  }
+  // A malformed or unreadable auth file must not break provider status.
+  return yield* Effect.gen(function* () {
+    const path = yield* Path.Path;
+    const env = input.environment;
+    const dataHome =
+      env.XDG_DATA_HOME ||
+      path.join(
+        env.HOME || env.USERPROFILE || (yield* HostProcess.HomeDirectory),
+        ".local",
+        "share",
+      );
+    const credentials = yield* discoverUpstreamCredentials(
+      path.join(dataHome, "opencode", "auth.json"),
+    );
+    return yield* probeUpstreamUsage({
+      driver: DRIVER_KIND,
+      // The native Go account is already reported on provider.usageLimits.
+      credentials: credentials.filter((credential) => credential.providerId !== "opencode-go"),
+      readers: upstreamUsageReaders,
+    });
+  }).pipe(Effect.orElseSucceed(() => []));
+});
+
 /** Update only within the installed package generation; 2.x converts the shared database in place. */
 export const openCodeUpdateFor = (generation: ProbedOpenCode["generation"]) =>
   makePackageManagedProviderMaintenanceResolver({
@@ -83,6 +144,7 @@ export const openCodeUpdateFor = (generation: ProbedOpenCode["generation"]) =>
     nativeUpdate: {
       args: ["upgrade"],
       isCommandPath: isOpenCodeNativeCommandPath,
+      requiresCommandPath: true,
     },
   });
 
@@ -158,7 +220,8 @@ export type OpenCodeDriverEnv =
   | OpenCodeAdapterV2.OpenCodeAdapterV2DriverEnv
   | ProviderHost.ProviderHost
   | ChildProcessSpawner.ChildProcessSpawner
-  | Crypto.Crypto
+  | Digest.Digest
+  | SecureRandom.SecureRandom
   | FileSystem.FileSystem
   | HttpClient.HttpClient
   | ProviderLatestVersions.ProviderLatestVersions
@@ -192,7 +255,7 @@ export const OpenCodeDriver: ProviderDriver<
     const openCodeRuntime = yield* OpenCodeRuntime.OpenCodeRuntime;
     const httpClient = yield* HttpClient.HttpClient;
     const latestVersions = yield* ProviderLatestVersions.ProviderLatestVersions;
-    const crypto = yield* Crypto.Crypto;
+    const digest = yield* Digest.Digest;
     const host = yield* ProviderHost.ProviderHost;
     const processEnv = yield* mergeProviderInstanceEnvironment(environment);
     const continuationIdentity = defaultProviderContinuationIdentity({
@@ -335,6 +398,16 @@ export const OpenCodeDriver: ProviderDriver<
       ),
     );
 
+    const checkUsageLimits = readOpenCodeGoUsageLimits({
+      enabled: effectiveConfig.enabled,
+      serverUrl: effectiveConfig.serverUrl,
+      environment: processEnv,
+    }).pipe(
+      Effect.provideService(FileSystem.FileSystem, fileSystem),
+      Effect.provideService(Path.Path, pathService),
+      Effect.provideService(HttpClient.HttpClient, httpClient),
+      Effect.provideService(Digest.Digest, digest),
+    );
     const checkProvider = Effect.all(
       {
         provider: checkOpenCodeProviderStatus(
@@ -346,20 +419,30 @@ export const OpenCodeDriver: ProviderDriver<
           Effect.annotateLogs({ providerInstanceId: instanceId }),
           Effect.annotateSpans({ providerInstanceId: instanceId }),
         ),
-        usageLimits: readOpenCodeGoUsageLimits({
-          enabled: effectiveConfig.enabled,
-          serverUrl: effectiveConfig.serverUrl,
-          environment: processEnv,
-        }),
+        usageLimits: checkUsageLimits,
       },
       { concurrency: "unbounded" },
     ).pipe(
-      Effect.map(({ provider, usageLimits }) => ({ ...provider, usageLimits })),
+      Effect.flatMap(({ provider, usageLimits }) =>
+        readUpstreamUsageAccounts({
+          enabled: effectiveConfig.enabled,
+          installed: provider.installed,
+          authenticated: provider.auth.status === "authenticated",
+          serverUrl: effectiveConfig.serverUrl,
+          environment: processEnv,
+        }).pipe(
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
+          Effect.provideService(Path.Path, pathService),
+          Effect.provideService(HttpClient.HttpClient, httpClient),
+          Effect.map((usageAccounts) => ({ provider, usageLimits, usageAccounts })),
+        ),
+      ),
+      Effect.map(({ provider, usageLimits, usageAccounts }) => ({
+        ...provider,
+        usageLimits,
+        usageAccounts,
+      })),
       Effect.map(stampIdentity),
-      Effect.provideService(FileSystem.FileSystem, fileSystem),
-      Effect.provideService(Path.Path, pathService),
-      Effect.provideService(HttpClient.HttpClient, httpClient),
-      Effect.provideService(Crypto.Crypto, crypto),
       Effect.provideService(OpenCodeServerOwner.OpenCodeServerOwner, serverOwner),
       Effect.provideService(OpenCodeRuntime.OpenCodeRuntime, openCodeRuntime),
     );
@@ -445,6 +528,7 @@ export const OpenCodeDriver: ProviderDriver<
       initialSnapshot: (settings) =>
         makePendingOpenCodeProvider(settings.provider).pipe(Effect.map(stampIdentity)),
       checkProvider,
+      checkUsageLimits,
       enrichSnapshot: ({ settings, snapshot, publishSnapshot }) =>
         resolveMaintenance().pipe(
           Effect.flatMap((maintenanceCapabilities) =>

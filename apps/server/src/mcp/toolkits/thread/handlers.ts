@@ -7,7 +7,7 @@ import {
   OrchestratorMcpFailure,
   type OrchestrationV2Command,
 } from "@t3tools/contracts";
-import * as Crypto from "effect/Crypto";
+import * as Digest from "effect/crypto/Digest";
 import * as Effect from "effect/Effect";
 import * as Hex from "effect/encoding/Hex";
 import { modelSelectionCommandType } from "@t3tools/shared/model";
@@ -99,10 +99,10 @@ const handoverCommandId = Effect.fn("mcp.handoverCommandId")(function* (
   sourceThreadId: ThreadId,
   key: string,
 ) {
-  const crypto = yield* Crypto.Crypto;
+  const crypto = yield* Digest.Digest;
   // @effect-diagnostics-next-line preferSchemaOverJson:off - a JSON pair keeps the source thread apart from the key.
   const bytes = new TextEncoder().encode(JSON.stringify([sourceThreadId, key]));
-  const digest = yield* crypto.digest("SHA-256", bytes).pipe(Effect.mapError(unavailable));
+  const digest = yield* crypto.digest(Digest.sha256, bytes).pipe(Effect.mapError(unavailable));
   return CommandId.make(`mcp:handover:${Hex.encode(digest)}`);
 });
 
@@ -129,7 +129,12 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
         });
       const { task, threadId } = yield* scheduler
         .runNow({ id: input.taskId })
-        .pipe(Effect.mapError(unavailable));
+        .pipe(
+          Effect.mapError(
+            (error) =>
+              new OrchestratorMcpFailure({ code: "orchestration_error", message: error.message }),
+          ),
+        );
       const scope = yield* McpInvocationContext.McpInvocationContext;
       return {
         taskId: task.id,

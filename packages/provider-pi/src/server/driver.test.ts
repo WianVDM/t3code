@@ -3,12 +3,15 @@ import { assert, it } from "@effect/vitest";
 import { DEFAULT_SERVER_SETTINGS, ProviderInstanceId } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import * as HttpClient from "effect/http/HttpClient";
+import * as HttpClientResponse from "effect/http/HttpClientResponse";
 import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
@@ -113,12 +116,12 @@ const makePiSpawner = Effect.fnUntraced(function* (
   return { spawner, launches, pendingCommand };
 });
 
-const create = (config: Partial<PiSettings> = {}, enabled = true) =>
+const create = (config: Partial<PiSettings> = {}, enabled = true, agentDir = "/isolated-pi") =>
   PiDriver.create({
     instanceId: ProviderInstanceId.make("pi-workspace-test"),
     displayName: "My Pi",
     accentColor: "#abcdef",
-    environment: [{ name: "PI_CODING_AGENT_DIR", value: "/isolated-pi", sensitive: false }],
+    environment: [{ name: "PI_CODING_AGENT_DIR", value: agentDir, sensitive: false }],
     enabled,
     config: { ...PiDriver.defaultConfig(), binaryPath: "custom-pi", ...config },
   });
@@ -224,6 +227,57 @@ it.layer(layerTest)("PiDriver workspace discovery", (it) => {
           ],
         );
       }).pipe(Effect.scoped),
+  );
+
+  it.effect("does not additively report the kimi-coding credential Pi reports natively", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const agentDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "pi-kimi-" });
+      yield* fileSystem.writeFileString(
+        path.join(agentDir, "auth.json"),
+        JSON.stringify({
+          "kimi-coding": { type: "api_key", key: "kimi-key" },
+          openrouter: { type: "api_key", key: "openrouter-key" },
+        }),
+      );
+      const httpClient = HttpClient.make((request) => {
+        if (request.url === "https://api.kimi.com/coding/v1/usages") {
+          return Effect.succeed(
+            HttpClientResponse.fromWeb(
+              request,
+              Response.json({
+                usages: { limit_5h: { used_ratio: 0.25 }, limit_7d: { used_ratio: 0.5 } },
+              }),
+            ),
+          );
+        }
+        if (request.url === "https://openrouter.ai/api/v1/key") {
+          return Effect.succeed(
+            HttpClientResponse.fromWeb(
+              request,
+              Response.json({ data: { usage: 1, limit: 10, limit_remaining: 9 } }),
+            ),
+          );
+        }
+        return Effect.die(`Unexpected HTTP ${request.url}`);
+      });
+      const { spawner } = yield* makePiSpawner();
+      const instance = yield* create({}, true, agentDir).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        Effect.provideService(HttpClient.HttpClient, httpClient),
+      );
+      yield* instance.snapshot.refresh;
+      const snapshot = yield* instance.snapshot.getSnapshot;
+      assert.deepEqual(
+        snapshot.usageLimits?.windows.map((window) => window.id),
+        ["kimi-5h", "kimi-7d"],
+      );
+      assert.deepEqual(
+        snapshot.usageAccounts?.map((account) => account.id),
+        ["openrouter"],
+      );
+    }).pipe(Effect.scoped),
   );
 
   it.effect(

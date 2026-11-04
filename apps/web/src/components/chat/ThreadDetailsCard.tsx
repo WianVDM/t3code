@@ -80,7 +80,7 @@ export function ThreadDetailsCard({
       const next = element.offsetHeight + (frame ? frame.offsetHeight - frame.clientHeight : 0);
       // Expanding scrollable lists must not hide the section and workspace controls.
       const lists = element.querySelectorAll<HTMLElement>(
-        "[data-thread-relationships-panel], [data-thread-side-chats-panel], [data-thread-details-pr-list], [data-thread-processes-panel]",
+        "[data-thread-relationships-panel], [data-thread-side-chats-panel], [data-thread-details-pr-list], [data-thread-automations-panel], [data-thread-processes-panel]",
       );
       const fittingHeight =
         next - Array.from(lists).reduce((sum, list) => sum + list.offsetHeight, 0);

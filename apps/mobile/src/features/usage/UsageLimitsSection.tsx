@@ -7,6 +7,7 @@ import {
   type ProviderConsumeResetCreditOutcome,
   type ProviderConsumeResetCreditInput,
   type ServerProvider,
+  type ServerProviderMonetaryUsage,
   type ServerProviderResetCredits,
   type ServerProviderUsageWindow,
 } from "@t3tools/contracts";
@@ -18,6 +19,7 @@ import {
   paceRemainingPercent,
   remainingPercent,
 } from "@t3tools/shared/usageLimits";
+import { formatUsd } from "@t3tools/shared/usageFormat";
 import { type ReactNode, useContext, useRef, useState } from "react";
 import { Atom } from "effect/reactivity";
 import { Linking, Pressable, View } from "react-native";
@@ -38,6 +40,20 @@ import {
 import { usageProviderKind, useProviderColors } from "./usageProviders";
 
 const PACE_LABEL = { ahead: "ahead of pace", on: "on pace", under: "under pace" } as const;
+
+export function monetaryUsageText(
+  monetary: ServerProviderMonetaryUsage | undefined,
+): string | null {
+  if (!monetary) return null;
+  const text = [
+    monetary.usedUsd !== undefined ? `${formatUsd(monetary.usedUsd)} used` : null,
+    monetary.remainingUsd !== undefined ? `${formatUsd(monetary.remainingUsd)} left` : null,
+    monetary.limitUsd !== undefined ? `${formatUsd(monetary.limitUsd)} limit` : null,
+  ]
+    .filter((part) => part !== null)
+    .join(" · ");
+  return text === "" ? null : text;
+}
 
 type Driver = ServerProvider["driver"];
 
@@ -175,6 +191,7 @@ export function AccountLimits(props: {
   if (!limits) return null;
   const notice = limitsNotice(limits);
   const externalUsage = limits.externalUsage;
+  const monetaryText = monetaryUsageText(limits.monetaryUsage);
   const padding = dense ? "px-4 py-3" : "p-4";
   return (
     <View
@@ -206,6 +223,9 @@ export function AccountLimits(props: {
           ))}
         </View>
       )}
+      {monetaryText ? (
+        <Text className="text-xs tabular-nums text-foreground-tertiary">{monetaryText}</Text>
+      ) : null}
       {externalUsage ? (
         <Pressable
           accessibilityRole="link"

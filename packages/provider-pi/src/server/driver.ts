@@ -10,6 +10,16 @@ import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
 import * as ProviderLatestVersions from "@t3tools/provider-core/server/ProviderLatestVersions";
 import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
+import * as HostProcess from "@t3tools/shared/HostProcess";
+import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
+import {
+  discoverUpstreamCredentials,
+  probeUpstreamUsage,
+  type StoredUpstreamCredential,
+  type UpstreamUsageReader,
+} from "@t3tools/provider-core/server/upstreamUsage";
+import { readKimiCodeUsageAccount } from "@t3tools/provider-core/server/kimiUsage";
+import { readOpenRouterUsageAccount } from "@t3tools/provider-core/server/openRouterUsage";
 import { piUsageReader } from "./usage.ts";
 import { makePiTextGeneration } from "./textGeneration.ts";
 import { PiAdapterV2Driver, type PiAdapterV2DriverEnv } from "./adapter.ts";
@@ -41,6 +51,35 @@ import {
 } from "@t3tools/provider-core/server/snapshotSettings";
 
 const decodePiSettings = Schema.decodeSync(PiSettings);
+
+// Keys must match Pi's auth.json provider ids.
+const UPSTREAM_USAGE_READERS: Readonly<Record<string, UpstreamUsageReader<HttpClient.HttpClient>>> =
+  {
+    "kimi-coding": (context) =>
+      readKimiCodeUsageAccount({
+        driver: context.driver,
+        credential: {
+          provider: context.credential.providerId,
+          key: context.credential.secret ?? "",
+        },
+        checkedAt: context.checkedAt,
+      }),
+    openrouter: (context) =>
+      readOpenRouterUsageAccount({
+        driver: context.driver,
+        credential: {
+          provider: context.credential.providerId,
+          key: context.credential.secret ?? "",
+        },
+        checkedAt: context.checkedAt,
+      }),
+  };
+
+// Pi reports this entry through readKimiCodeAccount, so additive discovery would duplicate it.
+const isNativelyReportedCredential = (credential: StoredUpstreamCredential) =>
+  credential.providerId === "kimi-coding" &&
+  credential.authType === "api_key" &&
+  credential.secret !== undefined;
 
 const DRIVER_KIND = ProviderDriverKind.make("pi");
 const UPDATE = makePackageManagedProviderMaintenanceResolver({
@@ -141,21 +180,44 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv, Path.Path> = {
     );
     const textGeneration = yield* makePiTextGeneration(effectiveConfig, processEnv);
 
+    const home = yield* HostProcess.HomeDirectory;
+    const agentDir = processEnv.PI_CODING_AGENT_DIR?.trim();
+    const upstreamAuthPath = pathService.resolve(
+      agentDir ? expandHomePath(agentDir, home) : pathService.join(home, ".pi", "agent"),
+      "auth.json",
+    );
+    const upstreamUsageAccounts = discoverUpstreamCredentials(upstreamAuthPath).pipe(
+      // A malformed or unreadable auth file must not affect provider health.
+      Effect.orElseSucceed((): StoredUpstreamCredential[] => []),
+      Effect.flatMap((credentials) =>
+        probeUpstreamUsage({
+          driver: DRIVER_KIND,
+          credentials: credentials.filter(
+            (credential) => !isNativelyReportedCredential(credential),
+          ),
+          readers: UPSTREAM_USAGE_READERS,
+        }),
+      ),
+      Effect.provideService(FileSystem.FileSystem, fileSystem),
+      Effect.provideService(HttpClient.HttpClient, httpClient),
+    );
+
     const checkProvider = checkPiProviderStatus(effectiveConfig, processEnv, cwd).pipe(
-      Effect.filterOrElse(
-        (snapshot) =>
-          !(
-            effectiveConfig.enabled &&
-            snapshot.installed &&
-            snapshot.auth.status === "authenticated"
-          ),
-        (snapshot) =>
-          readKimiCodeAccount(processEnv).pipe(
-            Effect.map(({ usageLimits }) => ({
-              ...snapshot,
-              usageLimits,
-            })),
-          ),
+      Effect.flatMap((draft) =>
+        Effect.gen(function* () {
+          if (!draft.enabled || !draft.installed || draft.auth.status !== "authenticated") {
+            return draft;
+          }
+          const [{ usageLimits }, usageAccounts] = yield* Effect.all([
+            readKimiCodeAccount(processEnv),
+            upstreamUsageAccounts,
+          ]);
+          return {
+            ...draft,
+            usageLimits,
+            ...(usageAccounts.length > 0 ? { usageAccounts } : {}),
+          };
+        }),
       ),
       Effect.map(stampIdentity),
       Effect.provideService(HttpClient.HttpClient, httpClient),

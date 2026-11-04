@@ -1,7 +1,7 @@
 import type { AntigravitySettings, ServerProviderUsageWindow } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Clock from "effect/Clock";
-import * as Crypto from "effect/Crypto";
+import * as Digest from "effect/crypto/Digest";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -127,8 +127,9 @@ function summaryWindows(summary: typeof Summary.Type, requestedAt: number) {
   for (const group of groups ?? []) {
     for (const bucket of group.buckets ?? []) {
       if (bucket.disabled) continue;
-      const family = bucket.bucketId.includes("argon")
-        ? "Gemini 4 Argon"
+      // Argon is metered apart from the default Gemini buckets; keep its group name.
+      const family = bucket.bucketId.startsWith("gemini-argon-")
+        ? group.displayName?.trim() || "Gemini Argon"
         : bucket.bucketId.startsWith("gemini-")
           ? "Gemini"
           : bucket.bucketId.startsWith("3p-")
@@ -190,7 +191,7 @@ export const makeAntigravityUsageProbe = Effect.fn("makeAntigravityUsageProbe")(
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const client = (yield* HttpClient.HttpClient).pipe(HttpClient.filterStatusOk);
-  const crypto = yield* Crypto.Crypto;
+  const crypto = yield* Digest.Digest;
   const platform = yield* HostProcess.Platform;
   const architecture = yield* HostProcess.Architecture;
   const tokenPath = path.join(input.profileDirectory, "antigravity-acp", "acp_token.json");
@@ -201,7 +202,7 @@ export const makeAntigravityUsageProbe = Effect.fn("makeAntigravityUsageProbe")(
 
   const sha256 = (text: string) =>
     crypto
-      .digest("SHA-256", new TextEncoder().encode(text))
+      .digest(Digest.sha256, new TextEncoder().encode(text))
       .pipe(
         Effect.map((digest) =>
           Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join(""),

@@ -2805,6 +2805,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   variant: DesktopBuildVariant = "official",
 ) {
   const buildConfig: Record<string, unknown> = {
+    afterPack: (yield* Path.Path).join(yield* RepoRoot, "scripts/prepare-server-compile-cache.cjs"),
     appId: variant === "fork" ? FORK_DESKTOP_BUILD.appId : DESKTOP_APP_ID,
     productName: resolveDesktopProductName(version, variant),
     artifactName:
@@ -2924,6 +2925,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     buildConfig.toolsets = { appimage: "1.0.3" };
     const path = yield* Path.Path;
     const repoRoot = yield* RepoRoot;
+    buildConfig.afterPack = path.join(repoRoot, "scripts/linux-after-pack.ts");
     buildConfig.linux = {
       target: target === "AppImage" ? [target, "deb"] : [target],
       executableName: "t3code",

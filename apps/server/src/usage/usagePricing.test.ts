@@ -259,6 +259,34 @@ describe("usage pricing", () => {
     expect(lookupRate(table, "example-model")).toBeNull();
   });
 
+  it("prices a bare name at the model maker's rate when a reseller marks it up", () => {
+    const reseller = { "kyma/gemini-4-argon": rate(5.4e-6) };
+    const makers = {
+      "gemini/gemini-4-argon": rate(2e-6, 1e-7),
+      "vertex_ai/gemini-4-argon": rate(2e-6, 1e-7),
+    };
+
+    for (const document of [
+      { ...reseller, ...makers },
+      { ...makers, ...reseller },
+    ]) {
+      const table = parseRateTable(document);
+      expect(lookupRate(table, "gemini-4-argon")).toEqual(
+        lookupRate(table, "gemini/gemini-4-argon"),
+      );
+    }
+  });
+
+  it("leaves a bare name unpriced when model makers' own entries disagree", () => {
+    const table = parseRateTable({
+      "openai/example-model": rate(1),
+      "xai/example-model": rate(3),
+      "kyma/example-model": rate(1),
+    });
+
+    expect(lookupRate(table, "example-model")).toBeNull();
+  });
+
   it("resolves an OpenRouter execution-tagged model to the base model rate", () => {
     const table = parseRateTable({
       "openrouter/minimax/minimax-m3.1-flash": rate(1e-6, 1e-7),

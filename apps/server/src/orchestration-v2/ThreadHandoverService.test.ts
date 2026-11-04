@@ -1,5 +1,6 @@
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
@@ -26,6 +27,7 @@ import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAda
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as CheckpointStore from "../checkpointing/CheckpointStore.ts";
 import * as ManagedEndpointRuntime from "../cloud/ManagedEndpointRuntime.ts";
+import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import * as ServerConfig from "../config.ts";
 import * as GitWorkflow from "../git/GitWorkflowService.ts";
 import * as McpSessionRegistryTestkit from "../mcp/McpSessionRegistry.testkit.ts";
@@ -59,8 +61,9 @@ const modelSelection = {
   model: "gpt-5.4",
 } satisfies ModelSelection;
 
-const layerPlatformTest = Layer.merge(
+const layerPlatformTest = Layer.mergeAll(
   NodeServices.layer,
+  NodeCrypto.layer,
   Layer.mock(SourceControlProviderRegistry.SourceControlProviderRegistry)({
     resolveLink: () => Effect.die("unused title link"),
   }),
@@ -154,6 +157,7 @@ const layerHandoverTest = Layer.mergeAll(
   Layer.provide(layerCheckpointStoreTest),
   Layer.provide(ServerSecretStore.layer),
   Layer.provideMerge(layerServerConfig),
+  Layer.provide(ManagedPolicy.layerTest()),
   Layer.provide(ServerSettings.layerTest()),
   Layer.provide(layerHandoverProviderInstances),
   Layer.provide(layerGitWorkflowTest),
