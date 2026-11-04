@@ -5,6 +5,7 @@ import {
   parseNewThreadLink,
   parseThreadLinkPrompt,
   promptLinkAppPath,
+  promptLinkDeepLink,
   sanitizeLinkedPrompt,
   withoutPromptLinkParams,
 } from "./promptLinks.ts";
@@ -106,6 +107,10 @@ describe("link round trips", () => {
   });
 
   it("maps app scheme and hosted links to in-app paths, and nothing else", () => {
+    expect(promptLinkAppPath("t3codeplusplus://new?prompt=hi")).toBe("/new?prompt=hi");
+    expect(promptLinkAppPath("t3codeplusplus-dev://threads/env-1/thread-1")).toBe(
+      "/env-1/thread-1",
+    );
     expect(promptLinkAppPath("t3code://new?prompt=hi")).toBe("/new?prompt=hi");
     expect(promptLinkAppPath("t3code-dev://threads/env-1/thread-1")).toBe("/env-1/thread-1");
     expect(promptLinkAppPath("https://app.t3.codes/env-1/thread-1?prompt=go")).toBe(
@@ -113,6 +118,15 @@ describe("link round trips", () => {
     );
     expect(promptLinkAppPath("https://app.t3.codes/settings/general")).toBeNull();
     expect(promptLinkAppPath("https://evil.test/new?prompt=hi")).toBeNull();
+    expect(promptLinkAppPath("t3codeplusplus://app/index.html")).toBeNull();
     expect(promptLinkAppPath("t3code://app/index.html")).toBeNull();
+  });
+
+  it("builds desktop deep links on the T3 Code ++ scheme", () => {
+    expect(promptLinkDeepLink("/new?prompt=hi")).toBe("t3codeplusplus://new?prompt=hi");
+    expect(promptLinkDeepLink("/env-1/thread-1?prompt=hi")).toBe(
+      "t3codeplusplus://threads/env-1/thread-1?prompt=hi",
+    );
+    expect(promptLinkAppPath(promptLinkDeepLink("/env-1/thread-1"))).toBe("/env-1/thread-1");
   });
 });

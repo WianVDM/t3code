@@ -1,7 +1,5 @@
-import { readHostedPairingRequest } from "@t3tools/shared/remote";
+import { readHostedPairingRequest, readPairingAppLink } from "@t3tools/shared/remote";
 import * as Schema from "effect/Schema";
-
-const MOBILE_PAIRING_URL_PARAM = "pairingUrl";
 
 function isIpLiteral(host: string): boolean {
   try {
@@ -76,15 +74,6 @@ export function extractPairingUrlFromQrPayload(payload: string): string {
     throw new PairingQrPayloadEmptyError({});
   }
 
-  try {
-    const url = new URL(trimmed);
-    if (url.protocol === "t3code:") {
-      const pairingUrl = url.searchParams.get(MOBILE_PAIRING_URL_PARAM)?.trim() ?? "";
-      if (pairingUrl.length > 0) {
-        return pairingUrl;
-      }
-    }
-  } catch {}
-
-  return trimmed;
+  // Accepts both the t3codeplusplus and stock t3code pair-link families.
+  return readPairingAppLink(trimmed) ?? trimmed;
 }

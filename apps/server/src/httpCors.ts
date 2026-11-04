@@ -10,4 +10,10 @@ export const browserApiCorsAllowedHeaders = [
   ORCHESTRATION_PROTOCOL_HEADER,
 ] as const;
 
-export const DESKTOP_RENDERER_ORIGINS = ["t3code://app", "t3code-dev://app"] as const;
+export const DESKTOP_RENDERER_ORIGINS = [
+  "t3codeplusplus://app",
+  "t3codeplusplus-dev://app",
+  // Stock T3 Code desktops pair with this server from the legacy renderer origins.
+  "t3code://app",
+  "t3code-dev://app",
+] as const;

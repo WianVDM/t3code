@@ -263,6 +263,10 @@
       "types": "./src/assistantCitations.ts",
       "import": "./src/assistantCitations.ts"
     },
+    "./appLinks": {
+      "types": "./src/appLinks.ts",
+      "import": "./src/appLinks.ts"
+    },
     "./promptLinks": {
       "types": "./src/promptLinks.ts",
       "import": "./src/promptLinks.ts"
