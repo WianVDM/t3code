@@ -250,7 +250,8 @@ const PROVIDER_TURN_CODEX_INDEX = "orchestration_v2_provider_turns_codex_native_
 
 /** Rewrites an index definition in place; the schema version bump makes SQLite reload it. */
 const redefineIndex = (dbPath: string, definition: string): void => {
-  const database = new NodeSqlite.DatabaseSync(dbPath);
+  // Defensive mode, on by default in Node 24.12+, ignores writable_schema.
+  const database = new NodeSqlite.DatabaseSync(dbPath, { defensive: false });
   try {
     const schemaVersion = Number(
       database.prepare("PRAGMA schema_version").get()?.schema_version ?? 0,
@@ -350,7 +351,7 @@ it.effect("refuses to publish an old fork database that stays unhealthy after re
   return Effect.gen(function* () {
     yield* seedOldFork(sourcePath, threadId);
     yield* Effect.sync(() => {
-      const database = new NodeSqlite.DatabaseSync(sourcePath);
+      const database = new NodeSqlite.DatabaseSync(sourcePath, { defensive: false });
       try {
         database.exec(
           "CREATE TABLE legacy_rows (value TEXT); INSERT INTO legacy_rows VALUES (NULL);",
