@@ -24,6 +24,7 @@ import { rebuildMessageSearch } from "../orchestration-v2/messageSearchIndex.ts"
 import { isProcessAlive, readPersistedServerRuntimeState } from "../serverRuntimeState.ts";
 import { runMigrations } from "./Migrations.ts";
 import * as OrchestrationEventStore from "./OrchestrationEventStore.ts";
+import { overlayOldForkFiles } from "./importOldForkSettings.ts";
 
 export class OldForkImportError extends Schema.TaggedError<OldForkImportError>()(
   "OldForkImportError",
@@ -160,9 +161,6 @@ export type MergeOldForkOutcome =
 
 // Far beyond any real sequence; parks destination rows while merged rows take the low numbers.
 const MERGE_SEQUENCE_OFFSET = 1_000_000_000_000;
-
-// Files the old fork owns outright when present; everything else in userdata stays untouched.
-const OVERLAY_FILES = ["settings.json", "keybindings.json", "model-manifest.json"] as const;
 
 interface EventMetadataRow {
   readonly sequence: number;
@@ -659,49 +657,14 @@ const publishCandidate = Effect.fn("mergeOldForkDatabase.publish")(function* (
   }
 });
 
-const overlayOldForkFiles = Effect.fn("mergeOldForkDatabase.overlay")(function* (
+const overlayOldForkSettingsAndCredentials = Effect.fn("mergeOldForkDatabase.overlay")(function* (
   sourceUserdata: string,
   destinationUserdata: string,
 ) {
-  const fs = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
-  for (const name of OVERLAY_FILES) {
-    const sourceFilePath = path.join(sourceUserdata, name);
-    if (!(yield* fs.exists(sourceFilePath))) continue;
-    const contents = yield* fs.readFileString(sourceFilePath);
-    yield* writeFileStringAtomically({
-      filePath: path.join(destinationUserdata, name),
-      contents,
-    });
-  }
-  // Old-fork themes win; destination-only themes survive because nothing is deleted.
-  const pending: Array<{ source: string; destination: string }> = [
-    {
-      source: path.join(sourceUserdata, "themes"),
-      destination: path.join(destinationUserdata, "themes"),
-    },
-  ];
-  while (pending.length > 0) {
-    const directories = pending.pop() as { source: string; destination: string };
-    const entries = yield* fs.readDirectory(directories.source).pipe(
-      Effect.catchIf(
-        (error) => error.reason._tag === "NotFound",
-        () => Effect.succeed([] as ReadonlyArray<string>),
-      ),
-    );
-    for (const entry of entries) {
-      const sourceEntry = path.join(directories.source, entry);
-      const destinationEntry = path.join(directories.destination, entry);
-      const info = yield* fs.stat(sourceEntry).pipe(Effect.option);
-      if (Option.isNone(info)) continue;
-      if (info.value.type === "Directory") {
-        pending.push({ source: sourceEntry, destination: destinationEntry });
-        continue;
-      }
-      const contents = yield* fs.readFileString(sourceEntry);
-      yield* writeFileStringAtomically({ filePath: destinationEntry, contents });
-    }
-  }
+  // Failing the overlay leaves the published history in place, so a fixed old fork resumes it.
+  yield* overlayOldForkFiles(sourceUserdata, destinationUserdata).pipe(
+    Effect.mapError((error) => new OldForkMergeError({ reason: error.message, terminal: false })),
+  );
 });
 
 type MergeLifecycleStatus = "published" | "done" | "blocked";
@@ -929,7 +892,7 @@ export const mergeOldForkDatabase = Effect.fn("mergeOldForkDatabase")(function* 
   const destinationPath = path.join(destinationUserdata, "statev2.sqlite");
 
   const complete = Effect.gen(function* () {
-    yield* overlayOldForkFiles(sourceUserdata, destinationUserdata);
+    yield* overlayOldForkSettingsAndCredentials(sourceUserdata, destinationUserdata);
     yield* writeLifecycleMarker({
       filePath: markerPath,
       sourceHome: input.sourceHome,

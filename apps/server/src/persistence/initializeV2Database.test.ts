@@ -8,6 +8,7 @@ import * as NodeSqlite from "node:sqlite";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import { ThreadId } from "@t3tools/contracts";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
@@ -16,6 +17,7 @@ import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import * as ServerConfig from "../config.ts";
+import { SECRET_REDACTED } from "../settingsSecrets.ts";
 import * as SqlitePersistence from "./Sqlite.ts";
 import { runMigrations } from "./Migrations.ts";
 import { initializeV2Database } from "./initializeV2Database.ts";
@@ -618,6 +620,15 @@ const writeServerClaim = (home: string, pid: number) =>
     );
   });
 
+const providerConfigSecretName = (instanceId: string, driver: string, field: string) =>
+  `provider-config-${Buffer.from(instanceId).toString("base64url")}-${Buffer.from(driver).toString("base64url")}-${Buffer.from(field).toString("base64url")}`;
+
+// Windows reports no POSIX mode bits, so owner-only is only assertable elsewhere.
+const assertOwnerOnly = (filePath: string) => {
+  if (HostProcess.Platform.defaultValue() === "win32") return;
+  assert.equal(NodeFS.statSync(filePath).mode & 0o777, 0o600);
+};
+
 const seedBasicMergeHomes = (directory: string) =>
   Effect.gen(function* () {
     const source = mergeHome(directory, "source");
@@ -922,16 +933,46 @@ it.effect("keeps destination live state and never imports the old fork's live st
   );
 });
 
-it.effect("overlays old-fork settings and themes without touching secrets", () => {
+it.effect("overlays old-fork settings and credentials while keeping destination identity", () => {
   const directory = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-merge-settings-"));
   return Effect.gen(function* () {
     const { source, destination, markerPath } = yield* seedBasicMergeHomes(directory);
-    const write = (filePath: string, contents: string) => {
+    const write = (filePath: string, contents: string | Uint8Array) => {
       NodeFS.mkdirSync(NodePath.dirname(filePath), { recursive: true });
       NodeFS.writeFileSync(filePath, contents);
     };
-    write(NodePath.join(destination.userdata, "settings.json"), '{"from":"destination"}');
-    write(NodePath.join(source.userdata, "settings.json"), '{"from":"source"}');
+    const secretName = providerConfigSecretName("main", "antigravity", "apiKey");
+    const secretBytes = Buffer.from("fork-gemini-key");
+    const providerAuthName = `provider-auth-${"a".repeat(64)}.bin`;
+    const providerAuthBytes = Buffer.from("fork-provider-auth");
+    write(
+      NodePath.join(destination.userdata, "settings.json"),
+      JSON.stringify({
+        from: "destination",
+        destinationOnly: true,
+        identity: { machineId: "local-machine" },
+        cloud: { link: "local-cloud" },
+        sessions: { auth: "local-sessions" },
+      }),
+    );
+    write(
+      NodePath.join(source.userdata, "settings.json"),
+      JSON.stringify({
+        from: "source",
+        identity: { machineId: "fork-machine" },
+        cloud: { link: "fork-cloud" },
+        sessions: { auth: "fork-sessions" },
+        providerInstances: {
+          main: {
+            driver: "antigravity",
+            enabled: true,
+            config: { authMethod: "gemini-api-key", apiKey: SECRET_REDACTED },
+          },
+        },
+      }),
+    );
+    write(NodePath.join(source.userdata, "secrets", `${secretName}.bin`), secretBytes);
+    write(NodePath.join(source.userdata, "provider-auth", providerAuthName), providerAuthBytes);
     write(NodePath.join(destination.userdata, "keybindings.json"), '{"from":"destination"}');
     write(NodePath.join(source.userdata, "keybindings.json"), '{"from":"source"}');
     write(NodePath.join(destination.userdata, "model-manifest.json"), '{"from":"destination"}');
@@ -956,10 +997,22 @@ it.effect("overlays old-fork settings and themes without touching secrets", () =
       markerPath,
     });
 
-    assert.equal(
+    const settings = JSON.parse(
       NodeFS.readFileSync(NodePath.join(destination.userdata, "settings.json"), "utf8"),
-      sourceSettings,
-    );
+    ) as Record<string, unknown>;
+    assert.equal(settings.from, "source");
+    assert.equal(settings.destinationOnly, true);
+    // Owner, cloud-link, and session material stays with this installation.
+    assert.deepEqual(settings.identity, { machineId: "local-machine" });
+    assert.deepEqual(settings.cloud, { link: "local-cloud" });
+    assert.deepEqual(settings.sessions, { auth: "local-sessions" });
+    // The redacted credential the merged settings point at arrives owner-only.
+    const secretPath = NodePath.join(destination.userdata, "secrets", `${secretName}.bin`);
+    assert.deepEqual(NodeFS.readFileSync(secretPath), secretBytes);
+    assertOwnerOnly(secretPath);
+    const providerAuthPath = NodePath.join(destination.userdata, "provider-auth", providerAuthName);
+    assert.deepEqual(NodeFS.readFileSync(providerAuthPath), providerAuthBytes);
+    assertOwnerOnly(providerAuthPath);
     assert.equal(
       NodeFS.readFileSync(NodePath.join(destination.userdata, "keybindings.json"), "utf8"),
       '{"from":"source"}',
@@ -998,6 +1051,65 @@ it.effect("overlays old-fork settings and themes without touching secrets", () =
       NodeFS.readFileSync(NodePath.join(source.userdata, "settings.json"), "utf8"),
       sourceSettings,
     );
+  }).pipe(
+    Effect.provide(NodeServices.layer),
+    Effect.ensuring(Effect.sync(() => NodeFS.rmSync(directory, { recursive: true, force: true }))),
+  );
+});
+
+it.effect("resumes a published merge once the old fork stores its missing credential", () => {
+  const directory = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-merge-credential-"));
+  return Effect.gen(function* () {
+    const { source, destination, markerPath } = yield* seedBasicMergeHomes(directory);
+    const write = (filePath: string, contents: string | Uint8Array) => {
+      NodeFS.mkdirSync(NodePath.dirname(filePath), { recursive: true });
+      NodeFS.writeFileSync(filePath, contents);
+    };
+    const secretName = providerConfigSecretName("main", "antigravity", "apiKey");
+    const secretBytes = Buffer.from("fork-gemini-key");
+    const destinationSettings = JSON.stringify({ defaultAutoPull: false });
+    write(
+      NodePath.join(source.userdata, "settings.json"),
+      JSON.stringify({
+        providerInstances: {
+          main: {
+            driver: "antigravity",
+            enabled: true,
+            config: { authMethod: "gemini-api-key", apiKey: SECRET_REDACTED },
+          },
+        },
+      }),
+    );
+    write(NodePath.join(destination.userdata, "settings.json"), destinationSettings);
+
+    // The redacted value promises a credential file the old fork does not have.
+    const failed = yield* Effect.result(
+      mergeOldForkDatabase({
+        sourceHome: source.home,
+        destinationHome: destination.home,
+        markerPath,
+      }),
+    );
+    assert.equal(failed._tag, "Failure");
+    assert.equal(
+      NodeFS.readFileSync(NodePath.join(destination.userdata, "settings.json"), "utf8"),
+      destinationSettings,
+    );
+    // History was published first, so supplying the credential resumes the overlay alone.
+    const published = readEventIds(destination.dbPath);
+    write(NodePath.join(source.userdata, "secrets", `${secretName}.bin`), secretBytes);
+    yield* mergeOldForkDatabase({
+      sourceHome: source.home,
+      destinationHome: destination.home,
+      markerPath,
+    });
+
+    assert.deepEqual(
+      NodeFS.readFileSync(NodePath.join(destination.userdata, "secrets", `${secretName}.bin`)),
+      secretBytes,
+    );
+    assert.deepEqual(readEventIds(destination.dbPath), published);
+    assert.isTrue(NodeFS.existsSync(markerPath));
   }).pipe(
     Effect.provide(NodeServices.layer),
     Effect.ensuring(Effect.sync(() => NodeFS.rmSync(directory, { recursive: true, force: true }))),
