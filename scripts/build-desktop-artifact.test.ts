@@ -520,7 +520,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       resolveDesktopProductName("0.0.17-nightly.20260413.42", "fork"),
       FORK_DESKTOP_BUILD.productName,
     );
-    assert.equal(resolveDesktopProductName("0.1.0"), "T3 Code (Beta)");
+    assert.equal(resolveDesktopProductName("0.1.0"), "T3 Code ++");
   });
 
   it("switches only the Windows icon to the fork artwork for the fork variant", () => {
