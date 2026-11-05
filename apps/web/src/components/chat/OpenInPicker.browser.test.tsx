@@ -4,7 +4,7 @@ import { Cause } from "effect";
 import { AsyncResult } from "effect/reactivity";
 import { describe, expect, it, vi } from "vite-plus/test";
 
-import { act, fakeTimers, render as renderUi } from "../../../test/render";
+import { act, render as renderUi } from "../../../test/render";
 import type { RemoteOpenState } from "../../remoteOpen";
 
 const state = vi.hoisted(() => ({
@@ -16,6 +16,7 @@ const state = vi.hoisted(() => ({
   setPreferred: vi.fn(),
   markHintSeen: vi.fn(),
   listeners: new Set<() => void>(),
+  announced: [] as string[],
 }));
 
 vi.mock(import("../../state/session"), async (importOriginal) => {
@@ -57,6 +58,12 @@ vi.mock(import("../../editorPreferences"), async (importOriginal) => {
     },
   };
 });
+vi.mock(import("../../lib/announce"), () => ({
+  announce: (message: string) => {
+    state.announced.push(message);
+  },
+  cancelAnnouncement: () => {},
+}));
 vi.mock(import("../../remoteOpen"), async (importOriginal) => ({
   ...(await importOriginal()),
   useRemoteOpenState: () => state.remote,
@@ -84,6 +91,7 @@ async function setup() {
   state.setPreferred.mockReset();
   state.markHintSeen.mockReset();
   state.listeners.clear();
+  state.announced.length = 0;
   window.localStorage.clear();
 
   await using stack = new AsyncDisposableStack();
@@ -98,7 +106,7 @@ async function setup() {
   async function renderPicker(
     availableEditors: readonly EditorId[] = editors,
     panel = false,
-    { openInCwd = "/work/project", revealFileManager = false } = {},
+    { openInCwd = "/work/project", revealFileManager = false, fallback = false } = {},
   ) {
     await act(async () => {
       for (const listener of state.listeners) listener();
@@ -113,7 +121,16 @@ async function setup() {
           compact={!panel}
         />
       );
-      await screen.rerender(node);
+      await screen.rerender(
+        fallback ? (
+          <>
+            {node}
+            <FavoriteEditorFallback />
+          </>
+        ) : (
+          node
+        ),
+      );
     });
   }
 
@@ -207,30 +224,28 @@ describe("open in editor announcement", () => {
     await using fixture = await setup();
     const { screen, renderPicker, pressOpenFavorite, FavoriteEditorFallback } = fixture;
     state.allowed.add(selected);
-    await renderPicker();
-    using _timers = fakeTimers();
-    const regions = () => [...document.querySelectorAll('body > [aria-live="polite"]')];
-    const spoken = async () => {
-      await act(async () => vi.runAllTimers());
-      return regions()
-        .map((region) => region.textContent)
-        .join("");
-    };
+    // Matches the app: ChatView mounts the bubble fallback alongside the picker.
+    await renderPicker(editors, false, { fallback: true });
+    const spoken = () => state.announced.join("");
     const refuse = () =>
       state.run.mockResolvedValueOnce(AsyncResult.failure(Cause.fail(new Error("No editor"))));
 
     refuse();
     await pressOpenFavorite();
-    expect(await spoken()).toBe("");
+    expect(state.run).toHaveBeenCalledTimes(1);
+    expect(spoken()).toBe("");
     await pressOpenFavorite();
-    expect(await spoken()).toBe("Opened in VS Code");
+    expect(state.run).toHaveBeenCalledTimes(2);
+    expect(spoken()).toBe("Opened in VS Code");
 
-    for (const region of regions()) region.textContent = "";
+    state.announced.length = 0;
     await act(async () => screen.rerender(<FavoriteEditorFallback />));
     refuse();
     await pressOpenFavorite();
-    expect(await spoken()).toBe("");
+    expect(state.run).toHaveBeenCalledTimes(3);
+    expect(spoken()).toBe("");
     await pressOpenFavorite();
-    expect(await spoken()).toBe("Opened in VS Code");
+    expect(state.run).toHaveBeenCalledTimes(4);
+    expect(spoken()).toBe("Opened in VS Code");
   });
 });
