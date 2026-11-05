@@ -261,6 +261,21 @@ const mergeCanonicalHistory = (sourcePath: string, candidatePath: string): void 
     const destinationRows = candidate
       .prepare(metadataSql)
       .all() as unknown as Array<EventMetadataRow>;
+    // Compaction deletes retained events without lowering the allocated high-water mark.
+    const maxAllocatedSequence = (
+      database: NodeSqlite.DatabaseSync,
+      rows: Array<EventMetadataRow>,
+    ) => {
+      const lastRetained = rows.at(-1)?.sequence ?? 0;
+      const allocated = (
+        database
+          .prepare(`SELECT seq FROM sqlite_sequence WHERE name = 'orchestration_events'`)
+          .get() as { readonly seq: number } | undefined
+      )?.seq;
+      return Math.max(lastRetained, allocated ?? 0);
+    };
+    const sourceMaxAllocated = maxAllocatedSequence(source, sourceRows);
+    const destinationMaxAllocated = maxAllocatedSequence(candidate, destinationRows);
 
     const sourceStreamKeys = new Set(sourceRows.map(streamKey));
     const sourceEventIds = new Set(sourceRows.map((row) => row.event_id));
@@ -335,14 +350,23 @@ const mergeCanonicalHistory = (sourcePath: string, candidatePath: string): void 
       receipt: ReceiptRow,
       events: Map<number, EventMetadataRow>,
       origin: string,
+      maxAllocated: number,
     ) => {
       // Rejected commands record no result event.
       const resultSequence = Number(receipt.result_sequence);
+      if (!Number.isInteger(resultSequence) || resultSequence < 0) {
+        throw new Error(
+          `A ${origin} command receipt for ${receipt.command_id} records an invalid result sequence (${receipt.result_sequence}).`,
+        );
+      }
       if (resultSequence === 0) return { receipt, resultEventId: null, resultSequence: 0 };
       const event = events.get(resultSequence);
       if (event === undefined) {
-        // Old forks compacted historical result events away; sequence 0 marks no resolvable reference.
-        if (origin === "old fork") return { receipt, resultEventId: null, resultSequence: 0 };
+        // Compacted history leaves anchors inside the allocated range with no resolvable event;
+        // an anchor past it points at a sequence that was never allocated.
+        if (resultSequence <= maxAllocated) {
+          return { receipt, resultEventId: null, resultSequence: 0 };
+        }
         throw new Error(
           `A ${origin} command receipt for ${receipt.command_id} records a missing event (sequence ${resultSequence}).`,
         );
@@ -362,17 +386,45 @@ const mergeCanonicalHistory = (sourcePath: string, candidatePath: string): void 
     for (const receipt of sourceReceipts) {
       mergedReceipts.set(
         receipt.command_id,
-        remapReceipt(receipt, sourceEventBySequence, "old fork"),
+        remapReceipt(receipt, sourceEventBySequence, "old fork", sourceMaxAllocated),
       );
     }
     for (const receipt of destinationReceipts) {
       // Receipts are idempotency checkpoints only, so a discarded destination result needs none.
       const resultEvent = destinationEventBySequence.get(Number(receipt.result_sequence));
       if (resultEvent !== undefined && !newSequenceByEventId.has(resultEvent.event_id)) continue;
-      const remapped = remapReceipt(receipt, destinationEventBySequence, "destination");
+      const remapped = remapReceipt(
+        receipt,
+        destinationEventBySequence,
+        "destination",
+        destinationMaxAllocated,
+      );
+      // A compacted receipt on a stream the old fork replaces resolves against old-fork events
+      // at the same sequence; destination-only streams keep their compacted receipts.
+      if (
+        remapped.resultEventId === null &&
+        sourceStreamKeys.has(
+          streamKey({ aggregate_kind: receipt.aggregate_kind, stream_id: receipt.aggregate_id }),
+        )
+      )
+        continue;
       const existing = mergedReceipts.get(receipt.command_id);
       if (existing !== undefined) {
-        if (existing.resultEventId !== remapped.resultEventId) {
+        // Null/null results carry no evidence they are the same command, so only a full match on
+        // the original rows (or an explicitly rejected command) may share a compacted command id.
+        const sameOriginalRow =
+          existing.resultEventId === null &&
+          remapped.resultEventId === null &&
+          existing.receipt.aggregate_kind === receipt.aggregate_kind &&
+          existing.receipt.aggregate_id === receipt.aggregate_id &&
+          existing.receipt.status === receipt.status &&
+          (receipt.status === "rejected" ||
+            (existing.receipt.result_sequence === 0 && receipt.result_sequence === 0));
+        const bothCompacted = existing.resultEventId === null && remapped.resultEventId === null;
+        if (
+          existing.resultEventId !== remapped.resultEventId ||
+          (bothCompacted && !sameOriginalRow)
+        ) {
           throw new Error(
             `Command ${receipt.command_id} recorded different results in the two databases; this history cannot be merged.`,
           );

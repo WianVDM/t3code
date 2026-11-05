@@ -1551,17 +1551,30 @@ it.effect("aborts an invalid conflict without changing the destination", () => {
   );
 });
 
-it.effect("preserves old-fork receipts whose result events were compacted", () => {
+it.effect("preserves compacted receipts in both origins and skips replaced-stream receipts", () => {
   const directory = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-merge-compacted-"));
   return Effect.gen(function* () {
     const { source, destination, markerPath } = yield* seedBasicMergeHomes(directory);
     yield* appendMergeEvents(source.dbPath, [
+      projectCreated({
+        eventId: "shared-project-created",
+        projectId: "shared-project",
+        title: "Shared project",
+        occurredAt: "2026-01-01T00:00:04.000Z",
+      }),
+      threadEvent({
+        eventId: "shared-thread-created",
+        threadId: "shared-thread",
+        projectId: "shared-project",
+        title: "Shared thread",
+        occurredAt: "2026-01-01T00:00:05.000Z",
+      }),
       threadEvent({
         eventId: "source-pruned-result",
         threadId: "source-thread",
         projectId: "source-project",
         title: "Source pruned result",
-        occurredAt: "2026-01-01T00:00:04.000Z",
+        occurredAt: "2026-01-01T00:00:06.000Z",
         streamVersion: 1,
         eventType: "thread.metadata-updated",
       }),
@@ -1572,8 +1585,26 @@ it.effect("preserves old-fork receipts whose result events were compacted", () =
         threadId: "destination-thread",
         projectId: "destination-project",
         title: "Destination result",
-        occurredAt: "2026-01-01T00:00:05.000Z",
+        occurredAt: "2026-01-01T00:00:04.000Z",
         streamVersion: 1,
+        eventType: "thread.metadata-updated",
+      }),
+      threadEvent({
+        eventId: "shared-thread-destination-update",
+        threadId: "shared-thread",
+        projectId: "shared-project",
+        title: "Replaced shared result",
+        occurredAt: "2026-01-01T00:00:06.000Z",
+        streamVersion: 0,
+        eventType: "thread.created",
+      }),
+      threadEvent({
+        eventId: "destination-pruned-result",
+        threadId: "destination-thread",
+        projectId: "destination-project",
+        title: "Destination pruned result",
+        occurredAt: "2026-01-01T00:00:07.000Z",
+        streamVersion: 2,
         eventType: "thread.metadata-updated",
       }),
     ]);
@@ -1581,11 +1612,39 @@ it.effect("preserves old-fork receipts whose result events were compacted", () =
       source.dbPath,
       "DELETE FROM orchestration_events WHERE event_id = 'source-pruned-result'",
     );
+    // Both anchors exceed their retained maximum but stay inside the allocated sqlite_sequence.
+    yield* execMergeDatabase(
+      destination.dbPath,
+      "DELETE FROM orchestration_events WHERE event_id IN ('shared-thread-destination-update', 'destination-pruned-result')",
+    );
     yield* insertMergeReceipt(source.dbPath, {
       commandId: "source:workspace",
       aggregateId: "source-thread",
       acceptedAt: "2026-01-01T00:00:04.000Z",
-      resultSequence: 3,
+      resultSequence: 5,
+      commandType: "thread.metadata.update",
+    });
+    yield* insertMergeReceipt(destination.dbPath, {
+      commandId: "destination:workspace",
+      aggregateId: "destination-thread",
+      acceptedAt: "2026-01-01T00:00:04.000Z",
+      resultSequence: 5,
+      commandType: "thread.metadata.update",
+    });
+    yield* insertMergeReceipt(destination.dbPath, {
+      commandId: "shared:replaced",
+      aggregateId: "shared-thread",
+      acceptedAt: "2026-01-01T00:00:04.000Z",
+      resultSequence: 4,
+      commandType: "thread.metadata.update",
+    });
+    // The replaced-stream receipt is dropped before duplicate handling, so a differing retained
+    // source result under the same command id must not fail the merge.
+    yield* insertMergeReceipt(source.dbPath, {
+      commandId: "shared:replaced",
+      aggregateId: "source-thread",
+      acceptedAt: "2026-01-01T00:00:04.000Z",
+      resultSequence: 4,
       commandType: "thread.metadata.update",
     });
 
@@ -1598,12 +1657,14 @@ it.effect("preserves old-fork receipts whose result events were compacted", () =
     assert.deepEqual(readEventIds(destination.dbPath), [
       "source-project-created",
       "source-thread-created",
+      "shared-project-created",
+      "shared-thread-created",
       "destination-project-created",
       "destination-thread-created",
       "destination-sequence-3",
     ]);
-    // The compacted result becomes sequence 0 with no event id, never an alias to the retained
-    // destination event at the same old sequence.
+    // Compacted anchors become sequence 0 with no event id, and the replaced-stream receipt is
+    // dropped instead of resolving against the old fork's event at the same sequence.
     assert.deepEqual(
       readRows(
         destination.dbPath,
@@ -1617,6 +1678,28 @@ it.effect("preserves old-fork receipts whose result events were compacted", () =
          ORDER BY receipt.command_id`,
       ),
       [
+        {
+          commandId: "destination:workspace",
+          aggregateKind: "thread",
+          aggregateId: "destination-thread",
+          acceptedAt: "2026-01-01T00:00:04.000Z",
+          resultSequence: 0,
+          status: "accepted",
+          error: null,
+          commandType: "thread.metadata.update",
+          resultEventId: null,
+        },
+        {
+          commandId: "shared:replaced",
+          aggregateKind: "thread",
+          aggregateId: "source-thread",
+          acceptedAt: "2026-01-01T00:00:04.000Z",
+          resultSequence: 4,
+          status: "accepted",
+          error: null,
+          commandType: "thread.metadata.update",
+          resultEventId: "shared-thread-created",
+        },
         {
           commandId: "source:workspace",
           aggregateKind: "thread",
@@ -1635,14 +1718,14 @@ it.effect("preserves old-fork receipts whose result events were compacted", () =
         destination.dbPath,
         "SELECT thread_id AS threadId FROM orchestration_v2_projection_threads ORDER BY thread_id",
       ).map((row) => row.threadId),
-      ["destination-thread", "source-thread"],
+      ["destination-thread", "shared-thread", "source-thread"],
     );
     assert.deepEqual(
       readRows(
         destination.dbPath,
         "SELECT project_id AS projectId FROM projection_projects ORDER BY project_id",
       ).map((row) => row.projectId),
-      ["destination-project", "source-project"],
+      ["destination-project", "shared-project", "source-project"],
     );
   }).pipe(
     Effect.provide(NodeServices.layer),
@@ -1650,27 +1733,113 @@ it.effect("preserves old-fork receipts whose result events were compacted", () =
   );
 });
 
-it.effect("rejects a destination receipt whose positive result sequence is absent", () => {
-  const directory = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-merge-destination-"));
+it.effect("rejects receipt anchors outside the allocated sequence range", () => {
+  const probes = [
+    ["old fork", 99],
+    ["old fork", -1],
+    ["destination", 99],
+    ["destination", -1],
+    ["destination", 2.5],
+  ] as const;
+  const directories: Array<string> = [];
+  return Effect.gen(function* () {
+    const outcomes = yield* Effect.forEach(
+      probes,
+      ([origin, anchor]) =>
+        Effect.exit(
+          Effect.gen(function* () {
+            const directory = NodeFS.mkdtempSync(
+              NodePath.join(NodeOS.tmpdir(), "t3-merge-anchor-"),
+            );
+            directories.push(directory);
+            const { source, destination, markerPath } = yield* seedBasicMergeHomes(directory);
+            yield* insertMergeReceipt(origin === "old fork" ? source.dbPath : destination.dbPath, {
+              commandId: `${origin}:corrupt`,
+              aggregateId: origin === "old fork" ? "source-thread" : "destination-thread",
+              acceptedAt: "2026-01-01T00:00:04.000Z",
+              resultSequence: anchor,
+              commandType: "thread.metadata.update",
+            });
+            const destinationBefore = readEventIds(destination.dbPath);
+
+            const result = yield* Effect.result(
+              mergeOldForkDatabase({
+                sourceHome: source.home,
+                destinationHome: destination.home,
+                markerPath,
+              }),
+            );
+
+            assert.equal(result._tag, "Failure", `${origin} anchor ${anchor}`);
+            // 2.5 trips the range check too, so the message proves the integer guard ran.
+            if (!Number.isInteger(anchor))
+              assert.include(String(result), "invalid result sequence (2.5)");
+            assert.deepEqual(readEventIds(destination.dbPath), destinationBefore);
+            assert.isFalse(NodeFS.existsSync(markerPath));
+          }),
+        ),
+      { concurrency: 1 },
+    );
+    assert.deepEqual(
+      outcomes.map((outcome) => outcome._tag),
+      probes.map(() => "Success"),
+      "every origin must reject an anchor outside the allocated range",
+    );
+  }).pipe(
+    Effect.provide(NodeServices.layer),
+    Effect.ensuring(
+      Effect.sync(() => {
+        for (const directory of directories) {
+          NodeFS.rmSync(directory, { recursive: true, force: true });
+        }
+      }),
+    ),
+  );
+});
+
+it.effect("conflicts duplicate command ids whose result events were both compacted", () => {
+  const directory = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-merge-duplicate-"));
   return Effect.gen(function* () {
     const { source, destination, markerPath } = yield* seedBasicMergeHomes(directory);
+    yield* appendMergeEvents(source.dbPath, [
+      threadEvent({
+        eventId: "source-pruned-result",
+        threadId: "source-thread",
+        projectId: "source-project",
+        title: "Source pruned result",
+        occurredAt: "2026-01-01T00:00:04.000Z",
+        streamVersion: 1,
+        eventType: "thread.metadata-updated",
+      }),
+    ]);
     yield* appendMergeEvents(destination.dbPath, [
       threadEvent({
-        eventId: "destination-sequence-3",
+        eventId: "destination-pruned-result",
         threadId: "destination-thread",
         projectId: "destination-project",
-        title: "Destination result",
+        title: "Destination pruned result",
         occurredAt: "2026-01-01T00:00:04.000Z",
         streamVersion: 1,
         eventType: "thread.metadata-updated",
       }),
     ]);
     yield* execMergeDatabase(
-      destination.dbPath,
-      "DELETE FROM orchestration_events WHERE event_id = 'destination-sequence-3'",
+      source.dbPath,
+      "DELETE FROM orchestration_events WHERE event_id = 'source-pruned-result'",
     );
+    yield* execMergeDatabase(
+      destination.dbPath,
+      "DELETE FROM orchestration_events WHERE event_id = 'destination-pruned-result'",
+    );
+    yield* insertMergeReceipt(source.dbPath, {
+      commandId: "shared:command",
+      aggregateId: "source-thread",
+      acceptedAt: "2026-01-01T00:00:04.000Z",
+      resultSequence: 3,
+      commandType: "thread.metadata.update",
+    });
     yield* insertMergeReceipt(destination.dbPath, {
-      commandId: "destination:workspace",
+      commandId: "shared:command",
       aggregateId: "destination-thread",
       acceptedAt: "2026-01-01T00:00:04.000Z",
       resultSequence: 3,
@@ -1686,7 +1855,7 @@ it.effect("rejects a destination receipt whose positive result sequence is absen
       }),
     );
 
-    assert.include(error.message, "records a missing event (sequence 3)");
+    assert.include(error.message, "recorded different results");
     assert.deepEqual(readEventIds(destination.dbPath), destinationBefore);
     assert.isFalse(NodeFS.existsSync(markerPath));
   }).pipe(
