@@ -1,6 +1,6 @@
 // T3 Code ++ owns the t3codeplusplus schemes so stock T3 Code can stay installed beside it.
 export const APP_LINK_SCHEME = "t3codeplusplus";
-export const APP_LINK_DEVELOPMENT_SCHEME = "t3codeplusplus-dev";
+const APP_LINK_DEVELOPMENT_SCHEME = "t3codeplusplus-dev";
 
 export const appLinkScheme = (development: boolean): string =>
   development ? APP_LINK_DEVELOPMENT_SCHEME : APP_LINK_SCHEME;
