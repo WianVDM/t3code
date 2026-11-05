@@ -246,6 +246,144 @@ it.effect(
   },
 );
 
+const PROVIDER_TURN_CODEX_INDEX = "orchestration_v2_provider_turns_codex_native_id_idx";
+
+/** Rewrites an index definition in place; the schema version bump makes SQLite reload it. */
+const redefineIndex = (dbPath: string, definition: string): void => {
+  const database = new NodeSqlite.DatabaseSync(dbPath);
+  try {
+    const schemaVersion = Number(
+      database.prepare("PRAGMA schema_version").get()?.schema_version ?? 0,
+    );
+    database.exec("PRAGMA writable_schema = ON");
+    database
+      .prepare("UPDATE sqlite_master SET sql = ? WHERE name = ?")
+      .run(definition, PROVIDER_TURN_CODEX_INDEX);
+    database.exec(`PRAGMA schema_version = ${schemaVersion + 1}`);
+    database.exec("PRAGMA writable_schema = OFF");
+  } finally {
+    database.close();
+  }
+};
+
+/**
+ * Leaves the provider turn index's stored entries stale while its definition stays correct, so
+ * rows it must cover are missing from it: what an interrupted index rebuild leaves behind.
+ */
+const staleProviderTurnIndex = (dbPath: string): void => {
+  const database = new NodeSqlite.DatabaseSync(dbPath);
+  let definition: string;
+  try {
+    definition = String(
+      database
+        .prepare("SELECT sql FROM sqlite_master WHERE name = ?")
+        .get(PROVIDER_TURN_CODEX_INDEX)?.sql,
+    );
+  } finally {
+    database.close();
+  }
+  redefineIndex(dbPath, `${definition} AND 0`);
+  const emptied = new NodeSqlite.DatabaseSync(dbPath);
+  try {
+    emptied.exec(`REINDEX ${PROVIDER_TURN_CODEX_INDEX}`);
+  } finally {
+    emptied.close();
+  }
+  redefineIndex(dbPath, definition);
+};
+
+const seedProviderTurn = (dbPath: string, threadId: ThreadId) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* runMigrations();
+    yield* sql`INSERT INTO orchestration_v2_projection_provider_turns (
+        provider_turn_id, thread_id, provider_thread_id, node_id, ordinal, status, payload_json
+      ) VALUES (
+        'old-fork-turn', ${threadId}, 'provider-thread', 'node', 0, 'completed',
+        '{"nativeTurnRef":{"driver":"codex","nativeId":"native-turn"}}'
+      )`;
+  }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: dbPath })));
+
+it.effect("rebuilds a stale derived index instead of publishing an unhealthy import", () => {
+  const directory = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-v2-old-fork-index-"));
+  const sourcePath = NodePath.join(directory, "old-fork.sqlite");
+  const destinationPath = NodePath.join(directory, "statev2.sqlite");
+  const threadId = ThreadId.make("old-fork-thread");
+  return Effect.gen(function* () {
+    yield* seedProviderTurn(sourcePath, threadId);
+    staleProviderTurnIndex(sourcePath);
+    assert.deepEqual(
+      readRows(sourcePath, "PRAGMA integrity_check").map((row) => row.integrity_check),
+      [`row 1 missing from index ${PROVIDER_TURN_CODEX_INDEX}`],
+    );
+    const sourceBefore = NodeFS.readFileSync(sourcePath);
+
+    yield* importOldForkDatabase(sourcePath, destinationPath);
+
+    assert.deepEqual(NodeFS.readFileSync(sourcePath), sourceBefore);
+    assert.deepEqual(readRows(destinationPath, "PRAGMA integrity_check"), [
+      { integrity_check: "ok" },
+    ]);
+    // Rebuilding derived indexes keeps every logical row and returns it through that index.
+    assert.deepEqual(
+      readRows(
+        destinationPath,
+        `SELECT provider_turn_id AS providerTurnId, thread_id AS threadId
+         FROM orchestration_v2_projection_provider_turns
+         INDEXED BY ${PROVIDER_TURN_CODEX_INDEX}
+         WHERE json_extract(payload_json, '$.nativeTurnRef.driver') = 'codex'
+           AND json_extract(payload_json, '$.nativeTurnRef.nativeId') = 'native-turn'`,
+      ),
+      [{ providerTurnId: "old-fork-turn", threadId }],
+    );
+  }).pipe(
+    Effect.provide(NodeServices.layer),
+    Effect.ensuring(Effect.sync(() => NodeFS.rmSync(directory, { recursive: true, force: true }))),
+  );
+});
+
+it.effect("refuses to publish an old fork database that stays unhealthy after reindexing", () => {
+  const directory = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-v2-old-fork-damaged-"));
+  const sourcePath = NodePath.join(directory, "old-fork.sqlite");
+  const destinationPath = NodePath.join(directory, "statev2.sqlite");
+  const threadId = ThreadId.make("old-fork-thread");
+  return Effect.gen(function* () {
+    yield* seedOldFork(sourcePath, threadId);
+    yield* Effect.sync(() => {
+      const database = new NodeSqlite.DatabaseSync(sourcePath);
+      try {
+        database.exec(
+          "CREATE TABLE legacy_rows (value TEXT); INSERT INTO legacy_rows VALUES (NULL);",
+        );
+        const schemaVersion = Number(
+          database.prepare("PRAGMA schema_version").get()?.schema_version ?? 0,
+        );
+        database.exec("PRAGMA writable_schema = ON");
+        database.exec(
+          "UPDATE sqlite_master SET sql = 'CREATE TABLE legacy_rows (value TEXT NOT NULL)' WHERE name = 'legacy_rows'",
+        );
+        database.exec(`PRAGMA schema_version = ${schemaVersion + 1}`);
+        database.exec("PRAGMA writable_schema = OFF");
+      } finally {
+        database.close();
+      }
+    });
+    assert.deepEqual(
+      readRows(sourcePath, "PRAGMA integrity_check").map((row) => row.integrity_check),
+      ["NULL value in legacy_rows.value"],
+    );
+
+    const result = yield* Effect.result(importOldForkDatabase(sourcePath, destinationPath));
+
+    assert.equal(result._tag, "Failure");
+    if (result._tag === "Failure") assert.include(result.failure.message, "still unhealthy");
+    assert.isFalse(NodeFS.existsSync(destinationPath));
+  }).pipe(
+    Effect.provide(NodeServices.layer),
+    Effect.ensuring(Effect.sync(() => NodeFS.rmSync(directory, { recursive: true, force: true }))),
+  );
+});
+
 it.effect("rejects importing an old fork database onto itself", () => {
   const directory = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-v2-old-fork-self-"));
   const sourcePath = NodePath.join(directory, "old-fork.sqlite");
@@ -927,6 +1065,137 @@ it.effect("keeps destination live state and never imports the old fork's live st
     } finally {
       merged.close();
     }
+  }).pipe(
+    Effect.provide(NodeServices.layer),
+    Effect.ensuring(Effect.sync(() => NodeFS.rmSync(directory, { recursive: true, force: true }))),
+  );
+});
+
+const seedPendingEffect = (
+  dbPath: string,
+  effect: { readonly effectId: string; readonly commandId: string; readonly threadId: string },
+) =>
+  Effect.sync(() => {
+    const database = new NodeSqlite.DatabaseSync(dbPath);
+    try {
+      database
+        .prepare(
+          `INSERT INTO orchestration_v2_effect_outbox (
+             effect_id, command_id, thread_id, effect_type, payload_json, status,
+             available_at, created_at, updated_at
+           ) VALUES (?, ?, ?, 'startTurn', '{}', 'pending', ?, ?, ?)`,
+        )
+        .run(
+          effect.effectId,
+          effect.commandId,
+          effect.threadId,
+          "2026-01-01T00:00:00.000Z",
+          "2026-01-01T00:00:00.000Z",
+          "2026-01-01T00:00:00.000Z",
+        );
+    } finally {
+      database.close();
+    }
+  });
+
+it.effect("discards destination work whose stream the old fork replaces and keeps the rest", () => {
+  const directory = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-merge-outbox-"));
+  const source = mergeHome(directory, "source");
+  const destination = mergeHome(directory, "destination");
+  const markerPath = NodePath.join(directory, "old-fork-merge.marker");
+  return Effect.gen(function* () {
+    const sharedProject = projectCreated({
+      eventId: "shared-project-created",
+      projectId: "shared-project",
+      title: "Shared project",
+      occurredAt: "2026-01-01T00:00:00.000Z",
+    });
+    const sharedThread = threadEvent({
+      eventId: "shared-thread-created",
+      threadId: "shared-thread",
+      projectId: "shared-project",
+      title: "Shared thread",
+      occurredAt: "2026-01-01T00:00:01.000Z",
+    });
+    yield* seedMergeDatabase(source.dbPath, [
+      sharedProject,
+      sharedThread,
+      threadEvent({
+        eventId: "old-fork-wins",
+        threadId: "shared-thread",
+        projectId: "shared-project",
+        title: "Old fork wins",
+        occurredAt: "2026-01-01T00:00:02.000Z",
+        streamVersion: 1,
+        eventType: "thread.metadata-updated",
+      }),
+    ]);
+    yield* seedMergeDatabase(destination.dbPath, [
+      sharedProject,
+      sharedThread,
+      threadEvent({
+        eventId: "destination-loses",
+        threadId: "shared-thread",
+        projectId: "shared-project",
+        title: "Destination loses",
+        occurredAt: "2026-01-01T00:00:02.000Z",
+        streamVersion: 1,
+        eventType: "thread.metadata-updated",
+      }),
+      projectCreated({
+        eventId: "destination-project-created",
+        projectId: "destination-project",
+        title: "Destination project",
+        occurredAt: "2026-01-01T00:00:03.000Z",
+      }),
+      threadEvent({
+        eventId: "destination-thread-created",
+        threadId: "destination-thread",
+        projectId: "destination-project",
+        title: "Destination thread",
+        occurredAt: "2026-01-01T00:00:04.000Z",
+      }),
+    ]);
+    yield* seedPendingEffect(destination.dbPath, {
+      effectId: "stale-effect",
+      commandId: "command:destination-loses",
+      threadId: "shared-thread",
+    });
+    yield* seedPendingEffect(destination.dbPath, {
+      effectId: "live-effect",
+      commandId: "command:destination-thread-created",
+      threadId: "destination-thread",
+    });
+    yield* seedPendingEffect(destination.dbPath, {
+      effectId: "unrelated-effect",
+      commandId: "command:never-recorded",
+      threadId: "destination-thread",
+    });
+
+    yield* mergeOldForkDatabase({
+      sourceHome: source.home,
+      destinationHome: destination.home,
+      markerPath,
+    });
+
+    assert.isTrue(NodeFS.existsSync(markerPath));
+    assert.deepEqual(readEventIds(destination.dbPath), [
+      "shared-project-created",
+      "shared-thread-created",
+      "old-fork-wins",
+      "destination-project-created",
+      "destination-thread-created",
+    ]);
+    assert.deepEqual(
+      readRows(
+        destination.dbPath,
+        "SELECT effect_id AS effectId FROM orchestration_v2_effect_outbox ORDER BY effect_id",
+      ).map((row) => row.effectId),
+      ["live-effect", "unrelated-effect"],
+    );
+    assert.deepEqual(readRows(destination.dbPath, "PRAGMA integrity_check"), [
+      { integrity_check: "ok" },
+    ]);
   }).pipe(
     Effect.provide(NodeServices.layer),
     Effect.ensuring(Effect.sync(() => NodeFS.rmSync(directory, { recursive: true, force: true }))),

@@ -50,7 +50,10 @@ const decodeJson = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
 const describeCause = (cause: unknown): string => {
-  if (cause instanceof Error) return cause.message;
+  if (cause instanceof Error) {
+    // Effect.try reports its own wrapper; the thrown error carries the real reason.
+    return cause.cause instanceof Error ? cause.cause.message : cause.message;
+  }
   try {
     return String(cause);
   } catch {
@@ -99,6 +102,32 @@ const backupDatabase = async (fromPath: string, toPath: string): Promise<void> =
   }
 };
 
+/**
+ * Indexes are derived from table rows, so a stale one hides rows from reads that use it. Rebuilding
+ * them is the repair; whatever integrity still reports afterwards is damage to stored rows, which
+ * must never be published as an import.
+ */
+const rebuildIndexesAndVerify = (databasePath: string): void => {
+  const database = new NodeSqlite.DatabaseSync(databasePath);
+  try {
+    database.exec("REINDEX;");
+    const findings = (
+      database.prepare("PRAGMA integrity_check").all() as Array<{
+        readonly integrity_check: NodeSqlite.SQLOutputValue;
+      }>
+    )
+      .map((row) => String(row.integrity_check))
+      .filter((finding) => finding !== "ok");
+    if (findings.length > 0) {
+      throw new Error(
+        `The database is still unhealthy after rebuilding its indexes: ${findings.slice(0, 3).join("; ")}. Repair or restore that file before importing it.`,
+      );
+    }
+  } finally {
+    database.close();
+  }
+};
+
 /** Imports an old fork's V2 database as the destination database, without its live runtime state. */
 export const importOldForkDatabase = Effect.fn("importOldForkDatabase")(function* (
   sourcePath: string,
@@ -131,6 +160,8 @@ export const importOldForkDatabase = Effect.fn("importOldForkDatabase")(function
           const snapshotPath = path.join(temporaryDirectory, "snapshot.sqlite");
           yield* Effect.tryPromise(() => backupDatabase(source, snapshotPath));
           yield* Effect.try(() => clearLiveState(snapshotPath));
+          // The copy inherits the source's index pages, so repair them before anything reads it.
+          yield* Effect.try(() => rebuildIndexesAndVerify(snapshotPath));
           // Publish only a complete snapshot, without replacing an existing database.
           yield* fs.link(snapshotPath, destination).pipe(
             Effect.catchIf(
@@ -264,25 +295,12 @@ const mergeCanonicalHistory = (sourcePath: string, candidatePath: string): void 
         `Event ${event.row.event_id} was caused by ${causation}, which the merged history does not contain.`,
       );
     }
-    // Destination live work must not point at history the merge discards.
+    // Queued work for a command whose history the merge discards can never run: both servers are
+    // stopped, and its command is gone. Keeping it would block the merge forever.
     const discardedCommandIds = new Set<string>();
     for (const row of discarded) {
       if (!sourceEventIds.has(row.event_id) && row.command_id !== null) {
         discardedCommandIds.add(row.command_id);
-      }
-    }
-    if (discardedCommandIds.size > 0) {
-      const pendingEffects = candidate
-        .prepare(
-          `SELECT command_id FROM orchestration_v2_effect_outbox WHERE command_id IS NOT NULL`,
-        )
-        .all() as Array<{ command_id: string }>;
-      for (const effect of pendingEffects) {
-        if (discardedCommandIds.has(effect.command_id)) {
-          throw new Error(
-            `Pending destination work for command ${effect.command_id} depends on history the old fork replaces; let it finish before merging.`,
-          );
-        }
       }
     }
 
@@ -399,6 +417,10 @@ const mergeCanonicalHistory = (sourcePath: string, candidatePath: string): void 
         discardedStreamKeys.delete(key);
         deleteStream.run(row.aggregate_kind, row.stream_id);
       }
+      const deleteCommandEffects = candidate.prepare(
+        `DELETE FROM orchestration_v2_effect_outbox WHERE command_id = ?`,
+      );
+      for (const commandId of discardedCommandIds) deleteCommandEffects.run(commandId);
       candidate
         .prepare(
           `UPDATE orchestration_events SET sequence = sequence + ?, stream_version = stream_version + ?`,
