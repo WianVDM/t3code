@@ -12,11 +12,7 @@ import * as Scope from "effect/Scope";
 
 import * as Electron from "electron";
 
-import {
-  APP_LINK_DEVELOPMENT_SCHEME,
-  APP_LINK_SCHEME,
-  appLinkScheme,
-} from "@t3tools/shared/appLinks";
+import { APP_LINK_SCHEME, appLinkScheme } from "@t3tools/shared/appLinks";
 
 export const DESKTOP_HOST = "app";
 
@@ -127,7 +123,7 @@ function registerDesktopSchemePrivilegesSync(): void {
       },
     },
     {
-      scheme: APP_LINK_DEVELOPMENT_SCHEME,
+      scheme: appLinkScheme(true),
       privileges: {
         standard: true,
         secure: true,
