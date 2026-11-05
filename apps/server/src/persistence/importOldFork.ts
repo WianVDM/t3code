@@ -341,6 +341,8 @@ const mergeCanonicalHistory = (sourcePath: string, candidatePath: string): void 
       if (resultSequence === 0) return { receipt, resultEventId: null, resultSequence: 0 };
       const event = events.get(resultSequence);
       if (event === undefined) {
+        // Old forks compacted historical result events away; sequence 0 marks no resolvable reference.
+        if (origin === "old fork") return { receipt, resultEventId: null, resultSequence: 0 };
         throw new Error(
           `A ${origin} command receipt for ${receipt.command_id} records a missing event (sequence ${resultSequence}).`,
         );

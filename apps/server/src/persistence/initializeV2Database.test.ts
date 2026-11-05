@@ -619,6 +619,39 @@ const writeMergeRows = (
   }
 };
 
+/** A receipt whose positive result sequence may have no event row, as compaction leaves it. */
+const insertMergeReceipt = (
+  dbPath: string,
+  receipt: {
+    readonly commandId: string;
+    readonly aggregateId: string;
+    readonly acceptedAt: string;
+    readonly resultSequence: number;
+    readonly commandType: string;
+  },
+) =>
+  Effect.sync(() => {
+    const database = new NodeSqlite.DatabaseSync(dbPath);
+    try {
+      database
+        .prepare(
+          `INSERT INTO orchestration_command_receipts (
+             command_id, aggregate_kind, aggregate_id, accepted_at, result_sequence,
+             status, error, command_type
+           ) VALUES (?, 'thread', ?, ?, ?, 'accepted', NULL, ?)`,
+        )
+        .run(
+          receipt.commandId,
+          receipt.aggregateId,
+          receipt.acceptedAt,
+          receipt.resultSequence,
+          receipt.commandType,
+        );
+    } finally {
+      database.close();
+    }
+  });
+
 const seedMergeDatabase = (
   dbPath: string,
   events: ReadonlyArray<MergeEvent>,
@@ -1511,6 +1544,150 @@ it.effect("aborts an invalid conflict without changing the destination", () => {
     assert.equal(result._tag, "Failure");
     assert.deepEqual(NodeFS.readFileSync(destination.dbPath), destinationBefore);
     assert.deepEqual(NodeFS.readFileSync(source.dbPath), sourceBefore);
+    assert.isFalse(NodeFS.existsSync(markerPath));
+  }).pipe(
+    Effect.provide(NodeServices.layer),
+    Effect.ensuring(Effect.sync(() => NodeFS.rmSync(directory, { recursive: true, force: true }))),
+  );
+});
+
+it.effect("preserves old-fork receipts whose result events were compacted", () => {
+  const directory = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-merge-compacted-"));
+  return Effect.gen(function* () {
+    const { source, destination, markerPath } = yield* seedBasicMergeHomes(directory);
+    yield* appendMergeEvents(source.dbPath, [
+      threadEvent({
+        eventId: "source-pruned-result",
+        threadId: "source-thread",
+        projectId: "source-project",
+        title: "Source pruned result",
+        occurredAt: "2026-01-01T00:00:04.000Z",
+        streamVersion: 1,
+        eventType: "thread.metadata-updated",
+      }),
+    ]);
+    yield* appendMergeEvents(destination.dbPath, [
+      threadEvent({
+        eventId: "destination-sequence-3",
+        threadId: "destination-thread",
+        projectId: "destination-project",
+        title: "Destination result",
+        occurredAt: "2026-01-01T00:00:05.000Z",
+        streamVersion: 1,
+        eventType: "thread.metadata-updated",
+      }),
+    ]);
+    yield* execMergeDatabase(
+      source.dbPath,
+      "DELETE FROM orchestration_events WHERE event_id = 'source-pruned-result'",
+    );
+    yield* insertMergeReceipt(source.dbPath, {
+      commandId: "source:workspace",
+      aggregateId: "source-thread",
+      acceptedAt: "2026-01-01T00:00:04.000Z",
+      resultSequence: 3,
+      commandType: "thread.metadata.update",
+    });
+
+    yield* mergeOldForkDatabase({
+      sourceHome: source.home,
+      destinationHome: destination.home,
+      markerPath,
+    });
+
+    assert.deepEqual(readEventIds(destination.dbPath), [
+      "source-project-created",
+      "source-thread-created",
+      "destination-project-created",
+      "destination-thread-created",
+      "destination-sequence-3",
+    ]);
+    // The compacted result becomes sequence 0 with no event id, never an alias to the retained
+    // destination event at the same old sequence.
+    assert.deepEqual(
+      readRows(
+        destination.dbPath,
+        `SELECT receipt.command_id AS commandId, receipt.aggregate_kind AS aggregateKind,
+                receipt.aggregate_id AS aggregateId, receipt.accepted_at AS acceptedAt,
+                receipt.result_sequence AS resultSequence, receipt.status AS status,
+                receipt.error AS error, receipt.command_type AS commandType,
+                event.event_id AS resultEventId
+         FROM orchestration_command_receipts AS receipt
+         LEFT JOIN orchestration_events AS event ON event.sequence = receipt.result_sequence
+         ORDER BY receipt.command_id`,
+      ),
+      [
+        {
+          commandId: "source:workspace",
+          aggregateKind: "thread",
+          aggregateId: "source-thread",
+          acceptedAt: "2026-01-01T00:00:04.000Z",
+          resultSequence: 0,
+          status: "accepted",
+          error: null,
+          commandType: "thread.metadata.update",
+          resultEventId: null,
+        },
+      ],
+    );
+    assert.deepEqual(
+      readRows(
+        destination.dbPath,
+        "SELECT thread_id AS threadId FROM orchestration_v2_projection_threads ORDER BY thread_id",
+      ).map((row) => row.threadId),
+      ["destination-thread", "source-thread"],
+    );
+    assert.deepEqual(
+      readRows(
+        destination.dbPath,
+        "SELECT project_id AS projectId FROM projection_projects ORDER BY project_id",
+      ).map((row) => row.projectId),
+      ["destination-project", "source-project"],
+    );
+  }).pipe(
+    Effect.provide(NodeServices.layer),
+    Effect.ensuring(Effect.sync(() => NodeFS.rmSync(directory, { recursive: true, force: true }))),
+  );
+});
+
+it.effect("rejects a destination receipt whose positive result sequence is absent", () => {
+  const directory = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-merge-destination-"));
+  return Effect.gen(function* () {
+    const { source, destination, markerPath } = yield* seedBasicMergeHomes(directory);
+    yield* appendMergeEvents(destination.dbPath, [
+      threadEvent({
+        eventId: "destination-sequence-3",
+        threadId: "destination-thread",
+        projectId: "destination-project",
+        title: "Destination result",
+        occurredAt: "2026-01-01T00:00:04.000Z",
+        streamVersion: 1,
+        eventType: "thread.metadata-updated",
+      }),
+    ]);
+    yield* execMergeDatabase(
+      destination.dbPath,
+      "DELETE FROM orchestration_events WHERE event_id = 'destination-sequence-3'",
+    );
+    yield* insertMergeReceipt(destination.dbPath, {
+      commandId: "destination:workspace",
+      aggregateId: "destination-thread",
+      acceptedAt: "2026-01-01T00:00:04.000Z",
+      resultSequence: 3,
+      commandType: "thread.metadata.update",
+    });
+    const destinationBefore = readEventIds(destination.dbPath);
+
+    const error = yield* Effect.flip(
+      mergeOldForkDatabase({
+        sourceHome: source.home,
+        destinationHome: destination.home,
+        markerPath,
+      }),
+    );
+
+    assert.include(error.message, "records a missing event (sequence 3)");
+    assert.deepEqual(readEventIds(destination.dbPath), destinationBefore);
     assert.isFalse(NodeFS.existsSync(markerPath));
   }).pipe(
     Effect.provide(NodeServices.layer),
