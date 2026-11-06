@@ -5,11 +5,14 @@ import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   buildUpstreamMergePrompt,
   isUpstreamCacheEntryFresh,
+  isUpstreamReleaseNotificationBuild,
   pickForkProject,
   refreshUpstreamReleaseIfStale,
   refreshUpstreamReleaseNow,
   resetInFlightRefreshForTesting,
   shouldDeferUpstreamMerge,
+  supportsUpstreamReleaseNotifications,
+  upstreamBaseTagForVersion,
   UPSTREAM_CHECK_STALE_AFTER_MS,
   type UpstreamReleaseOptions,
 } from "./upstreamRelease.logic";
@@ -629,6 +632,39 @@ describe("pickForkProject ranking", () => {
     ];
 
     expect(pickForkProject(projects)).toBeNull();
+  });
+});
+
+describe("supportsUpstreamReleaseNotifications", () => {
+  it.each([
+    { variant: "official", expected: false },
+    { variant: "", expected: false },
+    { variant: "beta", expected: false },
+    { variant: "fork", expected: true },
+    { variant: "plusplus", expected: true },
+  ])("returns $expected for variant '$variant'", ({ variant, expected }) => {
+    expect(supportsUpstreamReleaseNotifications(variant)).toBe(expected);
+  });
+});
+
+describe("isUpstreamReleaseNotificationBuild", () => {
+  it("is false in a build with no desktop variant, matching the gate", () => {
+    expect(isUpstreamReleaseNotificationBuild).toBe(false);
+    expect(isUpstreamReleaseNotificationBuild).toBe(
+      supportsUpstreamReleaseNotifications(import.meta.env.T3CODE_DESKTOP_VARIANT),
+    );
+  });
+});
+
+describe("upstreamBaseTagForVersion", () => {
+  it.each([
+    { version: "0.1.6", expected: "v0.1.6" },
+    { version: "0.1.6-fork.2", expected: "v0.1.6" },
+    { version: "0.1.6-fork.11", expected: "v0.1.6" },
+    { version: "0.1.6-plusplus.1", expected: "v0.1.6" },
+    { version: "0.1.6-plusplus.12", expected: "v0.1.6" },
+  ])("maps $version to $expected", ({ version, expected }) => {
+    expect(upstreamBaseTagForVersion(version)).toBe(expected);
   });
 });
 

@@ -8,7 +8,10 @@ import { useDesktopUpdateState } from "../../state/desktopUpdate";
 import { cn } from "../../lib/utils";
 import { PullRequestGlyph } from "../pullRequest/pullRequestIcons";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
-import { isForkDesktopBuild, shouldDeferUpstreamMerge } from "../upstreamRelease.logic";
+import {
+  isUpstreamReleaseNotificationBuild,
+  shouldDeferUpstreamMerge,
+} from "../upstreamRelease.logic";
 
 function SidebarUpstreamReleasePillContent() {
   useUpstreamReleasePolling();
@@ -67,7 +70,7 @@ function SidebarUpstreamReleasePillContent() {
 }
 
 export function SidebarUpstreamReleasePill() {
-  if (!isForkDesktopBuild) {
+  if (!isUpstreamReleaseNotificationBuild) {
     return null;
   }
 

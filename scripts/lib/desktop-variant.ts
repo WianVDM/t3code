@@ -2,7 +2,7 @@ import * as Schema from "effect/Schema";
 
 import { BRAND_ASSET_PATHS } from "./brand-assets.ts";
 
-export type DesktopBuildVariant = "official" | "fork";
+export type DesktopBuildVariant = "official" | "fork" | "plusplus";
 
 export const DESKTOP_VARIANT_ENV_VAR = "T3CODE_DESKTOP_VARIANT";
 
@@ -13,7 +13,7 @@ export class InvalidDesktopBuildVariantError extends Schema.TaggedError<InvalidD
   },
 ) {
   override get message(): string {
-    return `Invalid ${DESKTOP_VARIANT_ENV_VAR} '${this.value}'; only "fork" or an unset value is supported.`;
+    return `Invalid ${DESKTOP_VARIANT_ENV_VAR} '${this.value}'; only "fork", "plusplus", or an unset value is supported.`;
   }
 }
 
@@ -30,6 +30,6 @@ export const FORK_DESKTOP_BUILD = {
 export function resolveDesktopBuildVariant(value: string | undefined): DesktopBuildVariant {
   const trimmed = value?.trim();
   if (!trimmed) return "official";
-  if (trimmed === "fork") return "fork";
+  if (trimmed === "fork" || trimmed === "plusplus") return trimmed;
   throw new InvalidDesktopBuildVariantError({ value: trimmed });
 }

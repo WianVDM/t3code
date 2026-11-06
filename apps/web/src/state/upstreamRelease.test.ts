@@ -138,7 +138,7 @@ vi.mock("../components/chat/composerProviderState", () => ({
 vi.mock("../components/upstreamRelease.logic", () => ({
   buildUpstreamMergePrompt: state.buildUpstreamMergePrompt,
   FORK_REPOSITORY: "WianVDM/t3code",
-  isForkDesktopBuild: true,
+  isUpstreamReleaseNotificationBuild: true,
   isUpstreamCacheEntryFresh: state.isUpstreamCacheEntryFresh,
   pickForkProject: state.pickForkProject,
   readCachedUpstreamRelease: state.readCachedUpstreamRelease,

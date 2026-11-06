@@ -25,10 +25,10 @@ vi.mock(import("../../hooks/useHandleNewThread"), () => ({
   useNewThreadHandler: () => state.newThread,
 }));
 // Keep the real shouldDeferUpstreamMerge (the gate under test); pin only the
-// build-variant flag so the row renders as a fork desktop build.
+// build-variant flag so the row renders in this environment.
 vi.mock(import("../upstreamRelease.logic"), async (original) => ({
   ...(await original()),
-  isForkDesktopBuild: true,
+  isUpstreamReleaseNotificationBuild: true,
 }));
 // The real row reads write permission and overrides from live environment state;
 // this suite tests the merge gate.

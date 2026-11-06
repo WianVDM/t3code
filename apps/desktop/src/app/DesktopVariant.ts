@@ -8,7 +8,7 @@ import * as Schema from "effect/Schema";
 // the desktop runtime cannot import from the build scripts.
 export const DESKTOP_VARIANT_ENV_VAR = "T3CODE_DESKTOP_VARIANT";
 
-export type DesktopVariant = "official" | "fork";
+export type DesktopVariant = "official" | "fork" | "plusplus";
 
 export const FORK_DESKTOP_APP = {
   displayName: "T3 Code (Fork)",
@@ -20,7 +20,7 @@ export const FORK_DESKTOP_APP = {
 
 /** Unknown values fall back to the official identity; the build script is the gate that rejects them. */
 export const normalizeDesktopVariant = (value: string | undefined): DesktopVariant =>
-  value?.trim() === "fork" ? "fork" : "official";
+  value?.trim() === "fork" ? "fork" : value?.trim() === "plusplus" ? "plusplus" : "official";
 
 const StampedVariantJson = Schema.Struct({
   t3codeDesktopVariant: Schema.optional(Schema.String),

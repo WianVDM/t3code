@@ -448,6 +448,7 @@ jobs:
           pnpm_config_cache_dir: ${{ steps.stage_pnpm.outputs.dir }}/cache
           pnpm_config_store_dir: ${{ steps.stage_pnpm.outputs.dir }}/store
           pnpm_config_prefer_offline: "true"
+          T3CODE_DESKTOP_VARIANT: plusplus
           T3CODE_DESKTOP_REUSE_RESOURCE_MONITOR: true
           T3CODE_DESKTOP_REUSE_LINUX_CAPTURE_HELPERS: ${{ steps.capture_helper_cache.outputs.cache-hit == 'true' }}
           T3CODE_CLERK_PASSKEY_RP_DOMAINS: ${{ vars.CLERK_PASSKEY_RP_DOMAINS }}

@@ -6,12 +6,13 @@ import * as Path from "effect/Path";
 
 import { normalizeDesktopVariant, resolveDesktopVariant } from "./DesktopVariant.ts";
 
-it("normalizes only the fork marker", () => {
+it("preserves the fork and plusplus markers, falls back to official", () => {
   assert.equal(normalizeDesktopVariant(undefined), "official");
   assert.equal(normalizeDesktopVariant(""), "official");
   assert.equal(normalizeDesktopVariant("beta"), "official");
   assert.equal(normalizeDesktopVariant("fork"), "fork");
   assert.equal(normalizeDesktopVariant(" fork "), "fork");
+  assert.equal(normalizeDesktopVariant("plusplus"), "plusplus");
 });
 
 it.effect("reads the stamped variant from the packaged app package.json", () =>
@@ -31,6 +32,15 @@ it.effect("reads the stamped variant from the packaged app package.json", () =>
     });
 
     assert.equal(variant, "fork");
+
+    yield* fs.writeFileString(
+      path.join(appPath, "package.json"),
+      JSON.stringify({ t3codeDesktopVariant: "plusplus" }),
+    );
+    assert.equal(
+      yield* resolveDesktopVariant({ isPackaged: true, appPath, envVariant: undefined }),
+      "plusplus",
+    );
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
@@ -81,6 +91,12 @@ it.effect("falls back to the environment variant in unpackaged runs", () =>
     });
     assert.equal(fork, "fork");
 
+    const plusplus = yield* resolveDesktopVariant({
+      isPackaged: false,
+      appPath: "/definitely/missing",
+      envVariant: "plusplus",
+    });
+    assert.equal(plusplus, "plusplus");
     const official = yield* resolveDesktopVariant({
       isPackaged: false,
       appPath: "/definitely/missing",

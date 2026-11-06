@@ -91,6 +91,23 @@ describe("DesktopEnvironment", () => {
     }),
   );
 
+  it.effect("keeps the plusplus variant on the T3 Code ++ identity and .t3 paths", () =>
+    Effect.gen(function* () {
+      const environment = yield* makeEnvironment({ desktopVariant: "plusplus" });
+
+      assert.equal(environment.desktopVariant, "plusplus");
+      assert.deepEqual(environment.branding, {
+        baseName: "T3 Code ++",
+        stageLabel: "Beta",
+        displayName: "T3 Code ++ (Beta)",
+      });
+      assert.equal(environment.appUserModelId, "com.t3tools.t3code.plusplus");
+      assert.equal(environment.baseDir, "/Users/alice/.t3");
+      assert.equal(environment.stateDir, "/Users/alice/.t3/userdata");
+      assert.equal(environment.serverSettingsPath, "/Users/alice/.t3/userdata/settings.json");
+    }),
+  );
+
   it.effect("lets explicit home and model id overrides win over the fork defaults", () =>
     Effect.gen(function* () {
       const environment = yield* makeEnvironment(
