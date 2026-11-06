@@ -159,8 +159,9 @@ fails; a sweep fails when listing tunnels does, usually behind Cloudflare 429s. 
 billed until the reaper catches up, which the "Idle tunnels in Cloudflare" chart shows. A failed
 sweep records no counts, so while sweeps fail the chart stops at the last good one; check the tunnel
 list in the Cloudflare dashboard for current numbers. For failed
-deletions, read the relay's "Failed to delete an inactive managed tunnel" warnings. To pause cleanup,
-see [Managed tunnel cleanup rollout](release.md#managed-tunnel-cleanup-rollout).
+deletions, read the relay's "Failed to delete an inactive managed tunnel" warnings. Pausing cleanup
+means setting `RELAY_TUNNEL_CLEANUP_MODE` to `off` or `dry-run` for the stage and deploying the relay
+from `infra/relay` yourself; the mode is read at deploy time, and nothing in CI changes it for you.
 
 **Links degraded / database slow.** Warnings for slow degradation. Link failures above 20% over six
 hours have so far meant provisioning running into the 9 s deadline, with Postgres latency as the

@@ -9,13 +9,13 @@ import * as Scope from "effect/Scope";
 
 import type * as Electron from "electron";
 
+import { isAppLinkProtocol } from "@t3tools/shared/appLinks";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
 import { makeComponentLogger } from "./DesktopObservability.ts";
 import * as DesktopShutdown from "./DesktopShutdown.ts";
 import * as ElectronApp from "../electron/ElectronApp.ts";
-import * as ElectronProtocol from "../electron/ElectronProtocol.ts";
 import * as ElectronTheme from "../electron/ElectronTheme.ts";
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
 import * as DesktopState from "./DesktopState.ts";
@@ -102,6 +102,12 @@ const requestDesktopShutdownAndWait = Effect.fn("desktop.lifecycle.requestShutdo
 interface QuitState {
   phase: "running" | "waiting" | "allowed";
   waitingSinceNanos: bigint;
+}
+
+function isAppLinkArgument(argument: string): boolean {
+  const schemeEnd = argument.indexOf(":");
+  if (schemeEnd <= 0) return false;
+  return isAppLinkProtocol(argument.slice(0, schemeEnd + 1).toLowerCase());
 }
 
 // Longer than a backend's stop budget (SIGTERM, 5s grace, SIGKILL, 1s wait),
@@ -227,11 +233,11 @@ export const make = DesktopLifecycle.of({
         return;
       }
       // Startup already acted on the app link that launched it; passing it on replays it.
-      const appLinkPrefix = `${ElectronProtocol.getDesktopScheme(environment.isDevelopment)}:`;
+      // Any accepted link family goes, since those links are also handed to this build.
       const args = yield* HostProcess.Arguments;
       yield* electronApp.relaunch({
         execPath: yield* HostProcess.ExecutablePath,
-        args: args.slice(1).filter((arg) => !arg.toLowerCase().startsWith(appLinkPrefix)),
+        args: args.slice(1).filter((arg) => !isAppLinkArgument(arg)),
       });
       yield* electronApp.exit(0);
     }).pipe(

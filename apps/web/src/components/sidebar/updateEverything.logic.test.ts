@@ -1,4 +1,8 @@
-import { EnvironmentId, type ServerSelfUpdateCapability } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  type ServerInstallation,
+  type ServerSelfUpdateCapability,
+} from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -83,6 +87,51 @@ describe("collectServerUpdateTargets", () => {
       ["busy", "already updating"],
       ["manual", "needs a manual update"],
     ]);
+  });
+
+  it("targets supported hosts immediately and skips legacy package installs for reinstall", () => {
+    const legacy = (id: string, installation: ServerInstallation): UpdateEverythingMachine =>
+      machine(id, "0.1.4-nightly.20261027.3796", "boot-service", {
+        serverConfig: {
+          environment: {
+            ...machine(id, "0.1.4-nightly.20261027.3796", "boot-service").serverConfig!.environment,
+            capabilities: {
+              repositoryIdentity: true,
+              serverSelfUpdate: "boot-service",
+              serverInstallation: installation,
+            },
+          },
+          settings: { continueThreadsAfterServerUpdate: false },
+        },
+      });
+    const hosts = [
+      machine("archive-service", "0.0.41-nightly.20260914.1700", "boot-service"),
+      machine("npm-service", "0.0.41-nightly.20260914.1699", "boot-service"),
+      machine("legacy-respawn", "0.1.4-nightly.20261027.3796", "respawn"),
+      machine("desktop", "0.1.4-nightly.20261027.3796", "desktop-managed"),
+      legacy("npx-host", { kind: "npx" }),
+      legacy("pnpm-dlx-host", { kind: "pnpm-dlx" }),
+      legacy("bunx-host", { kind: "bunx" }),
+      legacy("npm-global-host", { kind: "npm-global", prefix: "/opt/node" }),
+    ];
+    const result = collectServerUpdateTargets(hosts, "0.1.5-nightly.20261029.3873");
+
+    expect(result.targets.map((target) => target.serverLabel)).toEqual([
+      "archive-service",
+      "npm-service",
+      "legacy-respawn",
+      "desktop",
+    ]);
+    expect(
+      result.targets.every((target) => target.targetVersion === "0.1.5-nightly.20261029.3873"),
+    ).toBe(true);
+    expect(result.skipped.map((entry) => [entry.label, entry.reason])).toEqual([
+      ["npx-host", "needs a reinstall from GitHub Releases"],
+      ["pnpm-dlx-host", "needs a reinstall from GitHub Releases"],
+      ["bunx-host", "needs a reinstall from GitHub Releases"],
+      ["npm-global-host", "needs a reinstall from GitHub Releases"],
+    ]);
+    expect("waitForNpm" in result).toBe(false);
   });
 
   it("skips servers whose policy refuses the update, with the policy's message", () => {

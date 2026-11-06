@@ -1,5 +1,6 @@
 ---
 import LegalPage from "../components/LegalPage.astro";
+import { FORK_REPOSITORY_URL, PRODUCT_NAME } from "../lib/site";
 
 const sections = [
   ["introduction", "Introduction"],
@@ -17,14 +18,31 @@ const sections = [
 ---
 
 <LegalPage
-  title="Privacy Policy | T3 Code"
-  description="How T3 Tools, Inc. handles information when you use T3 Code, app.t3.codes, and t3.codes."
+  title="Privacy Policy (upstream) | T3 Code"
+  description="The upstream T3 Tools, Inc. privacy policy for T3 Code, app.t3.codes, and t3.codes, reproduced for reference by the T3 Code ++ fork."
   heading="T3 Code Privacy Policy"
   lede="This Privacy Policy describes how T3 Tools, Inc. collects, uses, and shares personal information when you use the T3 Code desktop, mobile, and hosted web applications, visit the t3.codes marketing site, or use the optional T3 Connect service."
   effectiveDate="2026-10-06"
   lastUpdated="2026-10-06"
   sections={sections}
 >
+  <aside class="scope-notice" aria-labelledby="scope-notice-heading">
+    <p class="section-number">Scope</p>
+    <h2 id="scope-notice-heading">This is the upstream policy, not the {PRODUCT_NAME} policy</h2>
+    <p>
+      {PRODUCT_NAME} is an independent fork of T3 Code. The policy below is the one T3 Tools,
+      Inc. publishes for the services it operates, including {" "}
+      <a href="https://t3.codes">t3.codes</a>, {" "}
+      <a href="https://app.t3.codes">app.t3.codes</a>, and T3 Connect. It is reproduced here for
+      reference and describes those services, which the fork does not operate. It does not
+      describe how {PRODUCT_NAME} itself handles information.
+    </p>
+    <p>
+      Privacy questions about the fork go to
+      {" "}<a href={FORK_REPOSITORY_URL}>WianVDM/t3code</a>.
+    </p>
+  </aside>
+
   <section id="introduction">
           <p class="section-number">01</p>
           <h2>Introduction</h2>
@@ -462,5 +480,47 @@ const sections = [
             United States
           </address>
           <a class="contact-link" href="mailto:privacy@t3.tools">privacy@t3.tools</a>
+          <p class="fork-contact-note">
+            These details belong to T3 Tools, Inc., which does not operate {PRODUCT_NAME}. For
+            fork-specific privacy questions, open an issue at
+            {" "}<a href={FORK_REPOSITORY_URL}>WianVDM/t3code</a>.
+          </p>
   </section>
 </LegalPage>
+
+<style>
+  .scope-notice {
+    margin-bottom: 82px;
+    padding: 28px 30px 30px;
+    border: 1px solid var(--border-strong);
+    border-left: 2px solid var(--accent);
+    border-radius: var(--radius);
+    background: var(--bg-card);
+  }
+
+  .scope-notice h2 {
+    margin: 10px 0 18px;
+    color: var(--fg);
+    font-size: clamp(1.25rem, 2.2vw, 1.6rem);
+    font-weight: 500;
+    letter-spacing: -0.03em;
+    line-height: 1.2;
+  }
+
+  .scope-notice p:last-child {
+    margin-top: 18px;
+  }
+
+  .fork-contact-note {
+    margin-top: 18px;
+    padding-top: 18px;
+    border-top: 1px solid var(--border);
+  }
+
+  @media (max-width: 820px) {
+    .scope-notice {
+      margin-bottom: 62px;
+      padding: 24px 22px 26px;
+    }
+  }
+</style>

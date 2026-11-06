@@ -11,6 +11,7 @@ import * as TestConsole from "effect/testing/TestConsole";
 import { fromJsonStringPretty } from "@t3tools/shared/schemaJson";
 
 import {
+  InvalidReleaseVersionError,
   releasePackageFiles,
   updateReleasePackageVersions,
   updateReleasePackageVersionsCommand,
@@ -91,6 +92,39 @@ it.layer(ScriptTestLayer)("update-release-package-versions", (it) => {
       const result = yield* updateReleasePackageVersions("1.2.3", { rootDir: baseDir });
 
       assert.deepStrictEqual(result, { changed: false });
+    }),
+  );
+
+  it.effect("accepts plusplus release versions and rejects malformed ones", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const baseDir = yield* fs.makeTempDirectoryScoped({
+        prefix: "update-release-package-versions-validation-",
+      });
+
+      yield* writePackageJsonFixtures(baseDir, "0.1.5-plusplus.1");
+
+      const result = yield* updateReleasePackageVersions("0.1.5-plusplus.2", { rootDir: baseDir });
+      const versions = yield* readReleaseVersions(baseDir);
+
+      assert.deepStrictEqual(result, { changed: true });
+      assert.deepStrictEqual(
+        Array.from(versions.entries()),
+        releasePackageFiles.map((relativePath) => [relativePath, "0.1.5-plusplus.2"]),
+      );
+
+      for (const version of ["v0.1.5-plusplus.2", "0.1.5.1", "0.1.5-", "0.1.5_plusplus.1"]) {
+        const error = yield* updateReleasePackageVersions(version, { rootDir: baseDir }).pipe(
+          Effect.flip,
+        );
+        assert.instanceOf(error, InvalidReleaseVersionError);
+      }
+
+      // The PR preview suffix stacks on a release version and must keep working.
+      const preview = yield* updateReleasePackageVersions("0.1.5-plusplus.2-pr.4.5", {
+        rootDir: baseDir,
+      });
+      assert.deepStrictEqual(preview, { changed: true });
     }),
   );
 

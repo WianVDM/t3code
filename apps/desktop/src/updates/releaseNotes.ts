@@ -95,7 +95,10 @@ function isIgnoredReleaseNoteLine(line: string): boolean {
 
 type ExtractedReleaseNoteItems = Omit<DesktopUpdateReleaseNote, "version" | "releasedAt">;
 
-/** Older generated notes have a highlights paragraph followed by a separate list of fixes. */
+/**
+ * Reads a release body's summary block: an optional `v1.2.3 · N changes…` header, a highlights
+ * paragraph, and fix bullets. PR numbers are left to the GitHub page.
+ */
 function extractReleaseNoteSummary(summary: string): ExtractedReleaseNoteItems {
   let stats: string | undefined;
   let footer: string | undefined;

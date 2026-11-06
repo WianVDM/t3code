@@ -22,11 +22,12 @@ restart from the update button when you are ready. A server still restarting
 finishes on its own, and the button keeps showing it after the desktop app
 restarts.
 
-Each server checks that it can install the release before it restarts. If the
-release is not available to a server yet, its update fails, the server keeps
-running, and you can retry. The confirmation lists each machine it skips and
-why, such as a machine that is offline or needs a manual update. Use
-**Settings → Environments** for those.
+Servers learn about new releases from the release metadata on GitHub
+Releases, not a package registry. When the desktop app offers the update,
+background services update right away too. Older servers update only after
+that version's metadata is published there. The confirmation lists each
+machine it skips and why, such as a machine that is offline or needs a
+manual update. Use **Settings → Environments** for those.
 
 If a desktop app restarts on its old version, T3 Code tells you the update did
 not apply. It does not install that version again on its own, even when another
@@ -99,12 +100,12 @@ Update the side the notice names, then reconnect.
 
 The offered action depends on how the server runs:
 
-| Action                     | What to do                                                                                                                                                                                      |
-| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Update server**          | Keep the client open while it installs and reconnects. Supported background services update remotely. For a desktop-hosted server, this also closes and relaunches the desktop app on the host. |
-| **Update the desktop app** | Update the desktop app on the machine running the server, then reopen it if needed.                                                                                                             |
-| **Copy update command**    | Run the command on the named host to update the detected global npm install, then restart the server with your usual options.                                                                   |
-| **Copy relaunch command**  | Stop the command-line server on its host and relaunch with the copied command, keeping your usual subcommand and options. This does not update an installed `t3` command.                       |
+| Action                     | What to do                                                                                                                                                                                                            |
+| -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Update server**          | Keep the client open while it installs and reconnects. Supported background services update remotely. For a desktop-hosted server, this also closes and relaunches the desktop app on the host.                       |
+| **Update the desktop app** | Update the desktop app on the machine running the server, then reopen it if needed.                                                                                                                                   |
+| **Copy update command**    | Run the command on the named host to update the detected install of `t3`, then restart the server with your usual options. Installs made through npm, `npx`, `pnpm dlx`, or `bunx` cannot update this way; see below. |
+| **Copy relaunch command**  | Stop the command-line server on its host and relaunch with the copied command, keeping your usual subcommand and options. This does not update an installed `t3` command.                                             |
 
 On the host, run:
 
@@ -118,9 +119,23 @@ asks before restarting the background service; if you decline, run
 stop it and start it again afterwards with your usual options such as `--host`
 or `--tailscale-serve`.
 
-If you run the server with `npx` rather than an installed `t3`, there is
-nothing to update on the host: stop the server and relaunch it as
-`npx t3@<client-version>` with the same subcommand and options.
+`t3 update` is the only supported manual update command. If your `t3` came
+from an npm global install or you run the server through `npx`,
+`pnpm dlx`, or `bunx`, install the release for your platform from
+[GitHub Releases](https://github.com/WianVDM/t3code/releases) first, then use
+`t3 update` for later updates. Releases are published for Windows and Linux
+on x64 and for macOS arm64. Stop the server before reinstalling, and start it
+again afterwards with your usual subcommand and options.
+
+On Windows and Linux, the desktop app installs its own updates. macOS arm64 is
+a manual download: get the current `T3-Code-<version>-arm64.dmg` from
+[GitHub Releases](https://github.com/WianVDM/t3code/releases), replace the app,
+and open it again (right-click and choose **Open** if macOS warns that it
+cannot verify the developer). Unsigned macOS builds have updater checks
+disabled; they do not look for updates. There is no macOS Intel build.
+Download the matching macOS arm64 CLI `.tar.gz` for the same release and
+replace the `t3` binary to update a CLI or background service installed from
+it.
 
 ## If an update fails
 

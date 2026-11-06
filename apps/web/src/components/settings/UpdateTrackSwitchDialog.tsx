@@ -9,7 +9,7 @@ import { AsyncResult } from "effect/reactivity";
 import { APP_VERSION } from "~/branding";
 import { useDesktopUpdateState } from "~/state/desktopUpdate";
 import { useEnvironments } from "~/state/environments";
-import { npmReleaseAtom, npmReleaseFailureMessage } from "~/state/npmRelease";
+import { releaseMetadataAtom } from "~/state/releaseMetadata";
 import { downloadLocalUpdate, installLocalUpdate } from "../sidebar/SidebarUpdatePill";
 import { UpdateEverythingDialog } from "../sidebar/UpdateEverythingDialog";
 import {
@@ -39,10 +39,18 @@ export function UpdateTrackSwitchDialog({
   readonly channel: DesktopUpdateChannel;
   readonly onClose: () => void;
 }) {
-  // npm dist-tags match the desktop channel names.
-  const release = useAtomValue(npmReleaseAtom(channel));
+  const release = useAtomValue(releaseMetadataAtom(channel));
   if (AsyncResult.isSuccess(release) && release.value !== null) {
-    return <SwitchPlan release={{ channel, ...release.value }} onClose={onClose} />;
+    return (
+      <SwitchPlan
+        release={{
+          channel,
+          version: release.value.version,
+          databaseMigration: release.value.databaseMigration,
+        }}
+        onClose={onClose}
+      />
+    );
   }
   const label = channelSwitchLabel(channel);
   return (
@@ -51,11 +59,9 @@ export function UpdateTrackSwitchDialog({
         <AlertDialogHeader>
           <AlertDialogTitle>Switch to {label}</AlertDialogTitle>
           <AlertDialogDescription>
-            {AsyncResult.isFailure(release)
-              ? npmReleaseFailureMessage(release.cause)
-              : AsyncResult.isSuccess(release)
-                ? `Could not find the latest ${label} release in this environment's npm registry.`
-                : "Checking releases…"}
+            {AsyncResult.isFailure(release) || AsyncResult.isSuccess(release)
+              ? `Could not find the latest ${label} release on GitHub Releases. Try again later.`
+              : "Checking releases…"}
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>

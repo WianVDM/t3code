@@ -404,7 +404,12 @@ describe("t3 pair", () => {
           ]);
           assert.isTrue(Exit.isFailure(exit));
           if (Exit.isFailure(exit)) {
-            assert.include(String(Cause.squash(exit.cause)), "t3@0.0.45 pair");
+            const rendered = String(Cause.squash(exit.cause));
+            assert.include(
+              rendered,
+              "The running T3 Code server (0.0.45) speaks orchestration protocol 1, but this CLI speaks protocol 2.",
+            );
+            assert.notInclude(rendered, "t3@0.0.45 pair");
           }
         }),
       "127.0.0.1",

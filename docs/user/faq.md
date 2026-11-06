@@ -13,8 +13,7 @@ Bring your own: Claude Code, Codex, Cursor, Grok Build, OpenCode, Google Antigra
 We were inspired by the Codex desktop app, Conductor, Claude Desktop, and Cursor Glass, but none met our bar. What you get:
 
 - Bring your own sub. Claude, Codex, and whatever else you already have installed.
-- Best in class remote. Run `npx t3 up` on any box and drive it from anywhere.
-- Best in class mobile app.
+- Best in class remote. Run `t3 connect` on any box and drive it from anywhere.
 - Truly 100% open source. If we go the wrong direction, fork it.
 
 Every harness feels nearly identical in here, so you can stop worrying about harnesses and focus on building :) [Install](./install.md)
@@ -37,11 +36,11 @@ T3 Code drives Claude through Anthropic's Agent SDK. I confirmed it's a real bug
 
 ## How do I use T3 Code remotely?
 
-Your agents run wherever T3 Code runs: your desktop, a server, a VPS. You connect to it from anywhere. I do this constantly. Less than 5% of my prompts run on my laptop. Run `npx t3 up` on that machine and you get really good remote support. T3 Connect is the easy path. LAN pairing and Tailscale work too, and [app.t3.codes](https://app.t3.codes) is the web client. [Remote access](./remote-access.md)
+Your agents run wherever T3 Code runs: your desktop, a server, a VPS. You connect to it from anywhere. I do this constantly. Less than 5% of my prompts run on my laptop. Run `t3 connect` on that machine and you get really good remote support. T3 Connect is the easy path. LAN pairing and Tailscale work too, and [app.t3.codes](https://app.t3.codes) is the web client. [Remote access](./remote-access.md)
 
 ## How do I use T3 Code on my phone?
 
-Get the [iOS](https://apps.apple.com/us/app/t3-code-remote-claude-more/id6787819824) or [Android](https://play.google.com/store/apps/details?id=com.t3tools.t3code) app, then connect it to your computer with T3 Connect or a pairing link. The phone is a remote. Your computer does the work and needs to stay on. [Mobile setup](./install.md#mobile-app) · [Remote access](./remote-access.md)
+This fork has no mobile app. The desktop app is published for Windows x64 and Linux x64, plus an unsigned macOS arm64 DMG you can download and install manually (no macOS updater feed, and no Intel Mac build); you can also use the local web client on any platform. To drive it from your phone, connect the phone's browser to your computer over T3 Connect, LAN pairing, or Tailscale. The computer does the work and needs to stay on. [Remote access](./remote-access.md)
 
 ## Why does T3 Connect keep disconnecting?
 
@@ -77,11 +76,11 @@ Open **Settings > Storage** and turn on automatic worktree cleanup. You can also
 
 ## Is there voice input?
 
-On iPhone, yes. You need iOS 26 or later. Tap the mic in the composer, talk, check the text, then send. Web, desktop, and Android do not have it yet. [Voice input on iPhone](./composer.md#voice-input-on-iphone)
+Not in this fork, which has no mobile app. Upstream T3 Code has it on iPhone (iOS 26 or later): tap the mic in the composer, talk, check the text, then send. Web, desktop, and Android do not have it there yet.
 
 ## Does it work on Windows, Mac, and Linux?
 
-Yes, all three. Desktop app, CLI, the works. One catch: there is no `t3` binary for Intel Macs, so use the desktop app there. Windows folks can also run agents inside WSL. [Install](./install.md)
+Yes, all three. Desktop app, CLI, the works. One catch: there is no `t3` binary for Intel Macs and no desktop app build for them either, so use the web client there. Windows folks can also run agents inside WSL. [Install](./install.md)
 
 ## Why is my provider not showing up?
 

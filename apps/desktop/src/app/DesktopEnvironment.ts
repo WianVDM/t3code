@@ -79,6 +79,7 @@ export class DesktopEnvironment extends Context.Service<
     readonly appUserModelId: string;
     readonly desktopVariant: DesktopVariant;
     readonly linuxDesktopEntryName: string;
+    readonly linuxWmClass: string;
     readonly linuxApplicationsDir: string;
     readonly desktopLauncherPath: Option.Option<string>;
     readonly appImagePath: Option.Option<string>;
@@ -89,7 +90,7 @@ export class DesktopEnvironment extends Context.Service<
   }
 >()("@t3tools/desktop/app/DesktopEnvironment") {}
 
-const APP_BASE_NAME = "T3 Code";
+const APP_BASE_NAME = "T3 Code ++";
 
 function resolveDesktopAppStageLabel(input: {
   readonly isDevelopment: boolean;
@@ -247,10 +248,11 @@ const make = Effect.fn("desktop.environment.make")(function* (
       desktopVariant === "fork"
         ? FORK_DESKTOP_APP.appUserModelId
         : isDevelopment
-          ? "com.t3tools.t3code.dev"
-          : "com.t3tools.t3code",
+          ? "com.t3tools.t3code.plusplus.dev"
+          : "com.t3tools.t3code.plusplus",
     ),
     linuxDesktopEntryName: resolveLinuxDesktopEntryName(isDevelopment),
+    linuxWmClass: isDevelopment ? "t3codeplusplus-dev" : "t3codeplusplus",
     linuxApplicationsDir,
     desktopLauncherPath: config.desktopLauncherPath,
     appImagePath: config.appImagePath,

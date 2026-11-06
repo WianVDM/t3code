@@ -3,20 +3,16 @@ import * as Schema from "effect/Schema";
 
 import { compareSemverVersions } from "./semver.ts";
 
-const CLI_RELEASE_REPOSITORY = "pingdotgg/t3code";
+const CLI_RELEASE_REPOSITORY = "WianVDM/t3code";
 export const CLI_RELEASES_PAGE_URL = `https://github.com/${CLI_RELEASE_REPOSITORY}/releases`;
 export const CLI_RELEASE_CHECKSUMS_FILE = "SHA256SUMS";
+export const CLI_RELEASE_METADATA_FILE = "release-metadata.json";
 export const CLI_RELEASE_BASE_URL_ENV = "T3CODE_RELEASE_BASE_URL";
 
-// Keep archive keys aligned with the Linux matrix, Windows ARM64 build, and cli_archive rows in release.yml.
-// Node single-executables do not support darwin-x64 and segfault at startup.
-const CLI_ARCHIVE_PLATFORM_KEYS = [
-  "darwin-arm64",
-  "linux-arm64",
-  "linux-x64",
-  "win32-arm64",
-  "win32-x64",
-] as const;
+// Keep archive keys aligned with the cli_archive rows in release.yml, plus the darwin-arm64 archive
+// offered as a manual macOS download. Node single-executables do not support darwin-x64 and segfault
+// at startup, and the ARM64 Linux and Windows builds publish no CLI archive.
+const CLI_ARCHIVE_PLATFORM_KEYS = ["linux-x64", "win32-x64", "darwin-arm64"] as const;
 export type CliArchivePlatformKey = (typeof CLI_ARCHIVE_PLATFORM_KEYS)[number];
 
 export function cliArchivePlatformKey(
@@ -48,6 +44,10 @@ export function cliReleaseDownloadBaseUrl(
   baseUrl: string | undefined = CLI_RELEASE_DEFAULT_BASE_URL,
 ): string {
   return `${(baseUrl?.trim() || CLI_RELEASE_DEFAULT_BASE_URL).replace(/\/+$/, "")}/v${version}`;
+}
+
+export function cliReleaseMetadataUrl(version: string): string {
+  return `${cliReleaseDownloadBaseUrl(version)}/${CLI_RELEASE_METADATA_FILE}`;
 }
 
 export function parseChecksums(text: string): ReadonlyMap<string, string> {
@@ -119,6 +119,29 @@ export function newestCliReleaseVersion(
     if (cliReleaseChannelOf(version) === channel) return version;
   }
   return undefined;
+}
+
+export const ReleaseMetadataSchema = Schema.Struct({
+  version: Schema.NonEmptyString,
+  channel: Schema.Literals(CLI_RELEASE_CHANNELS),
+  /** Omitted by metadata written before the field existed. */
+  databaseMigration: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
+});
+export type ReleaseMetadata = typeof ReleaseMetadataSchema.Type;
+
+const decodeReleaseMetadataJson = Schema.decodeUnknownOption(
+  Schema.fromJsonString(ReleaseMetadataSchema),
+);
+
+/** Decodes the `release-metadata.json` body served by `tag`. Unparseable or inconsistent
+ * metadata yields nothing, so callers fail closed instead of assuming a version or channel. */
+export function decodeReleaseMetadata(tag: string, json: string): Option.Option<ReleaseMetadata> {
+  return Option.filter(
+    decodeReleaseMetadataJson(json),
+    (metadata) =>
+      metadata.version === tag.replace(/^v/, "") &&
+      metadata.channel === cliReleaseChannelOf(metadata.version),
+  );
 }
 
 const NpmReleaseMigrationManifest = Schema.Struct({

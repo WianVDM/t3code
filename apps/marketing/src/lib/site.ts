@@ -1,10 +1,12 @@
-export const GITHUB_REPOSITORY_URL = "https://github.com/pingdotgg/t3code";
+export const PRODUCT_NAME = "T3 Code ++";
 
-export const IOS_APP_STORE_URL =
-  "https://apps.apple.com/us/app/t3-code-remote-claude-more/id6787819824";
+export const FORK_REPOSITORY_SLUG = "WianVDM/t3code";
 
-export const ANDROID_PLAY_STORE_URL =
-  "https://play.google.com/store/apps/details?id=com.t3tools.t3code";
+export const FORK_REPOSITORY_URL = `https://github.com/${FORK_REPOSITORY_SLUG}`;
+
+export const UPSTREAM_REPOSITORY_URL = "https://github.com/pingdotgg/t3code";
+
+export const GITHUB_REPOSITORY_URL = FORK_REPOSITORY_URL;
 
 // Runs at build time, so each deploy picks up the current count.
 async function fetchGithubStars(): Promise<string> {

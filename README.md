@@ -1,8 +1,10 @@
-# T3 Code
+# T3 Code ++
 
-T3 Code is an "agent harness control surface". It enables control of the agents on your machine with a best-in-class mobile app ([iOS](https://apps.apple.com/us/app/t3-code-remote-claude-more/id6787819824), [Android](https://play.google.com/store/apps/details?id=com.t3tools.t3code)), [web app](https://app.t3.codes) and [Electron-based desktop app](https://t3.codes).
+T3 Code ++ is a drop-in fork of [T3 Code](https://github.com/pingdotgg/t3code), the "agent harness control surface" that lets you control the agents on your machine. It ships the Electron-based desktop app for Windows and Linux x64, plus an unsigned macOS arm64 build, along with the web client started by the `t3` CLI. A local install of upstream T3 Code can be reused as-is: T3 Code ++ reads the existing projects, sessions, and data, so nothing has to be migrated.
 
-Works with your subscriptions on Claude Code, Codex, Cursor, Grok Build, OpenCode, Google Antigravity, and fx. If they're set up on your computer, T3 Code can control them.
+Releases are published on [GitHub Releases](https://github.com/WianVDM/t3code/releases).
+
+Works with your subscriptions on Claude Code, Codex, Cursor, Grok Build, OpenCode, Google Antigravity, and fx. If they're set up on your computer, T3 Code ++ can control them.
 
 ## "Wait, what are you selling me?"
 
@@ -26,74 +28,20 @@ We wanted something performant, remote-ready, and truly open. If we ever go the 
 ### Command line
 
 ```bash
-curl -fsSL https://t3.codes/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/WianVDM/t3code/main/scripts/install.sh | sh
 ```
 
 On Windows, in PowerShell:
 
 ```powershell
-irm https://t3.codes/install.ps1 | iex
+irm https://raw.githubusercontent.com/WianVDM/t3code/main/scripts/install.ps1 | iex
 ```
 
 Then run `t3` to start the server and open the local web app. `t3 service install` keeps it running in the background, `t3 update` moves to a newer release, and `t3 --help` has the full reference.
 
-To try it once without installing, run `npx t3@latest` instead.
-
 ### Desktop app
 
-Install the latest version of the desktop app from [GitHub Releases](https://github.com/pingdotgg/t3code/releases), or from your favorite package registry:
-
-#### Windows (`winget`)
-
-```bash
-winget install T3Tools.T3Code
-```
-
-#### Windows (`scoop`)
-
-```bash
-scoop install extras/t3code
-```
-
-#### macOS (Homebrew)
-
-```bash
-brew install --cask t3-code
-```
-
-#### Debian, Ubuntu (`.deb`)
-
-Download the `.deb` from [GitHub Releases](https://github.com/pingdotgg/t3code/releases), then:
-
-```bash
-sudo apt install ./T3-Code-*.deb
-```
-
-#### Arch Linux (AUR)
-
-Stable:
-
-```bash
-yay -S t3code-bin
-```
-
-Nightly:
-
-```bash
-yay -S t3code-nightly-bin
-```
-
-The AUR packaging is maintained in this repository under [`packaging/aur`](./packaging/aur).
-
-#### Nix (nixpkgs)
-
-```bash
-nix profile add github:NixOS/nixpkgs/nixos-unstable#t3code
-```
-
-The package is maintained in [nixpkgs](https://github.com/NixOS/nixpkgs/tree/nixos-unstable/pkgs/by-name/t3/t3code)
-and includes the desktop app (`t3code-desktop`) and the `t3` command.
-See [Nix installation](./docs/user/install.md#nix-nixpkgs) for NixOS configuration and updates.
+Installers for Windows x64 (`.exe`) and Linux x64 (`.AppImage`) are published on [GitHub Releases](https://github.com/WianVDM/t3code/releases), alongside `.zip`/`.tar.gz` archives of the `t3` CLI for both platforms. An unsigned macOS arm64 `.dmg` manual download is published there too; it has no in-app updater and needs no Apple signing. There are no other ARM or package-registry builds.
 
 ## Some notes
 
@@ -148,6 +96,7 @@ vp i
 
 Read [CONTRIBUTING.md](./CONTRIBUTING.md) before reporting a bug or opening a PR.
 
-Have a feature request? Start an [Ideas discussion](https://github.com/pingdotgg/t3code/discussions/categories/ideas).
+Upstream links, kept for attribution and reference:
 
-Need support? Join the [Discord](https://discord.gg/jn4EGJjrvv).
+- Have a feature request? Start an [Ideas discussion](https://github.com/pingdotgg/t3code/discussions/categories/ideas) (upstream).
+- Need support? Join the [Discord](https://discord.gg/jn4EGJjrvv) (upstream).

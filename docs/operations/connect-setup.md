@@ -65,12 +65,12 @@ URL selects the deployment.
 Enable Clerk's Native API and add the desktop redirects to its SSO redirect allowlist:
 
 ```text
-t3code-dev://app/
-t3code://app/
+t3codeplusplus-dev://app/
+t3codeplusplus://app/
 ```
 
 Add the corresponding origin to the Clerk instance's Backend API `allowed_origins` array.
-Development uses `t3code-dev://app`; production uses `t3code://app`. Update the array with
+Development uses `t3codeplusplus-dev://app`; production uses `t3codeplusplus://app`. Update the array with
 `PATCH https://api.clerk.com/v1/instance` using the Clerk secret key, preserving existing entries.
 The Clerk Electron integration handles token
 persistence and system-browser callback delivery.
@@ -97,7 +97,10 @@ For a production macOS app with bundle ID `com.t3tools.t3code`:
    This setting also configures Electron/macOS passkeys.
 4. Check `https://<frontend-api>/.well-known/apple-app-site-association`. Its
    `webcredentials.apps` must include `<TEAM_ID>.com.t3tools.t3code`.
-5. Configure signing as described in the [release runbook](./release.md#2-apple-signing--notarization-setup-macos).
+5. Nothing else is needed for releases. The desktop builds publish unsigned, so repository and workflow
+   configuration carry no Apple signing or notarization step, and no paid account is required. The App
+   ID, provisioning profile, and Associated Domains entitlement above apply only to a locally built app
+   that must exercise these passkeys.
 
 Local signed builds additionally use:
 

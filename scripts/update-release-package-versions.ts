@@ -46,6 +46,27 @@ export class ReleaseGitHubOutputWriteError extends Schema.TaggedError<ReleaseGit
   }
 }
 
+export class InvalidReleaseVersionError extends Schema.TaggedError<InvalidReleaseVersionError>()(
+  "InvalidReleaseVersionError",
+  { version: Schema.String },
+) {
+  override get message(): string {
+    return `Invalid release version '${this.version}'; expected X.Y.Z with an optional channel suffix such as -plusplus.N.`;
+  }
+}
+
+// `X.Y.Z` plus one optional channel suffix (`-plusplus.N`, `-nightly.*`,
+// `-preview.*`, `-pr.*`). The suffix must start with `-`: `0.1.5.1`-style
+// versions are not semver, and npm and Electron tooling reject them.
+const RELEASE_VERSION = /^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$/;
+
+export const assertReleaseVersion = Effect.fn("assertReleaseVersion")(function* (version: string) {
+  if (!RELEASE_VERSION.test(version)) {
+    return yield* new InvalidReleaseVersionError({ version });
+  }
+  return version;
+});
+
 export const releasePackageFiles = [
   "apps/server/package.json",
   "apps/desktop/package.json",
@@ -66,6 +87,7 @@ export const updateReleasePackageVersions = Effect.fn("updateReleasePackageVersi
   version: string,
   options: UpdateReleasePackageVersionsOptions = {},
 ) {
+  yield* assertReleaseVersion(version);
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const rootDir = path.resolve(options.rootDir ?? process.cwd());

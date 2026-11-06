@@ -67,8 +67,8 @@ export interface SkippedMachine {
 }
 
 /** Skip current and app-hosted servers; the latter update with the app and would relaunch mid-run.
- * Desktop-managed servers use their own feed. Each server's updater checks that it can install the
- * release before it restarts, so no registry precheck runs here. */
+ * Desktop-managed servers use their own feed. Every remaining target moves at once: its GitHub
+ * Release carries the archives boot services download. */
 export function collectServerUpdateTargets(
   machines: ReadonlyArray<UpdateEverythingMachine>,
   targetVersion: string,
@@ -120,15 +120,22 @@ export function collectServerUpdateTargets(
       skip(`on the ${cliReleaseChannelOf(serverVersion)} channel`);
       continue;
     }
-    const target: ServerUpdateTarget = {
+    // A registry descriptor marks an install whose update would rerun a command we no longer publish.
+    if (
+      selfUpdate !== "desktop-managed" &&
+      config.environment.capabilities.serverInstallation !== undefined
+    ) {
+      skip("needs a reinstall from GitHub Releases");
+      continue;
+    }
+    targets.push({
       environmentId: machine.environmentId,
       serverLabel: machine.label,
       selfUpdate,
       installation: config.environment.capabilities.serverInstallation,
       desktopAppUpdate,
       targetVersion,
-    };
-    targets.push(target);
+    });
   }
   return { targets, skipped };
 }
@@ -140,7 +147,7 @@ function unavailableReason(machine: UpdateEverythingMachine): string | null {
   return null;
 }
 
-/** The latest release on the track a fleet switches to, as npm reports it. */
+/** The latest release on the track a fleet switches to, from its GitHub Release metadata. */
 export interface ChannelSwitchRelease {
   readonly channel: DesktopUpdateChannel;
   readonly version: string;

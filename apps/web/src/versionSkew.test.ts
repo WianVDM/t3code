@@ -20,13 +20,17 @@ const MISMATCH_HINT =
   "Version mismatch. Try syncing the client and server to the same T3 Code version.";
 
 describe("versionSkew", () => {
-  it("updates only the proven npm prefix and safely quotes its path", () => {
-    expect(manualServerUpdateCommand("0.0.45", { kind: "npm-global", prefix: "/opt/node" })).toBe(
-      "npm install --global --prefix '/opt/node' t3@0.0.45",
-    );
-    expect(
-      manualServerUpdateCommand("0.0.45", { kind: "npm-global", prefix: "/opt/maria's node" }),
-    ).toBe("npm install --global --prefix '/opt/maria'\\''s node' t3@0.0.45");
+  it("returns the GitHub update command only when no registry descriptor is present", () => {
+    expect(manualServerUpdateCommand("0.0.45")).toBe("t3 update 0.0.45");
+  });
+
+  it.each([
+    { kind: "npm-global", prefix: "/opt/node" },
+    { kind: "npx" },
+    { kind: "pnpm-dlx" },
+    { kind: "bunx" },
+  ] as const)("returns no command for the $kind installation", (installation) => {
+    expect(manualServerUpdateCommand("0.0.45", installation)).toBeNull();
   });
   beforeEach(() => {
     branding.APP_VERSION = "0.0.34";
@@ -84,6 +88,57 @@ describe("versionSkew", () => {
       });
     },
   );
+
+  it("warns when a plusplus server revision is behind a plusplus client on the same base", () => {
+    branding.APP_VERSION = "0.0.34-plusplus.2";
+
+    expect(resolveVersionMismatch("0.0.34-plusplus.1")).toEqual({
+      clientVersion: "0.0.34-plusplus.2",
+      serverVersion: "0.0.34-plusplus.1",
+      hint: MISMATCH_HINT,
+    });
+  });
+
+  it.each([
+    ["0.0.34-plusplus.2", "0.0.34-plusplus.2"],
+    ["0.0.34-plusplus.2", "0.0.34-plusplus.3"],
+  ])(
+    "does not warn when a plusplus server revision matches or outruns plusplus client %s",
+    (clientVersion, serverVersion) => {
+      branding.APP_VERSION = clientVersion;
+
+      expect(resolveVersionMismatch(serverVersion)).toBeNull();
+    },
+  );
+
+  it("resets skew when the plusplus upstream base moves, regardless of revision", () => {
+    branding.APP_VERSION = "0.0.35-plusplus.1";
+
+    expect(resolveVersionMismatch("0.0.34-plusplus.1")).toEqual({
+      clientVersion: "0.0.35-plusplus.1",
+      serverVersion: "0.0.34-plusplus.1",
+      hint: MISMATCH_HINT,
+    });
+    expect(resolveVersionMismatch("0.0.34-plusplus.99")).toMatchObject({
+      serverVersion: "0.0.34-plusplus.99",
+    });
+
+    branding.APP_VERSION = "0.0.34-plusplus.99";
+    expect(resolveVersionMismatch("0.0.35-plusplus.1")).toBeNull();
+  });
+
+  it("compares cores only across nightly and plusplus channels", () => {
+    branding.APP_VERSION = "0.0.34-plusplus.5";
+    expect(resolveVersionMismatch("0.0.34-nightly.20260818.1124")).toBeNull();
+
+    branding.APP_VERSION = "0.0.34-nightly.20260818.1124";
+    expect(resolveVersionMismatch("0.0.34-plusplus.5")).toBeNull();
+
+    branding.APP_VERSION = "0.0.35-plusplus.1";
+    expect(resolveVersionMismatch("0.0.34-nightly.20260818.1124")).toMatchObject({
+      serverVersion: "0.0.34-nightly.20260818.1124",
+    });
+  });
 
   // regression: #7579 versions were compared as strings, not semver
   it("treats a nightly server built past the client as ahead, not skew", () => {

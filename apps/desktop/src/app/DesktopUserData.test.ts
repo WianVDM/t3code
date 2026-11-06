@@ -2,10 +2,44 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 
+import { resolveDesktopBaseDir, resolveDesktopStateDir } from "./DesktopStatePaths.ts";
 import { resolveUserDataPath } from "./DesktopUserData.ts";
 
+it("keeps production base state resolution at ~/.t3/userdata regardless of app branding", () => {
+  const joinPath = (...segments: string[]) => segments.join("/");
+  const baseDir = resolveDesktopBaseDir({
+    homeDirectory: "/home/user",
+    joinPath,
+    t3Home: Option.none(),
+  });
+  assert.equal(baseDir, "/home/user/.t3");
+  assert.equal(
+    resolveDesktopStateDir({ baseDir, isDevelopment: false, joinPath, t3Home: Option.none() }),
+    "/home/user/.t3/userdata",
+  );
+});
+
+it("respects T3CODE_HOME for the base state directory in production", () => {
+  const joinPath = (...segments: string[]) => segments.join("/");
+  const baseDir = resolveDesktopBaseDir({
+    homeDirectory: "/home/user",
+    joinPath,
+    t3Home: Option.some("/custom/t3-home"),
+  });
+  assert.equal(baseDir, "/custom/t3-home");
+  assert.equal(
+    resolveDesktopStateDir({
+      baseDir,
+      isDevelopment: false,
+      joinPath,
+      t3Home: Option.some("/custom/t3-home"),
+    }),
+    "/custom/t3-home/userdata",
+  );
+});
 it.effect("gives the fork its own Windows profile without migrating official state", () =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;

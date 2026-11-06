@@ -1,9 +1,14 @@
 # Install T3 Code
 
 T3 Code runs coding agents on your computer and lets you control them from its
-desktop, web, or mobile app. Set up the machine where the agents will work first.
+desktop or web app. Set up the machine where the agents will work first.
 
 ## Requirements
+
+Windows x64, Linux x64, or macOS arm64. Every release is published on
+[GitHub Releases](https://github.com/WianVDM/t3code/releases) only. There is no
+macOS Intel, Linux ARM, or Windows ARM build, no mobile app, and nothing here
+needs Node.js or npm.
 
 You need an installed, authenticated provider before starting a thread. You can
 launch T3 Code and configure providers afterwards.
@@ -11,19 +16,20 @@ launch T3 Code and configure providers afterwards.
 ## Command line
 
 ```bash
-curl -fsSL https://t3.codes/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/WianVDM/t3code/main/scripts/install.sh | sh
 ```
 
 On Windows, in PowerShell:
 
 ```powershell
-irm https://t3.codes/install.ps1 | iex
+irm https://raw.githubusercontent.com/WianVDM/t3code/main/scripts/install.ps1 | iex
 ```
 
-This installs the `t3` binary to `~/.local/bin`. If your shell reports `command not found`
-afterwards, that directory is not on your `PATH` yet; the installer prints the
-line to add. Set `T3CODE_CHANNEL=nightly` to install the nightly train, or
-`T3CODE_VERSION` to pin an exact version.
+The installer downloads the release archive for your platform and links `t3`
+into `~/.local/bin` (`%USERPROFILE%\.local\bin` on Windows). If your shell
+reports `command not found` afterwards, that directory is not on your `PATH`
+yet; the installer prints the line to add. Set `T3CODE_CHANNEL=nightly` to
+install the nightly train, or `T3CODE_VERSION` to pin an exact version.
 
 | Task                                             | Command                                                                 |
 | ------------------------------------------------ | ----------------------------------------------------------------------- |
@@ -33,7 +39,13 @@ line to add. Set `T3CODE_CHANNEL=nightly` to install the nightly train, or
 | Keep it running in the background (macOS, Linux) | `t3 service install` ([details](./background-service.md))               |
 | Move to the newest release                       | `t3 update`                                                             |
 | Reclaim database space                           | `t3 doctor` ([details](./background-service.md#reclaim-database-space)) |
+| Import an old fork's history                     | `t3 import-old-fork --source <path-to-old-statev2.sqlite>`              |
 | Remove it again                                  | `t3 uninstall`                                                          |
+
+`import-old-fork` copies an old fork's V2 database into this installation only
+when the destination database does not exist yet; it never overwrites existing
+state. Stop any running server first, and pass `--base-dir` to import into a
+different T3 home.
 
 Run `t3 help` or `t3 --help` for the full reference. To start in a new working
 directory, use an explicit path such as `t3 ./my-project`. A bare directory name
@@ -43,72 +55,98 @@ If `t3` or `t3 start` reports an already running server, connect to that server
 instead. Stop it before starting a replacement, or use a different `--base-dir`
 for an independent server.
 
-To try T3 Code once without installing it, run `npx t3@latest` instead (needs
-Node.js for `npx`).
+### Importing your old fork
 
-### Intel Macs
+On first start, if `~/.t3-fork` exists, T3 Code merges it into `~/.t3`. This
+runs once for the default home and only when no `--base-dir` is set; an explicit
+data directory or dev URL never triggers it.
 
-There is no `t3` executable for Intel Macs (the desktop app is available). To
-run a server there, build it from source with `vp`, which provides the Node version it needs
-([Install vp](https://github.com/pingdotgg/t3code#install-vp)):
+What you get:
+
+- **Old fork wins where they overlap.** Its settings, themes, keybindings, and
+  shared conversation history replace this installation's copies; sessions and
+  threads that only exist here are kept.
+- **Provider sign-ins come across.** Credentials required by your old fork's
+  settings are copied so providers keep working. This installation's identity,
+  cloud link, session tokens, and other server secrets are never imported.
+- **Live work does not resume.** Running turns, scheduled tasks, and pairing
+  sessions from the old fork are dropped, not restarted.
+
+Stop every T3 Code server and the desktop app on both homes before the first
+start. A server still running against either home blocks the merge; running two
+servers over the same data is never safe.
+
+The merge records its progress in `~/.t3/userdata/old-fork-import-plus-plus-v1.json`.
+When it finishes, the marker stops any further attempt. A blocked merge stops
+too and is not retried on later starts, even after you fix the cause. A merge
+that finds another process still working reports busy and waits for the next
+start.
+
+To retry a blocked merge, stop both servers, then run:
 
 ```bash
-git clone https://github.com/pingdotgg/t3code
-cd t3code && vp i && vp run build:desktop
-node apps/server/dist/bin.mjs
+t3 retry-old-fork-merge --base-dir ~/.t3
 ```
 
-`t3 update` and the background service do not apply to a server run this way;
-update it with `git pull` and a rebuild.
+This re-runs only the steps that are safe to repeat. It never resumes or
+deletes running work.
+
+To bring an old fork into a different data directory instead, use the manual
+command with an explicit destination:
+
+```bash
+t3 import-old-fork --source ~/.t3-fork/userdata/statev2.sqlite --base-dir /path/to/home
+```
+
+The manual command copies the database as-is when the destination is empty. It
+never overwrites an existing database, so it is also how you set up a second
+server from old-fork history.
+
+### From an archive
+
+Every release also carries the CLI on its own: a `.tar.gz` for Linux x64 and
+macOS arm64, a `.zip` for Windows x64, and `SHA256SUMS` beside them. Unpack one and put `t3`
+somewhere on your `PATH`. Updates are then manual, so download the newer archive
+and replace the binary. Use the installer instead when you want `t3 update` and
+the background service to follow releases for you.
+
+### Coming from npm or npx
+
+`npm install -g t3`, `npx t3@latest`, `pnpm dlx`, and `bunx` no longer install
+or update T3 Code. If your `t3` came from one of them, stop the server, install
+the current release with the installer above, and use `t3 update` from then on.
+Projects, threads, and settings in your T3 home directory are kept.
 
 ## Desktop app
 
-Download a release from [GitHub Releases](https://github.com/pingdotgg/t3code/releases),
-or use a package manager:
+Download the installer from [GitHub Releases](https://github.com/WianVDM/t3code/releases):
 
-| Platform           | Install                                                      |
-| ------------------ | ------------------------------------------------------------ |
-| Windows            | `winget install T3Tools.T3Code`                              |
-| macOS              | `brew install --cask t3-code`                                |
-| Debian, Ubuntu     | `sudo apt install ./T3-Code-*.deb`                           |
-| Arch Linux         | `yay -S t3code-bin`                                          |
-| Arch Linux nightly | `yay -S t3code-nightly-bin`                                  |
-| Nix                | `nix profile add github:NixOS/nixpkgs/nixos-unstable#t3code` |
+| Platform    | File                             |
+| ----------- | -------------------------------- |
+| Windows     | `T3-Code-<version>-x64.exe`      |
+| Linux       | `T3-Code-<version>-x64.AppImage` |
+| Linux       | `T3-Code-<version>-x64.deb`      |
+| macOS arm64 | `T3-Code-<version>-arm64.dmg`    |
 
-The `.deb` updates itself like the other desktop builds. It asks for your
-password to install each update. If your desktop has no password prompt, the
-update fails. Download the new `.deb` and install it the same way.
+The AppImage has to be executable (`chmod +x`) before the first run. Open the
+`.dmg` and drag T3 Code into Applications on macOS. There is no macOS Intel,
+Linux ARM, or Windows ARM build, no mobile app, and no Homebrew, AUR, or Nix
+package.
 
-### Nix (nixpkgs)
-
-T3 Code is maintained in [nixpkgs](https://github.com/NixOS/nixpkgs/tree/nixos-unstable/pkgs/by-name/t3/t3code).
-The command above installs from `nixos-unstable` and requires Nix 2.30 or later with
-`nix-command` and `flakes` enabled. Launch the desktop app with `t3code-desktop`;
-the package also includes the `t3` command.
-
-On NixOS, you can instead add the package to your system configuration, using
-a nixpkgs revision that includes `t3code`:
-
-```nix
-environment.systemPackages = [ pkgs.t3code ];
-```
-
-Apply the change with `sudo nixos-rebuild switch`. For Home Manager, add
-`pkgs.t3code` to `home.packages` and run `home-manager switch`.
-
-Update a profile installation with `nix profile upgrade t3code`. For NixOS or
-Home Manager, update your configuration's nixpkgs input or channel and rebuild.
-Nix manages both the desktop app and the bundled
-`t3` command; use Nix to update them instead of the in-app updater or `t3 update`.
+The macOS build is unsigned and has no updater feed. macOS may warn that it
+cannot verify the developer on first open; right-click the app and choose
+**Open** to run it anyway, and expect the same after each update. To update,
+download the newer `.dmg` and replace the app yourself. On Windows and Linux
+the app installs its own updates from the same releases; see
+[Updating T3 Code](./updating.md).
 
 ### The `t3` command
 
 The desktop app includes the `t3` command-line tool. To run it from any
 terminal, open **Settings → About** and choose **Install** next to
-**t3 command**. On macOS and Linux it adds a `t3` link to a folder on your
+**t3 command**. On Linux it adds a `t3` link to a folder on your
 `PATH`; on Windows it adds the app's command folder to your `PATH`. Open a new
-terminal afterwards. **Remove** takes it off again. If you already have `t3`
-from npm, it stays as it is.
+terminal afterwards. **Remove** takes it off again.
 
 ### Windows Subsystem for Linux
 
@@ -129,27 +167,6 @@ This opens a new thread for the current directory, adding the project if needed.
 Pass a path, such as `t3 app ../my-project`, to open another directory. It requires
 the desktop app, so a standalone server or an SSH session is not enough. If the
 command cannot reach the app, start or update the desktop app and try again.
-
-## Mobile app
-
-Install T3 Code from the
-[App Store](https://apps.apple.com/us/app/t3-code-remote-claude-more/id6787819824) or
-[Google Play](https://play.google.com/store/apps/details?id=com.t3tools.t3code).
-The phone connects to a server on another machine. Follow
-[remote access](./remote-access.md) to link it through T3 Connect or a pairing URL.
-
-Store links and QR codes are also available in **Settings → About → Mobile app**
-on web and desktop. The store apps work with both stable and Nightly servers. Test builds are optional:
-
-- **iPhone and iPad:** TestFlight is invite-only.
-- **Android:** download an APK from the
-  [Android beta releases](https://github.com/pingdotgg/t3code/releases?q=android-beta-).
-
-If the app crashes during launch, open Settings → Diagnostics on the next launch
-that succeeds. It lists startup crashes from the last 7 days with the error and
-component stack that store crash reports leave out. Copy the report and paste it
-into a GitHub issue. Error messages can quote values from the app, so read it over
-before sharing.
 
 ## Providers
 
@@ -207,6 +224,6 @@ For provider-specific setup and accounts, see [Codex](./providers-codex.md),
 - [Working with threads](./thread-sidebar.md): start tasks and organize parallel work.
 - [Permission modes](./permission-modes.md): choose when agents ask before acting.
 - [Remote access](./remote-access.md): connect from another device.
-- [Running in the background](./background-service.md): keep a Linux or macOS host available.
+- [Running in the background](./background-service.md): keep a Linux host available.
 - [Updating T3 Code](./updating.md): update the app and connected servers.
 - [Managed policy](./managed-policy.md): configure T3 Code for everyone on a machine.
