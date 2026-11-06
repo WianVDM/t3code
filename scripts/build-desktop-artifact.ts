@@ -3912,8 +3912,8 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
     version: appVersion,
     buildVersion: appVersion,
     t3codeCommitHash: commitHash,
-    // Read by apps/desktop/src/app/DesktopVariant.ts; only fork builds stamp it.
-    ...(options.variant === "fork" ? { t3codeDesktopVariant: options.variant } : {}),
+    // Read by apps/desktop/src/app/DesktopVariant.ts; official builds carry no stamp.
+    ...(options.variant === "official" ? {} : { t3codeDesktopVariant: options.variant }),
     // Read by apps/desktop/src/preview/Passkeys.ts; must match the signed entitlements.
     ...(macWebAuthn ? { t3codeWebAuthn: macWebAuthn } : {}),
     private: true,

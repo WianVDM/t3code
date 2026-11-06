@@ -708,6 +708,25 @@ test("stable versions keep the ++ revision format", () => {
   );
 });
 
+test("stable releases stamp the plusplus desktop variant in both build steps", () => {
+  const bundle = stepTexts(release, "build_bundle").find((step) =>
+    /Build JS bundle/.test(step.text),
+  );
+  assert.ok(bundle, "release.yml must build the JS bundle");
+  assert.match(bundle.text, /^\s+T3CODE_DESKTOP_VARIANT: plusplus$/m);
+
+  const desktop = loadWorkflow(DESKTOP_WORKFLOW);
+  const artifact = jobsOf(desktop)
+    .flatMap((job) => stepTexts(desktop, job.id))
+    .find((step) => /Build desktop artifact/.test(step.text));
+  assert.ok(artifact, "release-desktop.yml must build the desktop artifact");
+  assert.match(artifact.text, /^\s+--skip-build$/m, "the artifact build must reuse the JS bundle");
+  assert.match(artifact.text, /^\s+T3CODE_DESKTOP_VARIANT: plusplus$/m);
+
+  const fork = loadWorkflow("fork-release.yml");
+  assert.match(fork.source, /^\s+T3CODE_DESKTOP_VARIANT: fork$/m, "fork stays the fork variant");
+});
+
 test("verify_ci requires Check and Agent Context Budget on the resolved commit", () => {
   const verify = jobsOf(release).find((job) => job.id === "verify_ci");
   assert.ok(verify, "release.yml must declare a verify_ci job");

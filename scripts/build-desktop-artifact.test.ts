@@ -507,13 +507,19 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     }),
   );
 
-  it("resolves only the fork desktop build variant, rejecting anything else", () => {
+  it("resolves the fork and plusplus desktop build variants, rejecting anything else", () => {
     assert.equal(resolveDesktopBuildVariant(undefined), "official");
     assert.equal(resolveDesktopBuildVariant(""), "official");
     assert.equal(resolveDesktopBuildVariant("   "), "official");
     assert.equal(resolveDesktopBuildVariant("fork"), "fork");
     assert.equal(resolveDesktopBuildVariant(" fork "), "fork");
-    assert.throws(() => resolveDesktopBuildVariant("beta"), InvalidDesktopBuildVariantError);
+    assert.equal(resolveDesktopBuildVariant("plusplus"), "plusplus");
+    assert.equal(resolveDesktopBuildVariant(" plusplus "), "plusplus");
+    assert.throws(
+      () => resolveDesktopBuildVariant("beta"),
+      InvalidDesktopBuildVariantError,
+      /"fork", "plusplus"/,
+    );
   });
 
   it("switches desktop packaging identity to the fork for the fork variant", () => {
@@ -670,7 +676,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     ),
   );
 
-  it.effect("builds the stable -plusplus channel with the T3 Code ++ desktop identity", () =>
+  it.effect("builds the stable -plusplus channel with the plusplus variant identity", () =>
     Effect.gen(function* () {
       const version = "0.0.42-plusplus.7";
       assert.equal(resolveDesktopUpdateChannel(version), "latest");
@@ -684,6 +690,9 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         false,
         undefined,
         undefined,
+        false,
+        undefined,
+        "plusplus",
       );
       const signedStable = yield* createBuildConfig(
         "mac",
@@ -693,6 +702,9 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         false,
         undefined,
         undefined,
+        false,
+        undefined,
+        "plusplus",
       );
 
       assert.equal(stable.appId, "com.t3tools.t3code.plusplus");
@@ -717,6 +729,9 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         false,
         undefined,
         undefined,
+        false,
+        undefined,
+        "plusplus",
       );
       const linuxOptions = linux.linux as Record<string, unknown>;
       assert.equal(linuxOptions.executableName, "t3codeplusplus");
@@ -1909,28 +1924,32 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     }),
   );
 
-  it.effect("resolves the fork variant from the build environment", () =>
+  it.effect("resolves the fork and plusplus variants from the build environment", () =>
     Effect.gen(function* () {
-      const resolved = yield* resolveBuildOptions({
-        platform: Option.some("win"),
-        target: Option.none(),
-        arch: Option.some("x64"),
-        buildVersion: Option.none(),
-        outputDir: Option.none(),
-        skipBuild: Option.none(),
-        keepStage: Option.none(),
-        signed: Option.none(),
-        verbose: Option.none(),
-        mockUpdates: Option.none(),
-        mockUpdateServerPort: Option.none(),
-        wslRuntime: Option.none(),
-      }).pipe(
-        Effect.provide(
-          ConfigProvider.layer(ConfigProvider.fromEnv({ env: { T3CODE_DESKTOP_VARIANT: "fork" } })),
-        ),
-      );
+      for (const variant of ["fork", "plusplus"] as const) {
+        const resolved = yield* resolveBuildOptions({
+          platform: Option.some("win"),
+          target: Option.none(),
+          arch: Option.some("x64"),
+          buildVersion: Option.none(),
+          outputDir: Option.none(),
+          skipBuild: Option.none(),
+          keepStage: Option.none(),
+          signed: Option.none(),
+          verbose: Option.none(),
+          mockUpdates: Option.none(),
+          mockUpdateServerPort: Option.none(),
+          wslRuntime: Option.none(),
+        }).pipe(
+          Effect.provide(
+            ConfigProvider.layer(
+              ConfigProvider.fromEnv({ env: { T3CODE_DESKTOP_VARIANT: variant } }),
+            ),
+          ),
+        );
 
-      assert.equal(resolved.variant, "fork");
+        assert.equal(resolved.variant, variant);
+      }
     }),
   );
 

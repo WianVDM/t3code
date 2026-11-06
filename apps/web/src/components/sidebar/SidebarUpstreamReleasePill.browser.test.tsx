@@ -25,10 +25,10 @@ vi.mock(import("../../hooks/useHandleNewThread"), () => ({
   useNewThreadHandler: () => state.newThread,
 }));
 // Keep the real shouldDeferUpstreamMerge (the gate under test); pin only the
-// build-variant flag so the pill renders as a fork build in this environment.
+// build-variant flag so the pill renders in this environment.
 vi.mock(import("../upstreamRelease.logic"), async (original) => ({
   ...(await original()),
-  isForkDesktopBuild: true,
+  isUpstreamReleaseNotificationBuild: true,
 }));
 
 import { SidebarUpstreamReleasePill } from "./SidebarUpstreamReleasePill";

@@ -20,8 +20,8 @@ import { getComposerPromptInjectionState } from "../components/chat/composerProv
 import {
   buildUpstreamMergePrompt,
   FORK_REPOSITORY,
-  isForkDesktopBuild,
   isUpstreamCacheEntryFresh,
+  isUpstreamReleaseNotificationBuild,
   pickForkProject,
   readCachedUpstreamRelease,
   refreshUpstreamReleaseIfStale,
@@ -60,7 +60,7 @@ export function registerNewThreadRunner(runner: NewThreadRunner): () => void {
 }
 
 function getInitialUpstreamReleaseState(): UpstreamReleaseResult | null {
-  if (!isForkDesktopBuild) {
+  if (!isUpstreamReleaseNotificationBuild) {
     return null;
   }
   const cached = readCachedUpstreamRelease();
@@ -82,17 +82,20 @@ async function refreshAndPublishIfStale(): Promise<void> {
 export function useUpstreamReleasePolling(): void {
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- checks GitHub for a newer upstream release once on mount
   useEffect(() => {
-    if (!isForkDesktopBuild) {
+    if (!isUpstreamReleaseNotificationBuild) {
       return;
     }
     void refreshAndPublishIfStale();
   }, []);
 
-  useLiveRefresh(isForkDesktopBuild ? () => void refreshAndPublishIfStale() : null, {
-    enabled: isForkDesktopBuild,
-    key: "upstream-release",
-    intervalMs: UPSTREAM_POLL_INTERVAL_MS,
-  });
+  useLiveRefresh(
+    isUpstreamReleaseNotificationBuild ? () => void refreshAndPublishIfStale() : null,
+    {
+      enabled: isUpstreamReleaseNotificationBuild,
+      key: "upstream-release",
+      intervalMs: UPSTREAM_POLL_INTERVAL_MS,
+    },
+  );
 }
 
 export function useUpstreamRelease(): UpstreamReleaseResult | null {
@@ -298,7 +301,7 @@ export async function startUpstreamMerge(
 }
 
 export async function runManualUpstreamCheck(): Promise<void> {
-  if (!isForkDesktopBuild) {
+  if (!isUpstreamReleaseNotificationBuild) {
     return;
   }
 

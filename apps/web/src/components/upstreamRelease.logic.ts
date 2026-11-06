@@ -37,6 +37,19 @@ export interface UpstreamReleaseOptions {
 
 export const isForkDesktopBuild = import.meta.env.T3CODE_DESKTOP_VARIANT === "fork";
 
+export function supportsUpstreamReleaseNotifications(variant: string): boolean {
+  return variant === "fork" || variant === "plusplus";
+}
+
+export const isUpstreamReleaseNotificationBuild = supportsUpstreamReleaseNotifications(
+  import.meta.env.T3CODE_DESKTOP_VARIANT,
+);
+
+export function upstreamBaseTagForVersion(version: string): string {
+  const baseVersion = version.replace(/-(?:fork|plusplus)\.\d+$/, "");
+  return `v${baseVersion}`;
+}
+
 export function shouldDeferUpstreamMerge(state: DesktopUpdateState | null): boolean {
   if (!state) {
     return false;

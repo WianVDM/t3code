@@ -9,7 +9,11 @@ import {
   useUpstreamRelease,
 } from "../../state/upstreamRelease";
 import { Button } from "../ui/button";
-import { isForkDesktopBuild, shouldDeferUpstreamMerge } from "../upstreamRelease.logic";
+import {
+  isUpstreamReleaseNotificationBuild,
+  shouldDeferUpstreamMerge,
+  upstreamBaseTagForVersion,
+} from "../upstreamRelease.logic";
 import { SettingsRow } from "./settingsLayout";
 
 function UpstreamReleaseRowContent() {
@@ -61,11 +65,11 @@ function UpstreamReleaseRowContent() {
 }
 
 export function UpstreamReleaseRow() {
-  if (!isForkDesktopBuild) {
+  if (!isUpstreamReleaseNotificationBuild) {
     return null;
   }
 
-  const upstreamBaseTag = `v${APP_VERSION.replace(/-fork\.\d+$/, "")}`;
+  const upstreamBaseTag = upstreamBaseTagForVersion(APP_VERSION);
 
   return (
     <>
