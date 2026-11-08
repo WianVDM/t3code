@@ -7331,6 +7331,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           McpProviderSessions.layer,
           NodeServices.layer,
           NodeCrypto.layer,
+          layerTestProviderHost,
         ),
       ),
     ),

@@ -9,7 +9,9 @@ import * as TestClock from "effect/testing/TestClock";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import * as ServerConfig from "../config.ts";
+import * as EventStore from "../orchestration-v2/EventStore.ts";
 import * as ProjectionMaintenance from "../orchestration-v2/ProjectionMaintenance.ts";
+import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as DatabaseStorage from "./DatabaseStorage.ts";
 import * as Sqlite from "./Sqlite.ts";
 
@@ -26,6 +28,7 @@ const storageLayer = <E>(
 ) =>
   DatabaseStorage.layer.pipe(
     Layer.provide(ProjectionMaintenance.layer),
+    Layer.provide(Layer.merge(EventStore.layer, ProjectionStore.layer)),
     Layer.provideMerge(Sqlite.layerMemory),
     Layer.provideMerge(config),
     Layer.provide(NodeServices.layer),
@@ -57,6 +60,8 @@ const compactionLayer = (
     Layer.provide(
       Layer.succeed(ProjectionMaintenance.ProjectionMaintenanceV2, {
         pruneEventStore,
+        verify: Effect.die("unused"),
+        rebuild: Effect.die("unused"),
       }),
     ),
     Layer.provide(Sqlite.layerMemory),
