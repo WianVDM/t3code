@@ -1,9 +1,11 @@
+// @effect-diagnostics nodeBuiltinImport:off
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import { SecretProviderId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Path from "effect/Path";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as NodePath from "node:path";
 
 import { mergeProviderInstanceEnvironment } from "./instanceEnvironment.ts";
 
@@ -98,7 +100,7 @@ describe("mergeProviderInstanceEnvironment", () => {
           Effect.provideService(HostProcess.Platform, "win32"),
           Effect.provideService(HostProcess.HomeDirectory, "/home/ada"),
         ),
-      ).toEqual({ CODEX_HOME: "/home/ada/corp" });
+      ).toEqual({ CODEX_HOME: NodePath.join("/home/ada", "corp") });
       // Upper case sorts first, so it also wins where a spawn merges the parent environment back.
       expect(yield* merge("win32")).toEqual({ HTTPS_PROXY: "http://gateway", PATH: "/bin" });
       expect(yield* merge("linux")).toEqual({
