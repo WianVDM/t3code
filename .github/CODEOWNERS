@@ -1,0 +1,79 @@
+# ++ fork ownership map (#44). Later rules take precedence over earlier ones.
+# Routes fork governance, workflows, release configuration, sync tooling, ++
+# distribution, and integration seams to the fork owner. Advisory PR labels
+# come from .github/scripts/pr-ownership-label.cjs, not from this file.
+
+# Fork governance and agent instructions
+/AGENTS.md @WianVDM
+/CLAUDE.md @WianVDM
+/CONTRIBUTING.md @WianVDM
+/.coderabbit.config.ts @WianVDM
+/.agents/ @WianVDM
+
+# CI workflows and privileged automation
+/.github/workflows/ @WianVDM
+/.github/actions/ @WianVDM
+/.github/scripts/ @WianVDM
+/.github/ISSUE_TEMPLATE/ @WianVDM
+/.github/triage/ @WianVDM
+/.github/CODEOWNERS @WianVDM
+/.github/SECURITY.md @WianVDM
+/.github/pull_request_template.md @WianVDM
+
+# Release configuration
+/.github/workflows/release.yml @WianVDM
+/.github/workflows/release-desktop.yml @WianVDM
+/.github/workflows/fork-release.yml @WianVDM
+/scripts/build-desktop-artifact.ts @WianVDM
+/scripts/build-release-metadata.ts @WianVDM
+/scripts/resolve-previous-release-tag.ts @WianVDM
+/scripts/lib/brand-assets.ts @WianVDM
+/scripts/lib/desktop-variant.ts @WianVDM
+/scripts/lib/public-config.ts @WianVDM
+/scripts/lib/update-manifest.ts @WianVDM
+/scripts/lib/windows-jsign.ts @WianVDM
+/scripts/lib/windows-tar.ts @WianVDM
+/apps/desktop/resources/ @WianVDM
+/infra/ @WianVDM
+/patches/ @WianVDM
+
+# Upstream sync tooling
+/scripts/upstream-sync.ts @WianVDM
+/scripts/upstream-sync.test.ts @WianVDM
+/scripts/sync-reference-repos.ts @WianVDM
+/scripts/lib/reference-repos.ts @WianVDM
+/.repos/ @WianVDM
+/.github/scripts/check-shared-persistence-compat.cjs @WianVDM
+/.github/scripts/check-shared-persistence-compat.test.cjs @WianVDM
+
+# ++ distribution surfaces
+/apps/desktop/src/app/DesktopVariant.ts @WianVDM
+/apps/desktop/src/app/DesktopVariant.test.ts @WianVDM
+/apps/desktop/resources/linux/com.t3tools.t3code.plusplus.metainfo.xml @WianVDM
+/apps/web/src/components/upstreamRelease.logic.ts @WianVDM
+/apps/web/src/components/upstreamRelease.logic.test.ts @WianVDM
+/apps/web/src/state/upstreamRelease.ts @WianVDM
+/apps/web/src/state/upstreamRelease.test.ts @WianVDM
+/apps/web/src/components/settings/UpstreamReleaseRow.tsx @WianVDM
+/apps/web/src/components/settings/UpstreamReleaseRow.browser.test.tsx @WianVDM
+/apps/web/src/components/sidebar/SidebarUpstreamReleasePill.tsx @WianVDM
+/apps/web/src/components/sidebar/SidebarUpstreamReleasePill.browser.test.tsx @WianVDM
+
+# Integration seams: upstream-owned files carrying fork hooks. These are the
+# sync-conflict hotspots; keep this list aligned with the seam registry in
+# .github/scripts/pr-ownership-label.cjs.
+/apps/desktop/src/main.ts @WianVDM
+/apps/desktop/src/app/DesktopEnvironment.ts @WianVDM
+/apps/desktop/src/app/DesktopEnvironment.test.ts @WianVDM
+/apps/desktop/src/app/DesktopUserData.ts @WianVDM
+/apps/desktop/src/app/DesktopUserData.test.ts @WianVDM
+/apps/desktop/src/app/DesktopStatePaths.ts @WianVDM
+/packages/provider-pi/src/server/driver.ts @WianVDM
+/packages/provider-pi/src/server/driver.test.ts @WianVDM
+/packages/provider-pi/src/server/mcpExtensionSource.ts @WianVDM
+/packages/provider-pi/src/server/mcpExtensionSource.test.ts @WianVDM
+/packages/provider-pi/src/server/mcpInjection.ts @WianVDM
+/packages/provider-pi/src/server/mcpInjection.test.ts @WianVDM
+/packages/shared/src/promptLinks.ts @WianVDM
+/packages/shared/src/promptLinks.test.ts @WianVDM
+/scripts/build-desktop-artifact.test.ts @WianVDM

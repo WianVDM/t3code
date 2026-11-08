@@ -62,6 +62,21 @@ jobs:
                 color: "0052cc",
                 description: "Merging an upstream release into the fork.",
               },
+              {
+                name: "plusplus-only",
+                color: "7057ff",
+                description: "Advisory: PR touches fork-owned code only; not an upstream proposal.",
+              },
+              {
+                name: "seam",
+                color: "006b75",
+                description: "Advisory: PR touches a fork/upstream integration seam.",
+              },
+              {
+                name: "sync-conflict",
+                color: "b60205",
+                description: "Advisory: PR touches fork-diverged files likely to conflict on upstream sync.",
+              },
             ];
 
             for (const label of managedLabels) {
