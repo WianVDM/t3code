@@ -434,6 +434,8 @@ it.layer(
         ]);
         // A version manager's Node, which only the provider's settings put on PATH.
         const providerEnv = { PATH: NodePath.join(tempDir, "bin") };
+        // The prefix is reported with forward slashes so it stays shell-usable on Windows.
+        const expectedPrefix = tempDir.replaceAll("\\", "/");
 
         const capabilities = yield* resolveProviderMaintenanceCapabilitiesEffect(
           packageToolUpdate,
@@ -447,13 +449,13 @@ it.layer(
           provider: driver("packageTool"),
           packageName: "@example/package-tool",
           update: {
-            command: `npm install -g --prefix ${tempDir} --allow-scripts=@example/package-tool @example/package-tool@latest`,
+            command: `npm install -g --prefix ${expectedPrefix} --allow-scripts=@example/package-tool @example/package-tool@latest`,
             executable: "npm",
             args: [
               "install",
               "-g",
               "--prefix",
-              tempDir,
+              expectedPrefix,
               "--allow-scripts=@example/package-tool",
               "@example/package-tool@latest",
             ],
@@ -1192,7 +1194,7 @@ it.layer(
 
         expect(capabilities.update).toMatchObject({
           executable: "npm",
-          args: expect.arrayContaining(["--prefix", keg]),
+          args: expect.arrayContaining(["--prefix", keg.replaceAll("\\", "/")]),
           lockKey: `npm-global:${normalizeCommandPath(keg)}`,
         });
       }),
