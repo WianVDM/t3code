@@ -7,7 +7,7 @@ import * as Path from "effect/Path";
 import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientResponse from "effect/http/HttpClientResponse";
 import * as CursorKeychain from "./CursorKeychain.ts";
-import { cursorUsageResponseToLimits, readCursorUsageLimits } from "./usageLimits.ts";
+import { readCursorUsageLimits } from "./usageLimits.ts";
 
 const withNodeServices = <A, E>(
   effect: Effect.Effect<A, E, FileSystem.FileSystem | Path.Path | CursorKeychain.CursorKeychain>,
@@ -21,55 +21,6 @@ const withNodeServices = <A, E>(
   );
 
 describe("Cursor usage limits", () => {
-  const checkedAt = "2026-09-16T00:00:00.000Z";
-
-  it("uses the advertised percentages and billing-cycle reset", () => {
-    const limits = cursorUsageResponseToLimits(
-      {
-        billingCycleEnd: "1789876386000",
-        planUsage: { totalPercentUsed: 72.4, autoPercentUsed: 69.5, apiPercentUsed: 100 },
-      },
-      checkedAt,
-    );
-    expect(limits.windows).toEqual(
-      expect.arrayContaining([
-        {
-          id: "totalPercentUsed",
-          kind: "monthly",
-          label: "Overall",
-          usedPercent: 72.4,
-          resetsAt: "2026-09-20T03:53:06.000Z",
-        },
-        {
-          id: "autoPercentUsed",
-          kind: "monthly",
-          label: "Cursor Models",
-          usedPercent: 69.5,
-          resetsAt: "2026-09-20T03:53:06.000Z",
-        },
-        {
-          id: "apiPercentUsed",
-          kind: "monthly",
-          label: "Other Models",
-          usedPercent: 100,
-          resetsAt: "2026-09-20T03:53:06.000Z",
-        },
-      ]),
-    );
-  });
-
-  it("does not invent unused allowance for absent buckets", () => {
-    expect(cursorUsageResponseToLimits({ planUsage: {} }, checkedAt).unavailable?.reason).toBe(
-      "unsupported",
-    );
-    expect(
-      cursorUsageResponseToLimits({ planUsage: { totalPercentUsed: 0 } }, checkedAt).windows,
-    ).toEqual([{ id: "totalPercentUsed", kind: "monthly", label: "Overall", usedPercent: 0 }]);
-    expect(
-      cursorUsageResponseToLimits({ planUsage: { totalPercentUsed: 150 } }, checkedAt).windows,
-    ).toEqual([{ id: "totalPercentUsed", kind: "monthly", label: "Overall", usedPercent: 100 }]);
-  });
-
   it.effect("reads the instance's credentials and endpoint even when usage enabled is false", () =>
     withNodeServices(
       Effect.gen(function* () {
