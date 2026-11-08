@@ -37,7 +37,7 @@ import { getClientSettings, mergeEnvironmentSettings } from "../../hooks/useSett
 import { newMessageId, newThreadId } from "../../lib/utils";
 import { appAtomRegistry } from "../../rpc/atomRegistry";
 import { readDesktopUpdateState } from "../../state/desktopUpdate";
-import { readProject, readProjects } from "../../state/entities";
+import { readProject, readProjects, useProjects } from "../../state/entities";
 import { environmentServerConfigsAtom, providersIgnoringCheckedAtAtom } from "../../state/server";
 import { readEnvironmentScope } from "../../state/session";
 import { threadEnvironment } from "../../state/threads";
@@ -79,23 +79,35 @@ async function refreshAndPublishIfStale(): Promise<void> {
   appAtomRegistry.set(upstreamReleaseStateAtom, result);
 }
 
+/**
+ * Maintainer eligibility: a fork/plusplus build whose project list contains a matching
+ * local fork checkout. Ordinary installations never poll or show upstream-merge UI.
+ */
+export function useUpstreamMergeEligible(): boolean {
+  const projects = useProjects();
+  return isUpstreamReleaseNotificationBuild && pickForkProject(projects) !== null;
+}
+
+function readForkCheckoutExists(): boolean {
+  return pickForkProject(readProjects()) !== null;
+}
+
 export function useUpstreamReleasePolling(): void {
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- checks GitHub for a newer upstream release once on mount
+  const eligible = useUpstreamMergeEligible();
+
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- checks GitHub once when a matching fork checkout appears
   useEffect(() => {
-    if (!isUpstreamReleaseNotificationBuild) {
+    if (!eligible) {
       return;
     }
     void refreshAndPublishIfStale();
-  }, []);
+  }, [eligible]);
 
-  useLiveRefresh(
-    isUpstreamReleaseNotificationBuild ? () => void refreshAndPublishIfStale() : null,
-    {
-      enabled: isUpstreamReleaseNotificationBuild,
-      key: "upstream-release",
-      intervalMs: UPSTREAM_POLL_INTERVAL_MS,
-    },
-  );
+  useLiveRefresh(eligible ? () => void refreshAndPublishIfStale() : null, {
+    enabled: eligible,
+    key: "upstream-release",
+    intervalMs: UPSTREAM_POLL_INTERVAL_MS,
+  });
 }
 
 export function useUpstreamRelease(): UpstreamReleaseResult | null {
@@ -301,7 +313,7 @@ export async function startUpstreamMerge(
 }
 
 export async function runManualUpstreamCheck(): Promise<void> {
-  if (!isUpstreamReleaseNotificationBuild) {
+  if (!isUpstreamReleaseNotificationBuild || !readForkCheckoutExists()) {
     return;
   }
 
@@ -329,7 +341,7 @@ export async function runManualUpstreamCheck(): Promise<void> {
           ? { description: "Update the fork first, then merge upstream." }
           : {
               actionProps: {
-                children: "Start merge",
+                children: "Create local upstream merge draft",
                 onClick: () => {
                   toastManager.close(toastId);
                   void startUpstreamMerge(result.tag);

@@ -77,6 +77,8 @@ const state = vi.hoisted(() => {
     pickForkProject: vi.fn(),
     readProjects: vi.fn(),
     readProject: vi.fn(),
+    useProjects: vi.fn(),
+    useLiveRefresh: vi.fn(),
     newThread: vi.fn(),
     buildUpstreamMergePrompt: vi.fn(),
     deriveThreadTitleSeed: vi.fn(),
@@ -151,7 +153,7 @@ vi.mock("../../components/ui/toast", () => ({
   stackedThreadToast: state.stackedThreadToast,
   toastManager: { add: state.toastAdd, close: state.toastClose },
 }));
-vi.mock("../../hooks/useLiveRefresh", () => ({ useLiveRefresh: vi.fn() }));
+vi.mock("../../hooks/useLiveRefresh", () => ({ useLiveRefresh: state.useLiveRefresh }));
 vi.mock("../../hooks/useSettings", () => ({
   getClientSettings: state.getClientSettings,
   mergeEnvironmentSettings: state.mergeEnvironmentSettings,
@@ -172,6 +174,7 @@ vi.mock("../../state/session", () => ({ readEnvironmentScope: state.readEnvironm
 vi.mock("../../state/entities", () => ({
   readProject: state.readProject,
   readProjects: state.readProjects,
+  useProjects: state.useProjects,
 }));
 vi.mock("../../state/threads", () => ({ threadEnvironment: { startTurn: state.startTurn } }));
 
@@ -179,6 +182,8 @@ import {
   registerNewThreadRunner,
   runManualUpstreamCheck,
   startUpstreamMerge,
+  useUpstreamMergeEligible,
+  useUpstreamReleasePolling,
   upstreamReleaseStateAtom,
 } from "./upstreamRelease";
 
@@ -188,6 +193,8 @@ function setup() {
   state.pickForkProject.mockReset().mockReturnValue(state.projectRef);
   state.readProjects.mockReset().mockReturnValue([state.project]);
   state.readProject.mockReset().mockReturnValue(state.project);
+  state.useProjects.mockReset().mockReturnValue([state.project]);
+  state.useLiveRefresh.mockReset();
   state.newThread.mockReset().mockResolvedValue({
     draftId: state.draftId,
     threadId: state.draft.threadId,
@@ -231,7 +238,70 @@ function setup() {
   state.registrySet.mockReset();
 }
 
+describe("useUpstreamMergeEligible", () => {
+  it("is false when no project matches the fork", () => {
+    setup();
+    state.useProjects.mockReturnValue([]);
+    state.pickForkProject.mockReturnValue(null);
+
+    expect(useUpstreamMergeEligible()).toBe(false);
+  });
+
+  it("is true when a project matches the fork", () => {
+    setup();
+
+    expect(useUpstreamMergeEligible()).toBe(true);
+  });
+});
+
+describe("useUpstreamReleasePolling", () => {
+  it("disables live refresh when no project matches the fork", () => {
+    setup();
+    state.useProjects.mockReturnValue([]);
+    state.pickForkProject.mockReturnValue(null);
+
+    useUpstreamReleasePolling();
+
+    expect(state.useLiveRefresh).toHaveBeenCalledWith(null, {
+      enabled: false,
+      key: "upstream-release",
+      intervalMs: 1_000,
+    });
+  });
+
+  it("enables live refresh for a matching fork checkout", () => {
+    setup();
+
+    useUpstreamReleasePolling();
+
+    expect(state.useLiveRefresh).toHaveBeenCalledTimes(1);
+    const [refresh, options] = state.useLiveRefresh.mock.calls[0]!;
+    expect(refresh).toBeTypeOf("function");
+    expect(options).toEqual({
+      enabled: true,
+      key: "upstream-release",
+      intervalMs: 1_000,
+    });
+  });
+});
+
 describe("startUpstreamMerge", () => {
+  it("reports a missing fork checkout without opening a runner or dispatching a command", async () => {
+    setup();
+    state.readProjects.mockReturnValue([]);
+    state.pickForkProject.mockReturnValue(null);
+
+    await startUpstreamMerge(state.tag, { newThread: state.newThread });
+
+    expect(state.newThread).not.toHaveBeenCalled();
+    expect(state.runAtomCommand).not.toHaveBeenCalled();
+    expect(state.toastAdd).toHaveBeenCalledWith({
+      type: "error",
+      title:
+        "No project found for github.com/WianVDM/t3code. Add the fork checkout as a project first.",
+    });
+  });
+
   it("returns before opening a runner or dispatching a command when the merge is deferred", async () => {
     setup();
     state.shouldDeferUpstreamMerge.mockReturnValue(true);
@@ -408,6 +478,18 @@ describe("startUpstreamMerge", () => {
 });
 
 describe("runManualUpstreamCheck", () => {
+  it("skips the check entirely when no project matches the fork", async () => {
+    setup();
+    state.readProjects.mockReturnValue([]);
+    state.pickForkProject.mockReturnValue(null);
+
+    await runManualUpstreamCheck();
+
+    expect(state.refreshUpstreamReleaseNow).not.toHaveBeenCalled();
+    expect(state.registrySet).not.toHaveBeenCalled();
+    expect(state.toastAdd).not.toHaveBeenCalled();
+  });
+
   it("keeps the release notification without a merge action when the merge is deferred", async () => {
     setup();
     const result = { kind: "unmerged", tag: state.tag } as const;
@@ -444,6 +526,7 @@ describe("runManualUpstreamCheck", () => {
         type: "info",
         title: `Upstream ${state.tag} is ready to merge`,
       });
+      expect(notification.actionProps?.children).toBe("Create local upstream merge draft");
       const onClick = notification.actionProps?.onClick;
       expect(onClick).toBeTypeOf("function");
 
