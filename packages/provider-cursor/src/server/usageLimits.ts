@@ -1,23 +1,26 @@
-import type { ServerProviderUsageWindow } from "@t3tools/contracts";
 import type { CursorSettings } from "../settings.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
-import { CURSOR_USAGE_WINDOWS } from "@t3tools/shared/usageLimits";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
-import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientRequest from "effect/http/HttpClientRequest";
 import * as HttpClientResponse from "effect/http/HttpClientResponse";
-import {
-  clampPercent,
-  makeUnavailableUsageLimits,
-  makeUsageLimits,
-} from "@t3tools/provider-core/server/usageLimits";
+import { makeUnavailableUsageLimits } from "@t3tools/plusplus/usageLimits";
 import { DEFAULT_CURSOR_API_ENDPOINT, exchangeCursorApiKey } from "./apiKey.ts";
 import * as CursorKeychain from "./CursorKeychain.ts";
+
+/**
+ * Cursor usage facade: response parsing and the window catalog live in
+ * `@t3tools/plusplus/cursorUsageLimits`; this module owns credential
+ * discovery, Keychain access, and the HTTP probe.
+ */
+
+import { cursorUsageResponseToLimits } from "@t3tools/plusplus/cursorUsageLimits";
+
+export { cursorUsageResponseToLimits };
 
 const CursorCredentials = Schema.Struct({ accessToken: Schema.optional(Schema.String) });
 const decodeCredentials = Schema.decodeEffect(Schema.fromJsonString(CursorCredentials));
@@ -31,35 +34,6 @@ const CursorUsageResponse = Schema.Struct({
     }),
   ),
 });
-
-/** Cursor's dashboard percentages include bonus usage; spend / limit does not. */
-export function cursorUsageResponseToLimits(
-  response: typeof CursorUsageResponse.Type,
-  checkedAt: string,
-) {
-  const reset = DateTime.make(Number(response.billingCycleEnd));
-  const resetsAt =
-    Number(response.billingCycleEnd) > 0 && Option.isSome(reset)
-      ? DateTime.formatIso(reset.value)
-      : undefined;
-  const windows: ServerProviderUsageWindow[] = [];
-  if (response.planUsage) {
-    for (const { id, label } of CURSOR_USAGE_WINDOWS) {
-      const usedPercent = response.planUsage[id];
-      if (usedPercent === undefined || !Number.isFinite(usedPercent)) continue;
-      windows.push({
-        id,
-        kind: "monthly",
-        label,
-        usedPercent: clampPercent(usedPercent),
-        ...(resetsAt ? { resetsAt } : {}),
-      });
-    }
-  }
-  return windows.length > 0
-    ? makeUsageLimits({ checkedAt, windows })
-    : makeUnavailableUsageLimits({ checkedAt, reason: "unsupported" });
-}
 
 export const readCursorUsageLimits = Effect.fn("readCursorUsageLimits")(function* (
   settings: Pick<CursorSettings, "apiEndpoint">,

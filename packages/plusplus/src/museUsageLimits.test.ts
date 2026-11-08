@@ -1,14 +1,13 @@
 import { describe, expect, it } from "@effect/vitest";
 
-import type { MuseSubscriptionUsage } from "./protocol.ts";
-import { isMuseUsageLimitFailure, museUsageLimitResetAt } from "./usageLimits.ts";
+import { isMuseUsageLimitFailure, museUsageLimitResetAt } from "./museUsageLimits.ts";
 
 const usage = {
   observedAtMs: 1791447762610,
   tier: "tier-1",
   window: { usedPercent: 0, windowDurationMins: 300, resetsAtMs: 1791465557000 },
   weekly: { usedPercent: 5, resetsAtMs: 1791763200000 },
-} satisfies MuseSubscriptionUsage;
+};
 const nowMs = usage.observedAtMs;
 const realRefusal =
   "API error 429: All credentials for model muse-wonder-1.0-contributor are cooling down (last error: rate_limit_exceeded: Subscription quota exhausted. Your usage window resets at 2026-10-13T10:45:52Z.) (after 10 provider attempts)";

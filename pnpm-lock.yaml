@@ -1626,6 +1626,9 @@ importers:
       '@t3tools/contracts':
         specifier: workspace:*
         version: link:../contracts
+      effect:
+        specifier: 4.1.2
+        version: 4.1.2
     devDependencies:
       '@effect/vitest':
         specifier: 4.1.2
@@ -1633,9 +1636,6 @@ importers:
       '@types/node':
         specifier: 24.12.4
         version: 24.12.4
-      effect:
-        specifier: 4.1.2
-        version: 4.1.2
       vite-plus:
         specifier: 1.4.0
         version: 1.4.0(@astrojs/compiler-rs@0.5.1)(@tsc-rs/typescript@0.8.0)(@types/node@24.12.4)(@vitest/browser-playwright@5.0.5)(@vitest/ui@5.0.5)(@volar/typescript@2.4.28(@tsc-rs/typescript@0.8.0))(bufferutil@4.1.0)(esbuild@0.28.2)(jiti@2.7.0)(jsdom@30.1.0(@noble/hashes@1.8.0))(playwright@1.60.0)(terser@5.48.0)(unrun@0.2.39)(utf-8-validate@6.0.6)(yaml@2.9.0)
@@ -1753,6 +1753,9 @@ importers:
       '@t3tools/contracts':
         specifier: workspace:*
         version: link:../contracts
+      '@t3tools/plusplus':
+        specifier: workspace:*
+        version: link:../plusplus
       '@t3tools/provider-core':
         specifier: workspace:*
         version: link:../provider-core
@@ -1821,6 +1824,9 @@ importers:
       '@t3tools/contracts':
         specifier: workspace:*
         version: link:../contracts
+      '@t3tools/plusplus':
+        specifier: workspace:*
+        version: link:../plusplus
       '@t3tools/provider-acp':
         specifier: workspace:*
         version: link:../provider-acp
@@ -1892,6 +1898,9 @@ importers:
       '@t3tools/contracts':
         specifier: workspace:*
         version: link:../contracts
+      '@t3tools/plusplus':
+        specifier: workspace:*
+        version: link:../plusplus
       '@t3tools/provider-core':
         specifier: workspace:*
         version: link:../provider-core
@@ -1969,6 +1978,9 @@ importers:
       '@t3tools/contracts':
         specifier: workspace:*
         version: link:../contracts
+      '@t3tools/plusplus':
+        specifier: workspace:*
+        version: link:../plusplus
       '@t3tools/provider-core':
         specifier: workspace:*
         version: link:../provider-core
@@ -2090,6 +2102,9 @@ importers:
       '@t3tools/contracts':
         specifier: workspace:*
         version: link:../contracts
+      '@t3tools/plusplus':
+        specifier: workspace:*
+        version: link:../plusplus
       effect:
         specifier: 4.1.2
         version: 4.1.2

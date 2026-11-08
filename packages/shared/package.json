@@ -536,6 +536,7 @@
     "@noble/curves": "catalog:",
     "@noble/hashes": "catalog:",
     "@t3tools/contracts": "workspace:*",
+    "@t3tools/plusplus": "workspace:*",
     "effect": "catalog:",
     "ffi-rs": "1.3.2",
     "jose": "catalog:",

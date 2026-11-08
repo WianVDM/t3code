@@ -58,7 +58,12 @@
         "graphql.config.ts",
       ],
       // The generated operations export every selection's class.
-      "ignoreIssues": { "**/*.graphql.ts": ["exports", "types", "namespaceMembers"] },
+      "ignoreIssues": {
+        "**/*.graphql.ts": ["exports", "types", "namespaceMembers"],
+        // lookupRate stays exported as an intentional compatibility facade; in-repo
+        // consumers read it from @t3tools/plusplus, so knip sees it as unused.
+        "src/usage/usagePricing.ts": ["exports"],
+      },
       // Keep the transitive Effect runtime pinned for standalone npm installs.
       // The Vite+ web build prerequisite.
       // Native and disk-loaded provider packages stay external to the bundle; the
@@ -159,11 +164,34 @@
       "entry": ["test/fixtures/*.ts"],
       "ignoreIssues": { "src/_generated/**": ["exports", "types"] },
     },
+    "packages/plusplus": {
+      "includeEntryExports": true,
+      // CURSOR_USAGE_WINDOWS stays exported for the @t3tools/shared compatibility
+      // facade; in-repo consumers use cursorUsageWindowDetails, so knip sees it as unused.
+      "ignoreIssues": { "src/cursorUsageLimits.ts": ["exports"] },
+    },
     "packages/provider-core": {
       "includeEntryExports": true,
-      // CONTEXT_BRIDGE_CATALOG stays re-exported as an intentional compatibility facade;
-      // in-repo consumers read it from @t3tools/plusplus, so knip sees it as unused.
-      "ignoreIssues": { "src/server/contextBridge.ts": ["exports"] },
+      // CONTEXT_BRIDGE_CATALOG and clampPercent stay re-exported as intentional
+      // compatibility facades; in-repo consumers read them from @t3tools/plusplus,
+      // so knip sees them as unused.
+      "ignoreIssues": {
+        "src/server/contextBridge.ts": ["exports"],
+        "src/server/usageLimits.ts": ["exports"],
+      },
+    },
+    "packages/provider-cursor": {
+      "includeEntryExports": true,
+      // cursorUsageResponseToLimits stays re-exported as an intentional compatibility
+      // facade; in-repo consumers read it from @t3tools/plusplus, so knip sees it as unused.
+      "ignoreIssues": { "src/server/usageLimits.ts": ["exports"] },
+    },
+    "packages/shared": {
+      "includeEntryExports": true,
+      // CURSOR_USAGE_WINDOWS and elapsedShare stay re-exported as intentional
+      // compatibility facades; in-repo consumers read them from @t3tools/plusplus,
+      // so knip sees them as unused.
+      "ignoreIssues": { "src/usageLimits.ts": ["exports"] },
     },
     "packages/source-control-github": {
       // graphqlgen reads its config; the generated operations export every selection's class.
