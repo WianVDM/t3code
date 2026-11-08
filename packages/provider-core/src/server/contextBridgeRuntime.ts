@@ -12,6 +12,11 @@ import * as NodePath from "node:path";
 import type { ServerProviderSkill } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { fromYaml } from "@t3tools/shared/schemaYaml";
+import {
+  mergeBridgedSkillSnapshot,
+  type BridgedSkillFrontmatter,
+  type BridgedSkillSnapshotIo,
+} from "@t3tools/plusplus/contextBridge";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -154,11 +159,6 @@ export const bridgedContextForTurn = Effect.fn("ContextBridgeRuntime.bridgedCont
   },
 );
 
-interface SkillFrontmatter {
-  readonly name?: string;
-  readonly description?: string;
-}
-
 /**
  * YAML, because names and descriptions carry inline comments, quoted scalars, and
  * folded or literal blocks. `schemaYaml` is the same parser the native claude scanner
@@ -171,7 +171,7 @@ const decodeFrontmatterYaml = Schema.decodeUnknownOption(fromYaml(Schema.Unknown
  * the provider's own scanner still invokes. No frontmatter at all is the same
  * fallback.
  */
-function parseSkillFrontmatter(contents: string): SkillFrontmatter {
+function parseSkillFrontmatter(contents: string): BridgedSkillFrontmatter {
   const normalized = contents.replace(/^\uFEFF/, "");
   if (!normalized.startsWith("---")) return {};
   const end = normalized.indexOf("\n---", 3);
@@ -187,58 +187,26 @@ function parseSkillFrontmatter(contents: string): SkillFrontmatter {
   };
 }
 
-function readBridgedSkill(
-  root: string,
-  entryName: string,
-  scope: string,
-): ServerProviderSkill | null {
-  const skillDir = NodePath.join(root, entryName);
-  let skillPath: string;
-  let contents: string;
-  try {
-    if (!NodeFS.statSync(skillDir).isDirectory()) return null;
-    skillPath = NodePath.join(skillDir, "SKILL.md");
-    contents = NodeFS.readFileSync(skillPath, "utf8");
-  } catch {
-    return null;
-  }
-  const frontmatter = parseSkillFrontmatter(contents);
-  const name = frontmatter.name ?? entryName.trim();
-  if (!name) return null;
-  return {
-    name,
-    path: skillPath,
-    enabled: true,
-    scope,
-    ...(frontmatter.description === undefined ? {} : { description: frontmatter.description }),
-  };
-}
-
-/** Immediate `SKILL.md` children of a root only; nested trees belong to the provider. */
-function scanBridgedSkillRoot(root: string, scope: string): ServerProviderSkill[] {
-  let entries: NodeFS.Dirent[];
-  try {
-    entries = NodeFS.readdirSync(root, { withFileTypes: true });
-  } catch {
-    return [];
-  }
-  const skills: ServerProviderSkill[] = [];
-  for (const entry of [...entries].sort((left, right) =>
-    left.name < right.name ? -1 : left.name > right.name ? 1 : 0,
-  )) {
-    const skill = readBridgedSkill(root, entry.name, scope);
-    if (skill !== null) skills.push(skill);
-  }
-  return skills;
-}
-
-/** Case-insensitive, with a case-sensitive tiebreak so the order is total. */
-function compareSkillNames(left: ServerProviderSkill, right: ServerProviderSkill): number {
-  const leftKey = left.name.toLowerCase();
-  const rightKey = right.name.toLowerCase();
-  if (leftKey !== rightKey) return leftKey < rightKey ? -1 : 1;
-  return left.name < right.name ? -1 : left.name > right.name ? 1 : 0;
-}
+const skillSnapshotIo: BridgedSkillSnapshotIo = {
+  listDirectoryNames: (path) =>
+    NodeFS.readdirSync(path, { withFileTypes: true }).map((entry) => entry.name),
+  isDirectory: (path) => {
+    try {
+      return NodeFS.statSync(path).isDirectory();
+    } catch {
+      return false;
+    }
+  },
+  readSkillFrontmatter: (skillMdPath) => {
+    let contents: string;
+    try {
+      contents = NodeFS.readFileSync(skillMdPath, "utf8");
+    } catch {
+      return null;
+    }
+    return parseSkillFrontmatter(contents);
+  },
+};
 
 /**
  * Read-only. Bridged global and project compete case-insensitively, first name wins, because
@@ -268,23 +236,10 @@ export const mergeBridgedSkillsForSnapshot = Effect.fn(
       userHome,
       ...(nativeHome === undefined ? {} : { nativeHome }),
     });
-    if (roots === null) return input.nativeSkills;
-    const merged: ServerProviderSkill[] = [];
-    const claimed = new Set<string>();
-    for (const skill of [
-      ...roots.global.flatMap((root) => scanBridgedSkillRoot(root, "user")),
-      ...roots.project.flatMap((root) => scanBridgedSkillRoot(root, "project")),
-    ]) {
-      const key = skill.name.toLowerCase();
-      if (claimed.has(key)) continue;
-      claimed.add(key);
-      merged.push(skill);
-    }
-    for (const skill of input.nativeSkills) {
-      if (claimed.has(skill.name.toLowerCase())) continue;
-      merged.push(skill);
-    }
-    return merged.sort(compareSkillNames);
+    return mergeBridgedSkillSnapshot(skillSnapshotIo, {
+      roots,
+      nativeSkills: input.nativeSkills,
+    });
   }).pipe(
     Effect.catchCause((cause) =>
       Effect.logWarning("context-bridge.skills-merge-failed", {

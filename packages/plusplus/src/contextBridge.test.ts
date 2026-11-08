@@ -5,14 +5,43 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as Schema from "effect/Schema";
 import { ContextBridgeSettings } from "@t3tools/contracts";
-import * as HostProcess from "@t3tools/shared/HostProcess";
 
-import {
-  buildBridgedInstructions,
-  resolveBridgedInstructions,
-  resolveBridgedSkillRoots,
-  resolveContextBridgeSource,
-} from "./contextBridge.ts";
+import * as ContextBridge from "./contextBridge.ts";
+
+const { resolveContextBridgeSource, resolveBridgedSkillRoots } = ContextBridge;
+
+// The NodeFS-backed IO port the host facades supply; tests exercise the pure
+// modules against real temp-dir fixtures through it.
+const nodeFileIo: ContextBridge.ContextBridgeFileIo = {
+  isFile: (path) => {
+    try {
+      return NodeFS.statSync(path).isFile();
+    } catch {
+      return false;
+    }
+  },
+  readUtf8: (path) => {
+    try {
+      return NodeFS.readFileSync(path, "utf8");
+    } catch {
+      return null;
+    }
+  },
+  realpathNative: (path) => {
+    try {
+      return NodeFS.realpathSync.native(path);
+    } catch {
+      return null;
+    }
+  },
+};
+
+const buildBridgedInstructions = (input: ContextBridge.ContextBridgeInput): string =>
+  ContextBridge.buildBridgedInstructions(nodeFileIo, input);
+const resolveBridgedInstructions = (
+  input: ContextBridge.ContextBridgeInput,
+): ContextBridge.BridgedInstructionsResolution | null =>
+  ContextBridge.resolveBridgedInstructions(nodeFileIo, input);
 
 const decodeSettings = Schema.decodeSync(ContextBridgeSettings);
 
@@ -30,10 +59,10 @@ function writeFixture(relativePath: string, content: string, base = tempRoot): s
 beforeEach(() => {
   // Fixtures must not sit below the user profile; ancestor walks run to the
   // filesystem root, so real files like ~/.claude/CLAUDE.md would leak in as
-  // project instructions. On Windows the OS temp dir is inside the profile,
-  // so use Windows\Temp instead; POSIX temp is already outside it.
+  // project instructions. On Windows the OS temp dir is inside the profile, so
+  // use Windows\Temp (path separator stands in for the platform here).
   const tempBase =
-    HostProcess.Platform.defaultValue() === "win32"
+    NodePath.sep === "\\"
       ? NodePath.join(process.env.SystemDrive ?? "C:", "\\", "Windows", "Temp")
       : NodeFS.realpathSync(NodeOS.tmpdir());
   tempRoot = NodeFS.mkdtempSync(NodePath.join(tempBase, "context-bridge-"));

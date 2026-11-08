@@ -263,9 +263,9 @@ describe("validateForkInventory", () => {
     );
   });
 
-  it("rejects an owned root that contains non-fork paths or nothing at all", () => {
+  it("rejects a baseline-era owned root that contains non-fork paths or no owned entry", () => {
     const inventory = minimalInventory();
-    inventory.plusplusOwnedRoots = ["docs", "empty"];
+    inventory.plusplusOwnedRoots = ["docs", "scripts"];
     inventory.entries.push({
       id: "SEAM-001",
       category: "integration-seam",
@@ -279,7 +279,16 @@ describe("validateForkInventory", () => {
     assert.isTrue(
       issues.includes("plusplusOwnedRoots: docs contains non-fork path docs/upstream.md"),
     );
-    assert.isTrue(issues.includes("plusplusOwnedRoots: empty contains no plusplus-owned entry"));
+    assert.isTrue(
+      issues.includes("plusplusOwnedRoots: scripts contains non-fork path scripts/old.ts"),
+    );
+    assert.isTrue(issues.includes("plusplusOwnedRoots: scripts contains no plusplus-owned entry"));
+  });
+
+  it("accepts an owned root added after the baseline with no baseline entries", () => {
+    const inventory = minimalInventory();
+    inventory.plusplusOwnedRoots = ["packages/plusplus"];
+    assert.deepStrictEqual(validateForkInventory(inventory), []);
   });
 
   it("rejects malformed conflict history entries", () => {
