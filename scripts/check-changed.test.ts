@@ -147,15 +147,17 @@ describe("check:changed", () => {
 
   it("lists the CI-only jobs the remaining gates keep, in summary order", () => {
     assert.deepStrictEqual(
-      ciOnlyJobs({ test: true, build: true, rust: true, release_smoke: true }),
-      ["full test suites", "build", "rust", "release smoke"],
+      ciOnlyJobs({ test: true, build: true, rust: true, release_smoke: true, windows: true }),
+      ["full test suites", "build", "rust", "release smoke", "windows"],
     );
     assert.deepStrictEqual(ciOnlyJobs({ test_server: true }), ["full test suites"]);
     assert.deepStrictEqual(ciOnlyJobs({ test_web: true }), ["full test suites"]);
+    assert.deepStrictEqual(ciOnlyJobs({ windows: true }), ["windows"]);
   });
 
   it("omits CI-only jobs whose gate is off", () => {
     assert.deepStrictEqual(ciOnlyJobs({ test: false, build: true, rust: false }), ["build"]);
+    assert.deepStrictEqual(ciOnlyJobs({ windows: false }), []);
     assert.deepStrictEqual(ciOnlyJobs({}), []);
   });
 
@@ -166,73 +168,112 @@ describe("check:changed", () => {
     assert.deepStrictEqual(ciOnlyJobs(staleGate), []);
   });
 
-  it("passes the CI graph when every needed job succeeds", () => {
-    const results = {
-      changes: { result: "success" },
-      lint: { result: "success" },
-      build: { result: "success" },
-      test: { result: "success" },
-      test_web: { result: "success" },
-      test_server: { result: "success" },
-      rust: { result: "success" },
-      release_smoke: { result: "success" },
-      shared_persistence_compat: { result: "success" },
-    };
-    assert.isTrue(checkJobResults(results, { lint: "true" }));
+  // A complete green run in the shape of GitHub's toJSON(needs). `changes`
+  // carries the gates and the fail_open all-clear the shared policy reads.
+  type JobEntry = { result?: string | undefined; outputs?: Record<string, string> };
+  type Needs = Record<string, JobEntry>;
+  const greenNeeds = (gates: Record<string, string> = {}): Needs => ({
+    changes: { result: "success", outputs: { fail_open: "false", ...gates } },
+    lint: { result: "success" },
+    build: { result: "success" },
+    test: { result: "success" },
+    test_web: { result: "success" },
+    test_server: { result: "success" },
+    rust: { result: "success" },
+    release_smoke: { result: "success" },
+    shared_persistence_compat: { result: "success" },
+    windows: { result: "success" },
+  });
+  const withJob = (needs: Needs, job: string, entry: JobEntry): Needs => ({
+    ...needs,
+    [job]: entry,
   });
 
-  it("allows a skipped job only when changes turned off every gate it represents", () => {
+  it("passes the CI graph when every job, Windows included, succeeds healthy", () => {
+    assert.deepStrictEqual(checkJobResults(greenNeeds({ windows: "true" })), []);
+    // A server shard detects before skipping its test steps, so it normally
+    // succeeds even with its gate off; success needs no gate explanation.
+    assert.deepStrictEqual(checkJobResults(greenNeeds({ test_server: "false" })), []);
+  });
+
+  it("allows a skipped optional job only when every gate it represents is off", () => {
     // Build merges the build and typecheck gates, so both must be off.
-    const skipped = { result: "skipped" };
-    assert.isTrue(
-      checkJobResults({ changes: { result: "success" }, lint: skipped }, { lint: "false" }),
-    );
-    assert.isTrue(
+    assert.deepStrictEqual(
       checkJobResults(
-        { changes: { result: "success" }, build: skipped, test: { result: "success" } },
-        { build: "false", typecheck: "false" },
+        withJob(greenNeeds({ build: "false", typecheck: "false" }), "build", {
+          result: "skipped",
+        }),
+      ),
+      [],
+    );
+    assert.deepStrictEqual(
+      checkJobResults(withJob(greenNeeds({ windows: "false" }), "windows", { result: "skipped" })),
+      [],
+    );
+    assert.isNotEmpty(
+      checkJobResults(
+        withJob(greenNeeds({ build: "true", typecheck: "false" }), "build", {
+          result: "skipped",
+        }),
+      ),
+    );
+    assert.isNotEmpty(
+      checkJobResults(withJob(greenNeeds({ windows: "true" }), "windows", { result: "skipped" })),
+    );
+    // A gate the changes job never emitted explains nothing.
+    assert.isNotEmpty(checkJobResults(withJob(greenNeeds(), "windows", { result: "skipped" })));
+  });
+
+  it("fails on empty needs, a missing expected job, and an extra job", () => {
+    assert.isNotEmpty(checkJobResults({}));
+    for (const job of Object.keys(greenNeeds())) {
+      const needs = greenNeeds();
+      delete needs[job];
+      assert.isNotEmpty(checkJobResults(needs), `removing ${job} must fail`);
+    }
+    // mobile_native_static_analysis left the graph; a stale entry in needs
+    // must fail rather than pass silently.
+    assert.isNotEmpty(
+      checkJobResults(
+        withJob(greenNeeds(), "mobile_native_static_analysis", { result: "skipped" }),
       ),
     );
   });
 
-  it("fails a skipped job while any of its gates is on", () => {
-    const skipped = { result: "skipped" };
-    assert.isFalse(
-      checkJobResults({ changes: { result: "success" }, lint: skipped }, { lint: "true" }),
+  it("fails closed on failure, cancellation, and missing or unknown results", () => {
+    for (const result of ["failure", "cancelled", "timed_out", undefined]) {
+      assert.isNotEmpty(
+        checkJobResults(withJob(greenNeeds({ windows: "false" }), "windows", { result })),
+        `result ${result} must fail`,
+      );
+    }
+    // Whatever the gates say, and on always-on jobs too.
+    assert.isNotEmpty(
+      checkJobResults(withJob(greenNeeds({ test: "false" }), "test", { result: "cancelled" })),
     );
-    assert.isFalse(
-      checkJobResults(
-        { changes: { result: "success" }, build: skipped },
-        { build: "true", typecheck: "false" },
-      ),
-    );
+    assert.isNotEmpty(checkJobResults(withJob(greenNeeds(), "lint", { result: "failure" })));
   });
 
-  it("fails closed on cancelled and failed jobs, whatever the gates say", () => {
-    const gates = { lint: "false", test: "false" };
-    assert.isFalse(
-      checkJobResults({ changes: { result: "success" }, lint: { result: "cancelled" } }, gates),
-    );
-    assert.isFalse(
-      checkJobResults({ changes: { result: "success" }, test: { result: "failure" } }, gates),
-    );
-    assert.isFalse(checkJobResults({ changes: { result: "cancelled" } }, {}));
+  it("never lets an always-on job skip", () => {
+    for (const job of ["changes", "lint", "shared_persistence_compat"]) {
+      assert.isNotEmpty(
+        checkJobResults(withJob(greenNeeds(), job, { result: "skipped" })),
+        `${job} must never skip`,
+      );
+    }
   });
 
-  it("fails a skip no gate explains, including deleted jobs", () => {
-    // mobile_native_static_analysis left the graph, so no gate can excuse its
-    // skip; a stale entry in needs must fail rather than pass silently.
-    const staleJob: Record<string, { result: string }> = {
-      changes: { result: "success" },
-      mobile_native_static_analysis: { result: "skipped" },
-    };
-    assert.isFalse(
-      checkJobResults(staleJob, { mobile_native_static_analysis: "false", mobile_native: "false" }),
-    );
-    // A gate the changes job never emitted explains nothing either.
-    assert.isFalse(
-      checkJobResults({ changes: { result: "success" }, lint: { result: "skipped" } }, {}),
-    );
+  it("fails a fail-open detection even with every job green", () => {
+    const failOpen = greenNeeds();
+    failOpen.changes = { result: "success", outputs: { fail_open: "true" } };
+    assert.isNotEmpty(checkJobResults(failOpen));
+    // A missing all-clear is as bad as an explicit true.
+    const missing = greenNeeds();
+    missing.changes = { result: "success", outputs: {} };
+    assert.isNotEmpty(checkJobResults(missing));
+    const noOutputs = greenNeeds();
+    noOutputs.changes = { result: "success" };
+    assert.isNotEmpty(checkJobResults(noOutputs));
   });
 
   it("runs the .github/scripts node:test files with node --test, not vitest", () => {

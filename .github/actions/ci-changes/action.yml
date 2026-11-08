@@ -17,6 +17,14 @@ outputs:
     value: ${{ steps.detect.outputs.rust }}
   release_smoke:
     value: ${{ steps.detect.outputs.release_smoke }}
+  windows:
+    value: ${{ steps.detect.outputs.windows }}
+  windows_packages:
+    value: ${{ steps.detect.outputs.windows_packages }}
+  # "true" only when the fetch/diff fallback ran: detection was unhealthy, so
+  # every gate is on but Check refuses to merge the run.
+  fail_open:
+    value: ${{ steps.detect.outputs.fail_open }}
 runs:
   using: composite
   steps:
@@ -34,7 +42,8 @@ runs:
         }
 
         fail_open() {
-          echo "$* Running every job."
+          echo "$* Running every job; Check will fail because detection was unhealthy."
+          echo "fail_open=true" >> "$GITHUB_OUTPUT"
           decide
         }
 
@@ -58,4 +67,6 @@ runs:
         # git from fetching file contents to score renames.
         git diff --name-only --no-renames "$base" HEAD > "$RUNNER_TEMP/changed-paths" \
           || fail_open "Could not diff against ${base}."
+        # A detector failure here fails the job; it never falls back healthy.
+        echo "fail_open=false" >> "$GITHUB_OUTPUT"
         decide --paths "$RUNNER_TEMP/changed-paths" "${mode[@]}"
