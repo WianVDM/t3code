@@ -159,6 +159,12 @@
       "entry": ["test/fixtures/*.ts"],
       "ignoreIssues": { "src/_generated/**": ["exports", "types"] },
     },
+    "packages/provider-core": {
+      "includeEntryExports": true,
+      // CONTEXT_BRIDGE_CATALOG stays re-exported as an intentional compatibility facade;
+      // in-repo consumers read it from @t3tools/plusplus, so knip sees it as unused.
+      "ignoreIssues": { "src/server/contextBridge.ts": ["exports"] },
+    },
     "packages/source-control-github": {
       // graphqlgen reads its config; the generated operations export every selection's class.
       "entry": ["graphql.config.ts", "scripts/measure-pr-preview.ts"],

@@ -1,0 +1,36 @@
+{
+  "name": "@t3tools/plusplus",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./contextBridge": {
+      "types": "./src/contextBridge.ts",
+      "import": "./src/contextBridge.ts"
+    },
+    "./runtimeInstructions": {
+      "types": "./src/runtimeInstructions.ts",
+      "import": "./src/runtimeInstructions.ts"
+    },
+    "./openCodeContextBridge": {
+      "types": "./src/openCodeContextBridge.ts",
+      "import": "./src/openCodeContextBridge.ts"
+    },
+    "./antigravityContextBridge": {
+      "types": "./src/antigravityContextBridge.ts",
+      "import": "./src/antigravityContextBridge.ts"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vp test run --config ../../vite.config.ts --dir ."
+  },
+  "dependencies": {
+    "@t3tools/contracts": "workspace:*"
+  },
+  "devDependencies": {
+    "@effect/vitest": "catalog:",
+    "@types/node": "catalog:",
+    "effect": "catalog:",
+    "vite-plus": "catalog:"
+  }
+}
