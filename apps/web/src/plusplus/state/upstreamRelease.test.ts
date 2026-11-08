@@ -78,6 +78,7 @@ const state = vi.hoisted(() => {
     readProjects: vi.fn(),
     readProject: vi.fn(),
     useProjects: vi.fn(),
+    useEffect: vi.fn(),
     useLiveRefresh: vi.fn(),
     newThread: vi.fn(),
     buildUpstreamMergePrompt: vi.fn(),
@@ -111,7 +112,7 @@ const state = vi.hoisted(() => {
 });
 
 vi.mock("@effect/atom-react", () => ({ useAtomValue: vi.fn() }));
-vi.mock("react", () => ({ useEffect: vi.fn() }));
+vi.mock("react", () => ({ useEffect: state.useEffect }));
 vi.mock("@t3tools/client-runtime/environment", () => ({
   scopeProjectRef: (environmentId: string, projectId: string) => ({ environmentId, projectId }),
   scopeThreadRef: (environmentId: string, threadId: string) => ({ environmentId, threadId }),
@@ -194,6 +195,7 @@ function setup() {
   state.readProjects.mockReset().mockReturnValue([state.project]);
   state.readProject.mockReset().mockReturnValue(state.project);
   state.useProjects.mockReset().mockReturnValue([state.project]);
+  state.useEffect.mockReset();
   state.useLiveRefresh.mockReset();
   state.newThread.mockReset().mockResolvedValue({
     draftId: state.draftId,
@@ -267,13 +269,25 @@ describe("useUpstreamReleasePolling", () => {
       key: "upstream-release",
       intervalMs: 1_000,
     });
+    const effect = state.useEffect.mock.calls[0]?.[0] as () => void;
+    effect();
+    expect(state.refreshUpstreamReleaseIfStale).not.toHaveBeenCalled();
   });
 
-  it("enables live refresh for a matching fork checkout", () => {
+  it("enables live refresh for a matching fork checkout", async () => {
     setup();
+    state.refreshUpstreamReleaseIfStale.mockResolvedValue({ kind: "unmerged", tag: state.tag });
 
     useUpstreamReleasePolling();
 
+    const effect = state.useEffect.mock.calls[0]?.[0] as () => void;
+    effect();
+    await Promise.resolve();
+    expect(state.refreshUpstreamReleaseIfStale).toHaveBeenCalledTimes(1);
+    expect(state.registrySet).toHaveBeenCalledWith(upstreamReleaseStateAtom, {
+      kind: "unmerged",
+      tag: state.tag,
+    });
     expect(state.useLiveRefresh).toHaveBeenCalledTimes(1);
     const [refresh, options] = state.useLiveRefresh.mock.calls[0]!;
     expect(refresh).toBeTypeOf("function");
@@ -505,7 +519,7 @@ describe("runManualUpstreamCheck", () => {
     expect(notification).toMatchObject({
       type: "info",
       title: `Upstream ${state.tag} is ready to merge`,
-      description: "Update the fork first, then merge upstream.",
+      description: "Update the fork first, then create a local upstream merge draft.",
     });
     expect(notification).not.toHaveProperty("actionProps");
     expect(state.newThread).not.toHaveBeenCalled();

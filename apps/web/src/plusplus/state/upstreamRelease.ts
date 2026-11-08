@@ -338,7 +338,7 @@ export async function runManualUpstreamCheck(): Promise<void> {
         type: "info",
         title: `Upstream ${result.tag} is ready to merge`,
         ...(shouldDeferMerge
-          ? { description: "Update the fork first, then merge upstream." }
+          ? { description: "Update the fork first, then create a local upstream merge draft." }
           : {
               actionProps: {
                 children: "Create local upstream merge draft",
