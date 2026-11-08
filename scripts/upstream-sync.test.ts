@@ -317,6 +317,50 @@ it.live("prepare, verify, and finish create a real two-parent merge", () =>
   ).pipe(Effect.provide(NodeServices.layer)),
 );
 
+it.live("prepare, verify, and finish sync a release the fork already tagged locally", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const fixture = yield* makeRepositoryFixture({ variant: "clean" });
+      const spawner = yield* localFetchSpawner(fixture);
+      const git = fixture.git;
+      const options = { tag: TAG, cwd: fixture.cwd };
+      const tagsSnapshot = () =>
+        git(["for-each-ref", "--format=%(refname) %(objectname)", "refs/tags"]);
+
+      // The fork owns its own tag on a fork-only commit, colliding with the upstream release name.
+      yield* git(["tag", TAG, fixture.forkHead]);
+      const tagsBefore = yield* tagsSnapshot();
+      assert.equal(
+        (yield* git(["rev-parse", `refs/tags/${TAG}^{commit}`])).trim(),
+        fixture.forkHead,
+      );
+
+      yield* Effect.gen(function* () {
+        const prepared = yield* prepareUpstreamSync(options);
+        assert.deepStrictEqual(prepared, { branch: `sync/upstream-${TAG}` });
+        assert.equal((yield* git(["rev-parse", "HEAD"])).trim(), fixture.forkHead);
+        assert.equal((yield* git(["rev-parse", "MERGE_HEAD"])).trim(), fixture.upstreamHead);
+
+        const verified = yield* verifyUpstreamSync(options);
+        assert.equal(verified.mergeHead, fixture.upstreamHead);
+
+        yield* finishUpstreamSync(options);
+      }).pipe(withSpawner(spawner));
+
+      const parents = yield* headParents(git);
+      assert.equal(parents.length, 3);
+      assert.equal(parents[1], fixture.forkHead);
+      assert.equal(parents[2], fixture.upstreamHead);
+      assert.equal((yield* git(["status", "--porcelain"])).trim(), "");
+      assert.equal(
+        (yield* git(["rev-parse", `refs/upstream-sync/${TAG}^{commit}`])).trim(),
+        fixture.upstreamHead,
+      );
+      assert.deepStrictEqual(yield* tagsSnapshot(), tagsBefore);
+    }),
+  ).pipe(Effect.provide(NodeServices.layer)),
+);
+
 it.live("verify and finish reject unstaged tracked edits until they are staged", () =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -513,7 +557,7 @@ it.live("prepare reports a real conflict and leaves it unresolved", () =>
       const conflictText = yield* fs.readFileString(path.join(fixture.cwd, "conflict.txt"));
       assert.isTrue(conflictText.includes("<<<<<<< HEAD\n"));
       assert.isTrue(conflictText.includes("\nfork\n=======\nupstream\n"));
-      assert.isTrue(conflictText.includes(`>>>>>>> ${TAG}`));
+      assert.isTrue(conflictText.includes(`>>>>>>> refs/upstream-sync/${TAG}`));
     }),
   ).pipe(Effect.provide(NodeServices.layer)),
 );

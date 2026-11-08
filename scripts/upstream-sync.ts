@@ -17,6 +17,8 @@ export const EXPECTED_REMOTES = {
 } as const;
 
 const TAG_REF_PREFIX = "refs/tags/";
+// Namespaced so a same-named fork tag is never clobbered by the upstream release.
+const UPSTREAM_RELEASE_REF_PREFIX = "refs/upstream-sync/";
 const UPSTREAM_TAG_PATTERN = /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const FORK_SEQUENCE_PATTERN = /^(0|[1-9]\d*)$/;
 const CONFLICT_MARKER_PATTERN = /^(?:<{7,}|={7,}|>{7,}|\|{7,})(?:[\t ].*)?$/;
@@ -130,6 +132,8 @@ export function findAddedConflictMarkers(patch: string): string[] {
 
 const indentLines = (lines: ReadonlyArray<string>): string =>
   lines.map((line) => `  ${line}`).join("\n");
+
+const upstreamReleaseRef = (tag: string): string => `${UPSTREAM_RELEASE_REF_PREFIX}${tag}`;
 
 const collectStreamAsString = <E>(stream: Stream.Stream<Uint8Array, E>): Effect.Effect<string, E> =>
   stream.pipe(
@@ -326,7 +330,7 @@ const verifyMergeState = Effect.fn("upstream-sync.verifyMergeState")(function* (
   const tagHead = (yield* git(cwd, [
     "rev-parse",
     "--verify",
-    `${TAG_REF_PREFIX}${tag}^{commit}`,
+    `${upstreamReleaseRef(tag)}^{commit}`,
   ])).trim();
   if (mergeHeadEntries.length !== 1 || mergeHeadEntries[0] !== tagHead) {
     return yield* new UpstreamSyncError({
@@ -402,18 +406,21 @@ export const prepareUpstreamSync = Effect.fn("upstream-sync.prepare")(function* 
     });
   }
 
-  yield* git(cwd, ["fetch", "--no-recurse-submodules", "--tags", "origin"]);
-  yield* git(cwd, ["fetch", "--no-recurse-submodules", "--tags", "upstream"]);
-  // Explicit refspec: fetching the requested ref proves the tag exists upstream instead of trusting a local tag.
+  const releaseRef = upstreamReleaseRef(tag);
+  // --no-tags everywhere: auto-followed tags, not just the explicit refspec, are what clobber a fork tag.
+  yield* git(cwd, ["fetch", "--no-recurse-submodules", "--no-tags", "origin"]);
+  yield* git(cwd, ["fetch", "--no-recurse-submodules", "--no-tags", "upstream"]);
+  // Explicit refspec into our namespace: proves the tag exists upstream without touching refs/tags.
   yield* git(cwd, [
     "fetch",
     "--no-recurse-submodules",
+    "--no-tags",
     "upstream",
-    `${TAG_REF_PREFIX}${tag}:${TAG_REF_PREFIX}${tag}`,
+    `+${TAG_REF_PREFIX}${tag}:${releaseRef}`,
   ]);
-  yield* git(cwd, ["rev-parse", "--verify", `${TAG_REF_PREFIX}${tag}^{commit}`]);
+  yield* git(cwd, ["rev-parse", "--verify", `${releaseRef}^{commit}`]);
 
-  const ancestryArgs = ["merge-base", "--is-ancestor", `${TAG_REF_PREFIX}${tag}`, "origin/main"];
+  const ancestryArgs = ["merge-base", "--is-ancestor", releaseRef, "origin/main"];
   const ancestry = yield* runGit(cwd, ancestryArgs);
   if (ancestry.exitCode === 0) {
     yield* Console.log(`${tag} is already integrated into origin/main; no merge is needed.`);
@@ -430,22 +437,29 @@ export const prepareUpstreamSync = Effect.fn("upstream-sync.prepare")(function* 
     "--no-color",
     "--no-decorate",
     "--oneline",
-    `${TAG_REF_PREFIX}${tag}..HEAD`,
+    `${releaseRef}..HEAD`,
     "--",
   ]);
   yield* Console.log(`Fork-only commits relative to ${tag}:\n${forkOnly.trimEnd() || "(none)"}`);
 
-  const merge = yield* runGit(cwd, ["merge", "--no-commit", "--no-ff", "--no-edit", tag]);
+  // -m keeps the fork's "Merge tag '<tag>'" history now that the tag ref is namespaced.
+  const mergeArgs = [
+    "merge",
+    "--no-commit",
+    "--no-ff",
+    "--no-edit",
+    "-m",
+    `Merge tag '${tag}' into ${branch}`,
+    releaseRef,
+  ];
+  const merge = yield* runGit(cwd, mergeArgs);
   if (merge.exitCode !== 0) {
     yield* requireNoLeftoverPaths(
       cwd,
       ["diff", "--name-only", "--diff-filter=U", "-z", "--"],
       `Merge conflicts were left unresolved. Resolve and stage them, then run verify --tag ${tag}`,
     );
-    return yield* new GitCommandError({
-      args: ["merge", "--no-commit", "--no-ff", "--no-edit", tag],
-      ...merge,
-    });
+    return yield* new GitCommandError({ args: mergeArgs, ...merge });
   }
 
   const mergeOutput = merge.stdout.trim();
