@@ -6,6 +6,23 @@ Use a conventional commit title in plain language, such as
 title becomes the commit message.
 -->
 
+## Traceability
+
+<!-- Required by #43. Link this PR to a same-repository issue carrying the
+`accepted` label, using exactly one form:
+
+- `Closes #<number>` when this PR completes the issue.
+- `Part of #<number>` when this PR is one step of larger accepted work, such
+  as a stacked PR.
+
+Only same-repository issues count: cross-repository references, pull request
+links, and bare numbers do not satisfy the check. Replace the placeholder
+below; an unedited placeholder is reported as a malformed link. The Issue
+Traceability check runs advisedly during bootstrap and becomes a required
+check at the #43 enforcement milestone (B12). -->
+
+Part of #
+
 ## Problem
 
 <!-- One or two sentences. Expected behavior plus reproduction steps or
