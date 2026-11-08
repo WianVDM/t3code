@@ -42,6 +42,26 @@ jobs:
                 color: "5319e7",
                 description: "Permits an intentionally larger agent context budget.",
               },
+              {
+                name: "accepted",
+                color: "0e8a16",
+                description: "Maintainer/triage-approved work",
+              },
+              {
+                name: "plusplus",
+                color: "9333ea",
+                description: "++ fork work",
+              },
+              {
+                name: "upstream-candidate",
+                color: "1d76db",
+                description: "Change to propose upstream first.",
+              },
+              {
+                name: "upstream-sync",
+                color: "0052cc",
+                description: "Merging an upstream release into the fork.",
+              },
             ];
 
             for (const label of managedLabels) {
