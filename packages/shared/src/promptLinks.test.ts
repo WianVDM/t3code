@@ -1,6 +1,7 @@
 import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
+import { APP_LINK_SCHEME } from "./appLinks.ts";
 import {
   buildNewThreadLink,
   parseNewThreadLink,
@@ -116,7 +117,7 @@ describe("link round trips", () => {
     const path = promptLinkAppPath(link);
     expect(path).toBe("/env-1/mcp%3A1");
     const deepLink = promptLinkDeepLink(path!);
-    expect(deepLink).toBe("t3code://threads/env-1/mcp%3A1");
+    expect(deepLink).toBe(`${APP_LINK_SCHEME}://threads/env-1/mcp%3A1`);
     expect(promptLinkAppPath(deepLink)).toBe(path);
   });
 
