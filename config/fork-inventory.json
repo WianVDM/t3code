@@ -14,7 +14,7 @@
       "renamed": 1
     }
   },
-  "plusplusOwnedRoots": ["assets/fork", "packages/plusplus"],
+  "plusplusOwnedRoots": ["assets/fork", "packages/plusplus", "apps/web/src/plusplus"],
   "conflictHistory": [
     {
       "commit": "af021cfa142e947486cd78469bb45aa052a686a3",

@@ -1,8 +1,8 @@
 import type { ScopedThreadRef } from "@t3tools/contracts";
 
-import { selectThreadRightPanelState, useRightPanelStore } from "../rightPanelStore";
-import { selectThreadTerminalUiState, useTerminalUiStateStore } from "../terminalUiStateStore";
-import { focusTerminalOnNavigation } from "./terminalFocus";
+import { selectThreadRightPanelState, useRightPanelStore } from "../../rightPanelStore";
+import { selectThreadTerminalUiState, useTerminalUiStateStore } from "../../terminalUiStateStore";
+import { focusTerminalOnNavigation } from "../../lib/terminalFocus";
 
 export function revealThreadTerminal(threadRef: ScopedThreadRef, terminalId: string) {
   const panels = useRightPanelStore.getState();

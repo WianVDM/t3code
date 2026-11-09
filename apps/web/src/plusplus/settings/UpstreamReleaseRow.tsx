@@ -7,14 +7,14 @@ import {
   runManualUpstreamCheck,
   startUpstreamMerge,
   useUpstreamRelease,
-} from "../../state/upstreamRelease";
-import { Button } from "../ui/button";
+} from "../state/upstreamRelease";
+import { Button } from "~/components/ui/button";
 import {
   isUpstreamReleaseNotificationBuild,
   shouldDeferUpstreamMerge,
   upstreamBaseTagForVersion,
 } from "../upstreamRelease.logic";
-import { SettingsRow } from "./settingsLayout";
+import { SettingsRow } from "~/components/settings/settingsLayout";
 
 function UpstreamReleaseRowContent() {
   const newThread = useNewThreadHandler();

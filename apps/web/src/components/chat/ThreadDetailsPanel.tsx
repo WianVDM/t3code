@@ -22,7 +22,7 @@ import { OpenInPicker } from "./OpenInPicker";
 import { ThreadDetailsSection } from "./ThreadDetailsSection";
 import { ThreadAutomationsPanel } from "./ThreadAutomationsPanel";
 import { ThreadRelationshipsPanel } from "./ThreadRelationshipsControl";
-import { ThreadProcessesPanel } from "./ThreadProcessesPanel";
+import { ThreadProcessesPanel } from "~/plusplus/chat/ThreadProcessesPanel";
 import { ThreadServersPanel } from "./ThreadServersPanel";
 import {
   ThreadDetailsContext,
@@ -131,6 +131,7 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
       contentKey={THREAD_DETAILS_ITEMS.filter((item) => visible[item.id])
         .map((item) => item.id)
         .join(",")}
+      additionalScrollableContentSelector="[data-thread-processes-panel]"
       onContextMenu={(event) => {
         // Popups the card opens bubble here through React; they, fields, links, and selected text
         // keep their own menus.

@@ -15,8 +15,11 @@ import {
   type ComposerThreadDraftState,
   deriveEffectiveComposerModelState,
 } from "../../composerDraftStore";
-import { getComposerPromptInjectionState, getComposerProviderState } from "./composerProviderState";
-import { resolveComposerProviderSelection } from "../ChatView.logic";
+import {
+  getComposerPromptInjectionState,
+  getComposerProviderState,
+} from "~/components/chat/composerProviderState";
+import { resolveComposerProviderSelection } from "~/components/ChatView.logic";
 
 const NO_PROVIDER_MODELS: ServerProvider["models"] = [];
 

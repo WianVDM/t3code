@@ -3,11 +3,11 @@ import {
   startUpstreamMerge,
   useUpstreamRelease,
   useUpstreamReleasePolling,
-} from "../../state/upstreamRelease";
+} from "../state/upstreamRelease";
 import { useDesktopUpdateState } from "../../state/desktopUpdate";
 import { cn } from "../../lib/utils";
-import { PullRequestGlyph } from "../pullRequest/pullRequestIcons";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { PullRequestGlyph } from "~/components/pullRequest/pullRequestIcons";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
 import {
   isUpstreamReleaseNotificationBuild,
   shouldDeferUpstreamMerge,

@@ -5,8 +5,14 @@ import { readContextBridgeSettings } from "@t3tools/shared/serverSettings";
 import { useEnvironmentSettings, useUpdateEnvironmentSettings } from "../../hooks/useSettings";
 import { deriveProviderInstanceEntries } from "../../providerInstances";
 import { providersIgnoringCheckedAtAtom } from "../../state/server";
-import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
-import { Switch } from "../ui/switch";
+import {
+  Select,
+  SelectItem,
+  SelectPopup,
+  SelectTrigger,
+  SelectValue,
+} from "~/components/ui/select";
+import { Switch } from "~/components/ui/switch";
 import {
   buildDefaultSourceOptions,
   buildRouteOptions,
@@ -18,8 +24,8 @@ import {
   supportsContextBridgeSkills,
   type ContextBridgeFeature,
 } from "./contextBridgeSettings.logic";
-import { SettingsRow, SettingsSection } from "./settingsLayout";
-import { searchableSetting } from "./settingsSearch";
+import { SettingsRow, SettingsSection } from "~/components/settings/settingsLayout";
+import { searchableSetting } from "~/components/settings/settingsSearch";
 
 function useAvailableBridgeDrivers(environmentId: EnvironmentId) {
   const serverProviders = useAtomValue(providersIgnoringCheckedAtAtom(environmentId));
