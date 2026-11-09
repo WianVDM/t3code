@@ -4,6 +4,8 @@ const path = require("node:path");
 const test = require("node:test");
 const {
   decide,
+  desktopClosure,
+  readWorkspace,
   boundaryInfrastructureOf,
   EXPECTED_JOBS,
   SEPARATELY_REQUIRED_JOBS,
@@ -186,6 +188,74 @@ test("an affected desktop dependency joins desktop and scripts in the scope", ()
   assert.equal(outputs.windows_packages, "apps/desktop packages/client-runtime scripts");
   // scripts joins through TEST_ONLY_DEPS only, so the smoke gate stays off.
   assert.equal(outputs.release_smoke, false);
+});
+
+// client-runtime's provider and source-control registry dependencies are
+// web/mobile surfaces the Electron shell never loads: a server-only registry
+// change does not select Windows, and registry packages never join the scope
+// even when affected alongside the closure.
+const registryPackages = [
+  ...packages.map((pkg) =>
+    pkg.name === "@t3tools/client-runtime"
+      ? { ...pkg, deps: [...pkg.deps, "@t3tools/provider-core", "@t3tools/source-control-core"] }
+      : pkg,
+  ),
+  {
+    name: "@t3tools/provider-core",
+    dir: "packages/provider-core",
+    hasTest: true,
+    deps: ["@t3tools/shared"],
+  },
+  {
+    name: "@t3tools/source-control-core",
+    dir: "packages/source-control-core",
+    hasTest: true,
+    deps: ["@t3tools/shared"],
+  },
+];
+
+test("a server-only provider change tests its dependents but leaves Windows off", () => {
+  const { affected, outputs } = decide(
+    ["packages/provider-core/src/server/driver.ts"],
+    registryPackages,
+    false,
+  );
+  // Linux still tests everything that depends on the registry.
+  assert.ok(affected.includes("@t3tools/client-runtime"));
+  assert.ok(affected.includes("@t3tools/desktop"));
+  assert.equal(outputs.test, true);
+  assert.equal(outputs.windows, false);
+  assert.equal(outputs.windows_packages, "");
+});
+
+test("registry packages stay out of the Windows scope when the closure runs", () => {
+  const { outputs } = decide(["packages/shared/src/env.ts"], registryPackages, false);
+  assert.equal(outputs.windows, true);
+  assert.equal(outputs.windows_packages, FULL_WINDOWS_PACKAGES);
+});
+
+// The same invariant against the real workspace: the Windows closure is
+// exactly the Electron distribution surface, and full CI runs all eight
+// selected packages (the closure plus scripts).
+test("the real desktop closure is exactly the distribution surface", () => {
+  assert.deepEqual([...desktopClosure(readWorkspace())].sort(), [
+    "@t3tools/client-runtime",
+    "@t3tools/contracts",
+    "@t3tools/desktop",
+    "@t3tools/plusplus",
+    "@t3tools/shared",
+    "@t3tools/ssh",
+    "@t3tools/tailscale",
+  ]);
+});
+
+test("a full run selects the eight-package Windows surface", () => {
+  const { outputs } = decide([], readWorkspace(), true);
+  assert.equal(outputs.windows, true);
+  assert.equal(
+    outputs.windows_packages,
+    "apps/desktop packages/client-runtime packages/contracts packages/plusplus packages/shared packages/ssh packages/tailscale scripts",
+  );
 });
 
 for (const file of ["apps/server/src/ws.ts", "apps/web/src/App.tsx", "apps/mobile/src/App.tsx"]) {

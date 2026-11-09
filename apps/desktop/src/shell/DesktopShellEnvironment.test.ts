@@ -110,56 +110,59 @@ function runShellEnvironment(input: {
   readonly failure?: PlatformError.PlatformError;
   readonly processSpawner?: ChildProcessSpawner.ChildProcessSpawner["Service"];
 }) {
-  const layerEnvironment = Layer.effect(
-    DesktopEnvironment.DesktopEnvironment,
-    Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const stateDir = input.stateDir ?? (yield* fs.makeTempDirectoryScoped());
-      return DesktopEnvironment.DesktopEnvironment.of({
+  return Effect.gen(function* () {
+    // The default stateDir must be allocated while the host environment is
+    // intact: withProcessEnv strips TEMP/TMPDIR, and Windows' os.tmpdir has no
+    // fallback, so a lazy temp directory inside the layer would be unusable.
+    const hostFs = yield* FileSystem.FileSystem;
+    const stateDir = input.stateDir ?? (yield* hostFs.makeTempDirectoryScoped());
+    const layerEnvironment = Layer.succeed(
+      DesktopEnvironment.DesktopEnvironment,
+      DesktopEnvironment.DesktopEnvironment.of({
         platform: input.platform,
         stateDir,
         homeDirectory: "/test-home",
-      } as DesktopEnvironment.DesktopEnvironment["Service"]);
-    }),
-  ).pipe(Layer.provide(NodeServices.layer));
-  const layerSpawner = Layer.succeed(
-    ChildProcessSpawner.ChildProcessSpawner,
-    ChildProcessSpawner.make((command) => {
-      if (input.processSpawner) return input.processSpawner.spawn(command);
-      if (input.failure !== undefined) return Effect.fail(input.failure);
-      const result = input.handler(command);
-      return Effect.succeed(
-        typeof result === "string"
-          ? makeProcess(result)
-          : makeProcess(result.output, result.exitCode),
-      );
-    }),
-  );
-
-  const program = Effect.gen(function* () {
-    const shellEnvironment = yield* DesktopShellEnvironment.DesktopShellEnvironment;
-    if (input.use) return yield* input.use(shellEnvironment);
-    const prepared = yield* shellEnvironment.awaitDiscovery;
-    assert.equal(yield* shellEnvironment.awaitDiscovery, prepared);
-    return prepared;
-  }).pipe(
-    Effect.provide(
-      DesktopShellEnvironment.layer.pipe(
-        Layer.provide(Layer.mergeAll(layerEnvironment, NodeServices.layer, layerSpawner)),
-      ),
-    ),
-  );
-
-  return Effect.acquireUseRelease(
-    Effect.sync(() =>
-      vi.spyOn(NodeOS, "userInfo").mockReturnValue({
-        ...NodeOS.userInfo(),
-        shell: input.userShell ?? null,
+      } as DesktopEnvironment.DesktopEnvironment["Service"]),
+    );
+    const layerSpawner = Layer.succeed(
+      ChildProcessSpawner.ChildProcessSpawner,
+      ChildProcessSpawner.make((command) => {
+        if (input.processSpawner) return input.processSpawner.spawn(command);
+        if (input.failure !== undefined) return Effect.fail(input.failure);
+        const result = input.handler(command);
+        return Effect.succeed(
+          typeof result === "string"
+            ? makeProcess(result)
+            : makeProcess(result.output, result.exitCode),
+        );
       }),
-    ),
-    () => withProcessEnv(input.env, program),
-    (spy) => Effect.sync(() => spy.mockRestore()),
-  );
+    );
+
+    const program = Effect.gen(function* () {
+      const shellEnvironment = yield* DesktopShellEnvironment.DesktopShellEnvironment;
+      if (input.use) return yield* input.use(shellEnvironment);
+      const prepared = yield* shellEnvironment.awaitDiscovery;
+      assert.equal(yield* shellEnvironment.awaitDiscovery, prepared);
+      return prepared;
+    }).pipe(
+      Effect.provide(
+        DesktopShellEnvironment.layer.pipe(
+          Layer.provide(Layer.mergeAll(layerEnvironment, NodeServices.layer, layerSpawner)),
+        ),
+      ),
+    );
+
+    return yield* Effect.acquireUseRelease(
+      Effect.sync(() =>
+        vi.spyOn(NodeOS, "userInfo").mockReturnValue({
+          ...NodeOS.userInfo(),
+          shell: input.userShell ?? null,
+        }),
+      ),
+      () => withProcessEnv(input.env, program),
+      (spy) => Effect.sync(() => spy.mockRestore()),
+    );
+  }).pipe(Effect.provide(NodeServices.layer));
 }
 
 describe("DesktopShellEnvironment", () => {

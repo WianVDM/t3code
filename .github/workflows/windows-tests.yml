@@ -1,5 +1,5 @@
 # Scoped Windows lane. ci.yml calls this workflow with the workspace
-# directories `changes` selected (the desktop dependency closure plus scripts);
+# directories `changes` selected (the desktop distribution closure plus scripts);
 # Check aggregates the result. Manual runs stay available for focused
 # investigation, over one package or a file list:
 #
@@ -91,7 +91,11 @@ jobs:
 
       # `vp run ... test -- <files>` does not forward positional args to vitest,
       # so file-scoped runs call `vp test run` inside the package instead.
-      # Multiple directories run their package test tasks together.
+      # Multiple directories run one package at a time to completion: `vp run
+      # --parallel` is fail-fast, which hides failures in packages that never
+      # start. The loop collects every failing package and exits nonzero after
+      # the last one, so a run exposes all remaining failures at once without
+      # weakening the gate.
       - name: Test
         shell: pwsh
         run: |
@@ -106,7 +110,13 @@ jobs:
           } elseif ($dirs.Count -eq 1) {
             vp run --filter "./$dirs" test
           } else {
-            $filters = @()
-            foreach ($dir in $dirs) { $filters += @('--filter', "./$dir") }
-            vp run --parallel --concurrency-limit 4 @filters test
+            $failed = @()
+            foreach ($dir in $dirs) {
+              Write-Output "::group::Test $dir"
+              vp run --filter "./$dir" test
+              if ($LASTEXITCODE -ne 0) { $failed += $dir }
+              Write-Output "::endgroup::"
+            }
+            foreach ($dir in $failed) { Write-Output "::error::Windows tests failed: $dir" }
+            if ($failed.Count -gt 0) { exit 1 }
           }

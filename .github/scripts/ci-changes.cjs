@@ -200,14 +200,28 @@ function checkJobResults(needs) {
   return problems;
 }
 
-// Names in the transitive workspace dependency closure of @t3tools/desktop,
-// including desktop itself. deps already excludes build-only edges.
+// Windows lane invariant: the Electron shell imports only client-runtime's
+// authorization/connection/environment/platform/rpc entry points, which never
+// load its provider or source-control registries. Both Windows traversals drop
+// those edges; Linux CI keeps the full graph.
+const CLIENT_RUNTIME_REGISTRY_DEP = /^@t3tools\/(provider|source-control)-/;
+
+function windowsDeps(pkg) {
+  return pkg.name === "@t3tools/client-runtime"
+    ? pkg.deps.filter((dep) => !CLIENT_RUNTIME_REGISTRY_DEP.test(dep))
+    : pkg.deps;
+}
+
+// Names in the Windows dependency closure of @t3tools/desktop, including
+// desktop itself. deps already excludes build-only edges.
 function desktopClosure(packages) {
   const byName = new Map(packages.map((pkg) => [pkg.name, pkg]));
   const closure = new Set(["@t3tools/desktop"]);
   const queue = ["@t3tools/desktop"];
   while (queue.length > 0) {
-    for (const dep of byName.get(queue.pop())?.deps ?? []) {
+    const pkg = byName.get(queue.pop());
+    if (!pkg) continue;
+    for (const dep of windowsDeps(pkg)) {
       if (!closure.has(dep)) {
         closure.add(dep);
         queue.push(dep);
@@ -215,6 +229,21 @@ function desktopClosure(packages) {
     }
   }
   return closure;
+}
+
+function propagateDependents(packages, seed, depsOf) {
+  const result = new Set(seed);
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const pkg of packages) {
+      if (!result.has(pkg.name) && depsOf(pkg).some((dep) => result.has(dep))) {
+        result.add(pkg.name);
+        grew = true;
+      }
+    }
+  }
+  return result;
 }
 
 function decide(files, packages, full, boundaryInfra = readBoundaryInfrastructure()) {
@@ -241,19 +270,13 @@ function decide(files, packages, full, boundaryInfra = readBoundaryInfrastructur
 
   // Release smoke reads scripts/ itself, not what the scripts tests read.
   let scriptsChanged = everything;
+  let windowsAffected = all;
   if (everything) {
     affected = all;
   } else {
-    let grew = true;
-    while (grew) {
-      grew = false;
-      for (const pkg of packages) {
-        if (!affected.has(pkg.name) && pkg.deps.some((dep) => affected.has(dep))) {
-          affected.add(pkg.name);
-          grew = true;
-        }
-      }
-    }
+    // The Windows gate propagates over the pruned graph; see windowsDeps.
+    windowsAffected = propagateDependents(packages, affected, windowsDeps);
+    affected = propagateDependents(packages, affected, (pkg) => pkg.deps);
     scriptsChanged = affected.has("@t3tools/scripts");
     for (const [name, deps] of Object.entries(TEST_ONLY_DEPS)) {
       if (deps.some((dep) => affected.has(dep))) affected.add(name);
@@ -269,7 +292,7 @@ function decide(files, packages, full, boundaryInfra = readBoundaryInfrastructur
   // scripts that package it. scriptsChanged was captured before TEST_ONLY_DEPS
   // added scripts as a test-only dependent, so unrelated web/mobile changes do
   // not start Windows merely because scripts tests read those sources.
-  const windows = everything || has("@t3tools/desktop") || scriptsChanged;
+  const windows = everything || windowsAffected.has("@t3tools/desktop") || scriptsChanged;
   const closure = windows ? desktopClosure(packages) : null;
   const windowsPackages = windows
     ? packages
@@ -341,6 +364,7 @@ function main() {
 module.exports = {
   readWorkspace,
   decide,
+  desktopClosure,
   boundaryInfrastructureOf,
   checkJobResults,
   EXPECTED_JOBS,

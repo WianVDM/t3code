@@ -93,7 +93,11 @@ afterEach(() => {
 });
 
 it.layer(NodeServices.layer)("DesktopCliCommand", (it) => {
-  it.effect("links the launcher onto PATH and removes only that link", () =>
+  // POSIX install flows: they assert symlinks and colon-separated PATH entries.
+  // The explicit win32 tests below stay active and cover the Windows launcher.
+  const itPosix = it.effect.skipIf(HostProcess.Platform.defaultValue() === "win32");
+
+  itPosix("links the launcher onto PATH and removes only that link", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
@@ -119,7 +123,7 @@ it.layer(NodeServices.layer)("DesktopCliCommand", (it) => {
     }).pipe(Effect.scoped),
   );
 
-  it.effect("never replaces or removes a t3 it did not create", () =>
+  itPosix("never replaces or removes a t3 it did not create", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
@@ -147,7 +151,7 @@ it.layer(NodeServices.layer)("DesktopCliCommand", (it) => {
     }).pipe(Effect.scoped),
   );
 
-  it.effect("finds and removes a link left by a previous T3 home", () =>
+  itPosix("finds and removes a link left by a previous T3 home", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
@@ -165,7 +169,7 @@ it.layer(NodeServices.layer)("DesktopCliCommand", (it) => {
     }).pipe(Effect.scoped),
   );
 
-  it.effect("refuses to install behind another t3 that runs first", () =>
+  itPosix("refuses to install behind another t3 that runs first", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
@@ -225,7 +229,7 @@ it.layer(NodeServices.layer)("DesktopCliCommand", (it) => {
       }).pipe(Effect.scoped),
   );
 
-  it.effect("does not treat its own launcher as another t3 when its folder is first on PATH", () =>
+  itPosix("does not treat its own launcher as another t3 when its folder is first on PATH", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
