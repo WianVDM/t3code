@@ -2,14 +2,19 @@
 
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as Config from "effect/Config";
 import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { Command, Flag } from "effect/cli";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
+
+import { decide, readWorkspace } from "../.github/scripts/ci-changes.cjs";
+import { classifyPaths } from "../.github/scripts/pr-ownership-label.cjs";
 
 export const EXPECTED_REMOTES = {
   origin: "WianVDM/t3code",
@@ -21,6 +26,10 @@ const TAG_REF_PREFIX = "refs/tags/";
 const UPSTREAM_RELEASE_REF_PREFIX = "refs/upstream-sync/";
 const UPSTREAM_TAG_PATTERN = /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const FORK_SEQUENCE_PATTERN = /^(0|[1-9]\d*)$/;
+// Only the schedule may ask for it; a dispatched tag must stay strict.
+const LATEST_TAG_KEYWORD = "latest";
+const FULL_OBJECT_SHA_PATTERN = /^[0-9a-f]{40}$/;
+const SUMMARY_SECTION_PATH_LIMIT = 200;
 const CONFLICT_MARKER_PATTERN = /^(?:<{7,}|={7,}|>{7,}|\|{7,})(?:[\t ].*)?$/;
 const VERIFIED_MERGE_RECORD_NAME = "upstream-sync.verified.json";
 
@@ -35,6 +44,63 @@ export type VerifiedMergeRecord = typeof VerifiedMergeRecord.Type;
 const VerifiedMergeRecordJson = Schema.fromJsonString(VerifiedMergeRecord);
 const encodeVerifiedMergeRecord = Schema.encodeEffect(VerifiedMergeRecordJson);
 const decodeVerifiedMergeRecord = Schema.decodeEffect(VerifiedMergeRecordJson);
+
+export const DRY_RUN_REPORT_SCHEMA_VERSION = 1;
+
+export const DryRunStatus = Schema.Literals([
+  "already_integrated",
+  "clean",
+  "conflict",
+  "merge_verification_failed",
+  "error",
+]);
+export type DryRunStatus = typeof DryRunStatus.Type;
+
+export const ClassifiedPathEntry = Schema.Struct({
+  path: Schema.String,
+  category: Schema.Literals(["fork", "seam", "shared"]),
+  diverged: Schema.Boolean,
+});
+export type ClassifiedPathEntry = typeof ClassifiedPathEntry.Type;
+
+export const DryRunConflictEntry = Schema.Struct({
+  path: Schema.String,
+  stages: Schema.Array(Schema.Number),
+});
+export type DryRunConflictEntry = typeof DryRunConflictEntry.Type;
+
+const NullableHex = Schema.NullOr(Schema.String);
+
+// Versioned so the protected sync PR automation (#50) can consume it blindly.
+export const DryRunReport = Schema.Struct({
+  schemaVersion: Schema.Literal(DRY_RUN_REPORT_SCHEMA_VERSION),
+  requestedTag: Schema.String,
+  tag: NullableHex,
+  baseSha: NullableHex,
+  mergeBaseSha: NullableHex,
+  upstreamSha: NullableHex,
+  mergeCommit: NullableHex,
+  tree: NullableHex,
+  status: DryRunStatus,
+  incomingPaths: Schema.Array(Schema.String),
+  classification: Schema.Struct({
+    fork: Schema.Array(ClassifiedPathEntry),
+    seam: Schema.Array(ClassifiedPathEntry),
+    shared: Schema.Array(ClassifiedPathEntry),
+  }),
+  conflicts: Schema.Array(DryRunConflictEntry),
+  windowsPackages: Schema.Array(Schema.String),
+});
+export type DryRunReport = typeof DryRunReport.Type;
+
+const DryRunReportJson = Schema.fromJsonString(DryRunReport);
+export const decodeDryRunReport = Schema.decodeEffect(DryRunReportJson);
+const encodeDryRunReport = Schema.encodeEffect(DryRunReportJson);
+
+// The effect diagnostics forbid JSON.stringify inside Effect generators, so
+// every stringification goes through these pure helpers.
+const jsonText = (value: unknown): string => JSON.stringify(value);
+const prettyJsonText = (value: unknown): string => JSON.stringify(value, null, 2);
 
 export class UpstreamSyncError extends Schema.TaggedError<UpstreamSyncError>()(
   "UpstreamSyncError",
@@ -128,6 +194,302 @@ export function findAddedConflictMarkers(patch: string): string[] {
     if (!line.startsWith("+") || line.startsWith("+++")) return [];
     return findConflictMarkers(line.slice(1));
   });
+}
+
+const compareVersionParts = (a: ReadonlyArray<bigint>, b: ReadonlyArray<bigint>): number => {
+  for (let index = 0; index < 3; index++) {
+    if (a[index] !== b[index]) return a[index]! < b[index]! ? -1 : 1;
+  }
+  return 0;
+};
+
+// Greatest strict stable tag; prereleases, fork tags, and malformed names never win.
+export function selectLatestUpstreamTag(tags: Iterable<string>): string | undefined {
+  let best: string | undefined;
+  let bestParts: ReadonlyArray<bigint> | undefined;
+  for (const candidate of tags) {
+    const version = parseUpstreamTag(candidate);
+    if (version === undefined) continue;
+    const parts = version.split(".").map((part) => BigInt(part));
+    if (bestParts !== undefined && compareVersionParts(parts, bestParts) <= 0) continue;
+    best = candidate;
+    bestParts = parts;
+  }
+  return best;
+}
+
+// `git ls-files -u -s -z` entries look like `<mode> <sha> <stage>\t<path>\0`.
+export function parseConflictStages(
+  paths: ReadonlyArray<string>,
+  lsFilesUnmergedOutput: string,
+): Array<DryRunConflictEntry> {
+  const stagesByPath = new Map<string, Array<number>>();
+  for (const entry of lsFilesUnmergedOutput.split("\0")) {
+    if (entry.length === 0) continue;
+    const tabIndex = entry.indexOf("\t");
+    if (tabIndex < 0) continue;
+    const stage = Number(entry.slice(0, tabIndex).split(/\s+/)[2]);
+    if (!Number.isInteger(stage)) continue;
+    const entryPath = entry.slice(tabIndex + 1);
+    const stages = stagesByPath.get(entryPath) ?? [];
+    stages.push(stage);
+    stagesByPath.set(entryPath, stages);
+  }
+  return paths.map((path) => ({
+    path,
+    stages: [...(stagesByPath.get(path) ?? [])].sort((a, b) => a - b),
+  }));
+}
+
+const summaryList = (lines: ReadonlyArray<string>): Array<string> =>
+  lines.length <= SUMMARY_SECTION_PATH_LIMIT
+    ? [...lines]
+    : [
+        ...lines.slice(0, SUMMARY_SECTION_PATH_LIMIT),
+        `- …and ${lines.length - SUMMARY_SECTION_PATH_LIMIT} more (full list in the JSON report)`,
+      ];
+
+export function renderDryRunSummary(report: DryRunReport, detail: string | null): string {
+  const value = (label: string, text: string | null): string =>
+    `- ${label}: ${text === null ? "(unresolved)" : `\`${text}\``}`;
+  const lines: Array<string> = [
+    "# Upstream sync dry run",
+    "",
+    `- Status: **${report.status}**`,
+    `- Requested tag: ${JSON.stringify(report.requestedTag)}`,
+    value("Resolved tag", report.tag),
+    value("Fork base", report.baseSha),
+    value("Merge base", report.mergeBaseSha),
+    value("Upstream commit", report.upstreamSha),
+    value("Dry-run merge commit", report.mergeCommit),
+    value("Merged tree", report.tree),
+    `- Windows packages: ${
+      report.windowsPackages.length === 0
+        ? "(none)"
+        : report.windowsPackages.map((dir) => `\`${dir}\``).join(" ")
+    }`,
+  ];
+  if (detail !== null) {
+    lines.push("", `> ${detail.split(/\r?\n/).join("\n> ")}`);
+  }
+  lines.push("", `## Incoming paths (${report.incomingPaths.length})`, "");
+  lines.push(`### ++-owned (${report.classification.fork.length})`, "");
+  lines.push(
+    ...(report.classification.fork.length === 0
+      ? ["(none)"]
+      : summaryList(report.classification.fork.map((entry) => `- ${JSON.stringify(entry.path)}`))),
+  );
+  lines.push("", `### Integration seams (${report.classification.seam.length})`, "");
+  lines.push(
+    ...(report.classification.seam.length === 0
+      ? ["(none)"]
+      : summaryList(
+          report.classification.seam.map(
+            (entry) =>
+              `- ${JSON.stringify(entry.path)} (${entry.diverged ? "diverged" : "fork-only"})`,
+          ),
+        )),
+  );
+  lines.push("", `Other shared paths: ${report.classification.shared.length}`);
+  if (report.conflicts.length > 0) {
+    lines.push("", `## Conflicts (${report.conflicts.length})`, "");
+    lines.push(
+      ...summaryList(
+        report.conflicts.map(
+          (conflict) => `- ${JSON.stringify(conflict.path)} (stages ${conflict.stages.join(", ")})`,
+        ),
+      ),
+    );
+  }
+  lines.push(
+    "",
+    "## Verification lanes",
+    "",
+    "Linux and Windows lane states are appended by the report job.",
+  );
+  if (report.status === "conflict" && report.tag !== null) {
+    lines.push(
+      "",
+      "## Conflict recovery",
+      "",
+      "Resolve in the real sync flow:",
+      "",
+      "```sh",
+      `node scripts/upstream-sync.ts prepare --tag ${report.tag}`,
+      "```",
+    );
+  }
+  return `${lines.join("\n")}\n`;
+}
+
+export type DryRunLaneState = "passed" | "verification_failed" | "error" | "skipped";
+export type DryRunOverallOutcome =
+  | "passed"
+  | "already_integrated"
+  | "conflict"
+  | "merge_verification_failed"
+  | "verification_failed"
+  | "error";
+
+export interface LaneOutcomeInput {
+  readonly result: string;
+  readonly verification: string | null;
+}
+
+export interface DryRunOutcomeInput {
+  readonly mergeStatus: string | null;
+  readonly mergeResult: string;
+  readonly reportPresent: boolean;
+  readonly linux: LaneOutcomeInput;
+  readonly windows: LaneOutcomeInput;
+}
+
+export interface DryRunOutcome {
+  readonly outcome: DryRunOverallOutcome;
+  readonly success: boolean;
+  readonly problems: ReadonlyArray<string>;
+  readonly lanes: { readonly linux: DryRunLaneState; readonly windows: DryRunLaneState };
+}
+
+// Fail-closed reporting policy: missing outputs, missing diagnostics,
+// cancellation, lanes in the wrong state, and surprises are infrastructure
+// errors, and an infrastructure error outranks a verification failure.
+export function resolveDryRunOutcome(input: DryRunOutcomeInput): DryRunOutcome {
+  const problems: Array<string> = [];
+  const laneState = (lane: string, { result, verification }: LaneOutcomeInput): DryRunLaneState => {
+    switch (result) {
+      case "success":
+        return "passed";
+      case "failure":
+        if (verification === "verification_failed" || verification === "error") {
+          return verification;
+        }
+        problems.push(
+          `${lane}: failed without a usable verification_result (${JSON.stringify(verification)})`,
+        );
+        return "error";
+      case "skipped":
+        return "skipped";
+      case "cancelled":
+        problems.push(`${lane}: cancelled`);
+        return "error";
+      default:
+        problems.push(`${lane}: unexpected job result ${JSON.stringify(result)}`);
+        return "error";
+    }
+  };
+  const lanes = {
+    linux: laneState("linux", input.linux),
+    windows: laneState("windows", input.windows),
+  };
+
+  const decideOutcome = (): DryRunOverallOutcome => {
+    if (input.mergeResult === "cancelled") {
+      problems.push("the merge job was cancelled");
+      return "error";
+    }
+    if (input.mergeResult === "") {
+      problems.push("the merge job reported no result");
+      return "error";
+    }
+    const status = input.mergeStatus;
+    if (status === null || status === "") {
+      problems.push("the merge job produced no status output");
+      return "error";
+    }
+    if (!input.reportPresent) {
+      problems.push("the diagnostics report artifact is missing");
+      return "error";
+    }
+    const requireSkippedLanes = (because: string) => {
+      for (const [lane, entry] of [
+        ["linux", input.linux],
+        ["windows", input.windows],
+      ] as const) {
+        if (entry.result !== "skipped") {
+          problems.push(`${lane} verification ran despite ${because}`);
+        }
+      }
+    };
+    switch (status) {
+      case "already_integrated": {
+        requireSkippedLanes("an already integrated tag");
+        return "already_integrated";
+      }
+      case "conflict":
+      case "merge_verification_failed": {
+        if (input.mergeResult !== "failure") {
+          problems.push(
+            `the merge job result is ${JSON.stringify(input.mergeResult)} despite ${JSON.stringify(
+              status,
+            )}`,
+          );
+        }
+        requireSkippedLanes(status === "conflict" ? "a conflict" : "a failed merge verification");
+        return status;
+      }
+      case "error": {
+        requireSkippedLanes("an infrastructure error");
+        return "error";
+      }
+      case "clean": {
+        if (input.mergeResult !== "success") {
+          problems.push(
+            `the merge job result is ${JSON.stringify(input.mergeResult)} despite a clean merge`,
+          );
+        }
+        for (const [lane, state] of [
+          ["linux", lanes.linux],
+          ["windows", lanes.windows],
+        ] as const) {
+          if (state === "skipped") {
+            problems.push(`${lane} verification skipped despite a clean merge`);
+          }
+        }
+        if (lanes.linux === "error" || lanes.windows === "error") return "error";
+        if (lanes.linux === "verification_failed" || lanes.windows === "verification_failed") {
+          return "verification_failed";
+        }
+        return "passed";
+      }
+      default:
+        problems.push(`unexpected merge status ${JSON.stringify(status)}`);
+        return "error";
+    }
+  };
+
+  const outcome = decideOutcome();
+  return {
+    outcome: problems.length > 0 ? "error" : outcome,
+    success: problems.length === 0 && (outcome === "passed" || outcome === "already_integrated"),
+    problems,
+    lanes,
+  };
+}
+
+export function renderDryRunOutcomeSummary(
+  input: DryRunOutcomeInput,
+  outcome: DryRunOutcome,
+): string {
+  const lane = (label: string, entry: LaneOutcomeInput, state: DryRunLaneState): string =>
+    `- ${label}: ${state} (job result ${JSON.stringify(entry.result)}, verification ${JSON.stringify(
+      entry.verification,
+    )})`;
+  const lines = [
+    "## Final lane states",
+    "",
+    `- Merge: status ${JSON.stringify(input.mergeStatus)}, job result ${JSON.stringify(
+      input.mergeResult,
+    )}, diagnostics report ${input.reportPresent ? "present" : "missing"}`,
+    lane("Linux verification", input.linux, outcome.lanes.linux),
+    lane("Windows verification", input.windows, outcome.lanes.windows),
+    `- Overall outcome: **${outcome.outcome}**`,
+  ];
+  if (outcome.problems.length > 0) {
+    lines.push("", "Problems:", "");
+    for (const problem of outcome.problems) lines.push(`- ${problem}`);
+  }
+  return `${lines.join("\n")}\n`;
 }
 
 const indentLines = (lines: ReadonlyArray<string>): string =>
@@ -262,6 +624,19 @@ const readVerifiedMergeRecord = Effect.fn("upstream-sync.readVerifiedMergeRecord
   );
 });
 
+const requireExpectedRemotes = Effect.fn("upstream-sync.requireExpectedRemotes")(function* (
+  cwd: string,
+) {
+  for (const [remote, expected] of Object.entries(EXPECTED_REMOTES)) {
+    const url = (yield* git(cwd, ["remote", "get-url", remote])).trim();
+    if (parseGitHubRepository(url) !== expected.toLowerCase()) {
+      return yield* new UpstreamSyncError({
+        message: `Wrong ${remote} remote "${url}". Expected ${expected}.`,
+      });
+    }
+  }
+});
+
 const resolveContext = Effect.fn("upstream-sync.resolveContext")(function* (
   options: UpstreamSyncOptions,
 ) {
@@ -273,14 +648,7 @@ const resolveContext = Effect.fn("upstream-sync.resolveContext")(function* (
 
   const path = yield* Path.Path;
   const cwd = path.resolve(options.cwd);
-  for (const [remote, expected] of Object.entries(EXPECTED_REMOTES)) {
-    const url = (yield* git(cwd, ["remote", "get-url", remote])).trim();
-    if (parseGitHubRepository(url) !== expected.toLowerCase()) {
-      return yield* new UpstreamSyncError({
-        message: `Wrong ${remote} remote "${url}". Expected ${expected}.`,
-      });
-    }
-  }
+  yield* requireExpectedRemotes(cwd);
   return { cwd, tag: options.tag };
 });
 
@@ -534,8 +902,561 @@ export const nextUpstreamForkTag = Effect.fn("upstream-sync.nextTag")(function* 
   return next;
 });
 
+export interface DryRunOptions {
+  readonly tag: string;
+  readonly cwd: string;
+  readonly reportPath?: string | undefined;
+  readonly summaryPath?: string | undefined;
+  readonly githubOutput: boolean;
+  // Test seam; production always computes the surface with the trusted detector.
+  readonly windowsPackages?: ReadonlyArray<string> | undefined;
+}
+
+export interface ReplayDryRunOptions {
+  readonly tag: string;
+  readonly cwd: string;
+  readonly baseSha: string;
+  readonly upstreamSha: string;
+  readonly expectedTree: string;
+}
+
+interface DryRunDraft {
+  requestedTag: string;
+  tag: string | null;
+  baseSha: string | null;
+  mergeBaseSha: string | null;
+  upstreamSha: string | null;
+  mergeCommit: string | null;
+  tree: string | null;
+  status: DryRunStatus;
+  incomingPaths: Array<string>;
+  classification: {
+    fork: Array<ClassifiedPathEntry>;
+    seam: Array<ClassifiedPathEntry>;
+    shared: Array<ClassifiedPathEntry>;
+  };
+  conflicts: Array<DryRunConflictEntry>;
+  windowsPackages: Array<string>;
+}
+
+const emptyDryRunDraft = (requestedTag: string): DryRunDraft => ({
+  requestedTag,
+  tag: null,
+  baseSha: null,
+  mergeBaseSha: null,
+  upstreamSha: null,
+  mergeCommit: null,
+  tree: null,
+  status: "error",
+  incomingPaths: [],
+  classification: { fork: [], seam: [], shared: [] },
+  conflicts: [],
+  windowsPackages: [],
+});
+
+const draftReport = (draft: DryRunDraft): DryRunReport => ({
+  schemaVersion: DRY_RUN_REPORT_SCHEMA_VERSION,
+  requestedTag: draft.requestedTag,
+  tag: draft.tag,
+  baseSha: draft.baseSha,
+  mergeBaseSha: draft.mergeBaseSha,
+  upstreamSha: draft.upstreamSha,
+  mergeCommit: draft.mergeCommit,
+  tree: draft.tree,
+  status: draft.status,
+  incomingPaths: [...draft.incomingPaths],
+  classification: {
+    fork: [...draft.classification.fork],
+    seam: [...draft.classification.seam],
+    shared: [...draft.classification.shared],
+  },
+  conflicts: draft.conflicts.map((conflict) => ({ ...conflict, stages: [...conflict.stages] })),
+  windowsPackages: [...draft.windowsPackages],
+});
+
+const resolveDryRunContext = Effect.fn("upstream-sync.resolveDryRunContext")(function* (
+  cwdOption: string,
+) {
+  const path = yield* Path.Path;
+  const cwd = path.resolve(cwdOption);
+  yield* requireExpectedRemotes(cwd);
+  const status = yield* git(cwd, ["status", "--porcelain=v1", "--untracked-files=all"]);
+  if (status.length > 0) {
+    return yield* new UpstreamSyncError({
+      message: `The working tree must be clean before a dry run:\n${status.trimEnd()}`,
+    });
+  }
+  return cwd;
+});
+
+const fetchUpstreamTagNamespaced = Effect.fn("upstream-sync.fetchUpstreamTagNamespaced")(function* (
+  cwd: string,
+  tag: string,
+) {
+  const releaseRef = upstreamReleaseRef(tag);
+  // --no-tags and a namespaced refspec: a dry run must never write refs/tags/*.
+  yield* git(cwd, [
+    "fetch",
+    "--no-recurse-submodules",
+    "--no-tags",
+    "upstream",
+    `+${TAG_REF_PREFIX}${tag}:${releaseRef}`,
+  ]);
+  return (yield* git(cwd, ["rev-parse", "--verify", `${releaseRef}^{commit}`])).trim();
+});
+
+// Hooks off through an empty hooksPath; the merge target is always an immutable SHA.
+const detachedMergeArgs = (message: string, upstreamSha: string): Array<string> => [
+  "-c",
+  "core.hooksPath=",
+  "merge",
+  "--no-commit",
+  "--no-ff",
+  "--no-edit",
+  "-m",
+  message,
+  upstreamSha,
+];
+
+const unmergedPathsOf = Effect.fn("upstream-sync.unmergedPathsOf")(function* (cwd: string) {
+  return parseNullSeparated(
+    yield* git(cwd, ["diff", "--name-only", "--diff-filter=U", "-z", "--"]),
+  );
+});
+
+const commitDetachedMerge = Effect.fn("upstream-sync.commitDetachedMerge")(function* (cwd: string) {
+  yield* git(cwd, ["-c", "core.hooksPath=", "commit", "--no-gpg-sign", "--no-edit"]);
+});
+
+const readCommitIdentity = Effect.fn("upstream-sync.readCommitIdentity")(function* (cwd: string) {
+  const parentsLine = (yield* git(cwd, ["rev-list", "--parents", "-n", "1", "HEAD"])).trim();
+  const [commit, ...parents] = parentsLine.split(/\s+/);
+  const tree = (yield* git(cwd, ["rev-parse", "--verify", "HEAD^{tree}"])).trim();
+  return { commit: commit ?? "", parents, tree };
+});
+
+const validateWindowsPackageDirs = Effect.fn("upstream-sync.validateWindowsPackageDirs")(function* (
+  cwd: string,
+  dirs: ReadonlyArray<string>,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  for (const dir of dirs) {
+    const info = yield* fs.stat(path.join(cwd, dir)).pipe(
+      Effect.mapError(
+        (cause) =>
+          new UpstreamSyncError({
+            message: `Windows package directory ${dir} is missing from the merged tree: ${cause.message}`,
+          }),
+      ),
+    );
+    if (info.type !== "Directory") {
+      return yield* new UpstreamSyncError({
+        message: `Windows package path ${dir} is not a directory in the merged tree.`,
+      });
+    }
+  }
+  return [...dirs];
+});
+
+export const computeFullWindowsPackages = Effect.fn("upstream-sync.computeFullWindowsPackages")(
+  function* (cwd: string) {
+    // ci-changes resolves the workspace from its own repository root, so the
+    // result is only trustworthy when cwd is that root; the directory check enforces it.
+    const selected = yield* Effect.try({
+      try: () => decide([], readWorkspace(), true).outputs.windows_packages,
+      catch: (cause) =>
+        new UpstreamSyncError({
+          message: `Failed to compute the Windows package surface: ${String(cause)}`,
+        }),
+    });
+    const dirs = selected.split(/\s+/).filter((dir) => dir.length > 0);
+    if (dirs.length === 0) {
+      return yield* new UpstreamSyncError({
+        message: "The trusted change detector selected no Windows packages.",
+      });
+    }
+    return yield* validateWindowsPackageDirs(cwd, dirs);
+  },
+);
+
+const performDryRun = Effect.fn("upstream-sync.performDryRun")(function* (
+  cwd: string,
+  options: DryRunOptions,
+  draft: DryRunDraft,
+) {
+  // Validate the requested form before touching the repository.
+  if (options.tag !== LATEST_TAG_KEYWORD && parseUpstreamTag(options.tag) === undefined) {
+    return yield* new UpstreamSyncError({
+      message: `Invalid upstream tag ${jsonText(options.tag)}. Expected vX.Y.Z or "${LATEST_TAG_KEYWORD}".`,
+    });
+  }
+
+  // --no-tags everywhere: auto-followed tags are what clobber a same-named fork tag.
+  yield* git(cwd, [
+    "fetch",
+    "--no-recurse-submodules",
+    "--no-tags",
+    "origin",
+    "+refs/heads/main:refs/remotes/origin/main",
+  ]);
+  const baseSha = (yield* git(cwd, ["rev-parse", "--verify", "origin/main^{commit}"])).trim();
+  draft.baseSha = baseSha;
+  yield* git(cwd, ["switch", "--detach", baseSha]);
+
+  let tag = options.tag;
+  if (tag === LATEST_TAG_KEYWORD) {
+    const remoteTags = parseLsRemoteTags(
+      yield* git(cwd, ["ls-remote", "--tags", "--refs", "upstream", "refs/tags/v*"]),
+    );
+    const latest = selectLatestUpstreamTag(remoteTags);
+    if (latest === undefined) {
+      return yield* new UpstreamSyncError({
+        message: `No valid upstream stable tag (vX.Y.Z) among ${remoteTags.length} remote tags.`,
+      });
+    }
+    tag = latest;
+  }
+  draft.tag = tag;
+  const upstreamSha = yield* fetchUpstreamTagNamespaced(cwd, tag);
+  draft.upstreamSha = upstreamSha;
+
+  const ancestryArgs = ["merge-base", "--is-ancestor", upstreamSha, baseSha];
+  const ancestry = yield* runGit(cwd, ancestryArgs);
+  if (ancestry.exitCode === 0) {
+    draft.status = "already_integrated";
+    yield* Console.log(
+      `${tag} (${upstreamSha}) is already integrated into ${baseSha}; nothing to verify.`,
+    );
+    return;
+  }
+  if (ancestry.exitCode !== 1) {
+    return yield* new GitCommandError({ args: ancestryArgs, ...ancestry });
+  }
+
+  // merge-base...upstream so fork-only files are not reported as deletions, and
+  // --no-renames so a rename surfaces as the two paths the merge actually touches.
+  const mergeBaseSha = (yield* git(cwd, ["merge-base", baseSha, upstreamSha])).trim();
+  draft.mergeBaseSha = mergeBaseSha;
+  draft.incomingPaths = parseNullSeparated(
+    yield* git(cwd, [
+      "diff",
+      "--name-only",
+      "--no-renames",
+      "-z",
+      `${mergeBaseSha}...${upstreamSha}`,
+      "--",
+    ]),
+  );
+  const classification = classifyPaths(draft.incomingPaths);
+  draft.classification = {
+    fork: [...classification.fork],
+    seam: [...classification.seam],
+    shared: [...classification.shared],
+  };
+
+  const mergeArgs = detachedMergeArgs(`Dry-run merge tag '${tag}'`, upstreamSha);
+  const merge = yield* runGit(cwd, mergeArgs);
+  if (merge.exitCode !== 0) {
+    const conflicts = yield* unmergedPathsOf(cwd);
+    if (conflicts.length === 0) {
+      return yield* new GitCommandError({ args: mergeArgs, ...merge });
+    }
+    draft.conflicts = parseConflictStages(
+      conflicts,
+      yield* git(cwd, ["ls-files", "-u", "-s", "-z", "--"]),
+    );
+    draft.status = "conflict";
+    return yield* new UpstreamSyncError({
+      message: `Merging ${tag} into the fork base conflicts:\n${indentLines(conflicts)}\nResolve through the real sync flow: node scripts/upstream-sync.ts prepare --tag ${tag}`,
+    });
+  }
+
+  const verification = yield* verifyMergeState(cwd, tag).pipe(
+    Effect.map((state) => ({ state }) as const),
+    Effect.catch((error) => Effect.succeed({ error } as const)),
+  );
+  if ("error" in verification) {
+    draft.status = "merge_verification_failed";
+    return yield* new UpstreamSyncError({
+      message: `The clean merge of ${tag} failed integrity verification: ${verification.error.message}`,
+    });
+  }
+
+  yield* commitDetachedMerge(cwd);
+  const identity = yield* readCommitIdentity(cwd);
+  if (
+    identity.parents.length !== 2 ||
+    identity.parents[0] !== baseSha ||
+    identity.parents[1] !== upstreamSha
+  ) {
+    return yield* new UpstreamSyncError({
+      message: `The dry-run merge commit ${identity.commit} has parents [${identity.parents.join(
+        ", ",
+      )}], expected exactly [${baseSha}, ${upstreamSha}].`,
+    });
+  }
+  draft.mergeCommit = identity.commit;
+  draft.tree = identity.tree;
+  draft.status = "clean";
+
+  draft.windowsPackages =
+    options.windowsPackages === undefined
+      ? yield* computeFullWindowsPackages(cwd)
+      : yield* validateWindowsPackageDirs(cwd, options.windowsPackages);
+});
+
+const writeDryRunArtifacts = Effect.fn("upstream-sync.writeDryRunArtifacts")(function* (
+  options: DryRunOptions,
+  report: DryRunReport,
+  detail: string | null,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const writeFile = (target: string, contents: string, label: string) =>
+    fs.writeFileString(target, contents).pipe(
+      Effect.mapError(
+        (cause) =>
+          new UpstreamSyncError({
+            message: `Failed to write the ${label} at ${target}: ${cause.message}`,
+          }),
+      ),
+    );
+
+  if (options.reportPath !== undefined) {
+    // Encoding through the versioned schema validates before anything consumes the file.
+    const json = yield* encodeDryRunReport(report).pipe(
+      Effect.mapError(
+        (cause) =>
+          new UpstreamSyncError({
+            message: `Failed to encode the dry-run report: ${String(cause)}`,
+          }),
+      ),
+    );
+    yield* writeFile(options.reportPath, `${json}\n`, "JSON report");
+  }
+  if (options.summaryPath !== undefined) {
+    yield* writeFile(options.summaryPath, renderDryRunSummary(report, detail), "Markdown summary");
+  }
+  if (options.githubOutput) {
+    const outputPath = yield* Config.NonEmptyString("GITHUB_OUTPUT").pipe(
+      Effect.mapError(
+        (cause) =>
+          new UpstreamSyncError({ message: `Failed to resolve GITHUB_OUTPUT: ${String(cause)}` }),
+      ),
+    );
+    const entries = [
+      ["status", report.status],
+      ["requested_tag", report.requestedTag],
+      ["tag", report.tag ?? ""],
+      ["base_sha", report.baseSha ?? ""],
+      ["merge_base_sha", report.mergeBaseSha ?? ""],
+      ["upstream_sha", report.upstreamSha ?? ""],
+      ["merge_commit", report.mergeCommit ?? ""],
+      ["merge_tree", report.tree ?? ""],
+      ["windows_packages", report.windowsPackages.join(" ")],
+    ] as const;
+    for (const [key, value] of entries) {
+      if (/[\r\n]/.test(value)) {
+        return yield* new UpstreamSyncError({
+          message: `Refusing to write a multiline ${key} value to GITHUB_OUTPUT.`,
+        });
+      }
+    }
+    yield* writeFile(
+      outputPath,
+      entries.map(([key, value]) => `${key}=${value}\n`).join(""),
+      "GitHub outputs",
+    );
+  }
+});
+
+export const dryRunUpstreamSync = Effect.fn("upstream-sync.dryRun")(function* (
+  options: DryRunOptions,
+) {
+  const draft = emptyDryRunDraft(options.tag);
+  const failure: { error?: UpstreamSyncError | GitCommandError } = {};
+  yield* resolveDryRunContext(options.cwd).pipe(
+    Effect.flatMap((cwd) => performDryRun(cwd, options, draft)),
+    Effect.catch((error) =>
+      Effect.sync(() => {
+        failure.error = error;
+      }),
+    ),
+  );
+  const report = draftReport(draft);
+  yield* writeDryRunArtifacts(options, report, failure.error?.message ?? null);
+  yield* Console.log(
+    `Dry-run status: ${report.status}${report.tag === null ? "" : ` for ${report.tag}`}: ` +
+      `${report.incomingPaths.length} incoming paths, ${report.conflicts.length} conflicts, ` +
+      `${report.windowsPackages.length} Windows packages.`,
+  );
+  for (const conflict of report.conflicts.slice(0, 10)) {
+    yield* Console.log(`  conflict: ${conflict.path} (stages ${conflict.stages.join(", ")})`);
+  }
+  if (failure.error !== undefined) return yield* failure.error;
+  return report;
+});
+
+export const replayDryRun = Effect.fn("upstream-sync.replayDryRun")(function* (
+  options: ReplayDryRunOptions,
+) {
+  if (parseUpstreamTag(options.tag) === undefined) {
+    return yield* new UpstreamSyncError({
+      message: `Invalid upstream tag ${jsonText(options.tag)}. Expected vX.Y.Z.`,
+    });
+  }
+  for (const [label, value] of [
+    ["base SHA", options.baseSha],
+    ["upstream SHA", options.upstreamSha],
+    ["expected tree", options.expectedTree],
+  ] as const) {
+    if (!FULL_OBJECT_SHA_PATTERN.test(value)) {
+      return yield* new UpstreamSyncError({
+        message: `The ${label} ${jsonText(value)} must be a full lowercase hex object SHA.`,
+      });
+    }
+  }
+
+  const cwd = yield* resolveDryRunContext(options.cwd);
+
+  // Never replay on a branch: the commit must not be able to move a source ref.
+  const symbolicRef = yield* runGit(cwd, ["symbolic-ref", "-q", "HEAD"]);
+  if (symbolicRef.exitCode === 0) {
+    return yield* new UpstreamSyncError({
+      message: `Replay requires a detached HEAD, but ${symbolicRef.stdout.trim()} is checked out. Refusing to move a branch.`,
+    });
+  }
+  const head = (yield* git(cwd, ["rev-parse", "--verify", "HEAD^{commit}"])).trim();
+  if (head !== options.baseSha) {
+    return yield* new UpstreamSyncError({
+      message: `The checked-out base ${head} does not match the dry-run base ${options.baseSha}.`,
+    });
+  }
+
+  const upstreamSha = yield* fetchUpstreamTagNamespaced(cwd, options.tag);
+  if (upstreamSha !== options.upstreamSha) {
+    return yield* new UpstreamSyncError({
+      message: `Tag ${options.tag} now resolves to ${upstreamSha}, not the merged ${options.upstreamSha}. The tag moved since the dry run.`,
+    });
+  }
+
+  const mergeArgs = detachedMergeArgs(`Dry-run replay merge tag '${options.tag}'`, upstreamSha);
+  const merge = yield* runGit(cwd, mergeArgs);
+  if (merge.exitCode !== 0) {
+    const conflicts = yield* unmergedPathsOf(cwd);
+    if (conflicts.length > 0) {
+      return yield* new UpstreamSyncError({
+        message: `Replaying the merge of ${options.tag} onto ${options.baseSha} conflicted even though the dry run merged cleanly:\n${indentLines(
+          conflicts,
+        )}`,
+      });
+    }
+    return yield* new GitCommandError({ args: mergeArgs, ...merge });
+  }
+
+  yield* verifyMergeState(cwd, options.tag);
+  yield* commitDetachedMerge(cwd);
+  const identity = yield* readCommitIdentity(cwd);
+  if (
+    identity.parents.length !== 2 ||
+    identity.parents[0] !== options.baseSha ||
+    identity.parents[1] !== options.upstreamSha
+  ) {
+    return yield* new UpstreamSyncError({
+      message: `The replay merge commit ${identity.commit} has parents [${identity.parents.join(
+        ", ",
+      )}], expected exactly [${options.baseSha}, ${options.upstreamSha}].`,
+    });
+  }
+  if (identity.tree !== options.expectedTree) {
+    return yield* new UpstreamSyncError({
+      message: `The replay produced tree ${identity.tree}, expected ${options.expectedTree}.`,
+    });
+  }
+
+  yield* Console.log(
+    `Replayed the clean merge of ${options.tag} at ${identity.commit} (tree ${identity.tree}).`,
+  );
+  return { mergeCommit: identity.commit, tree: identity.tree };
+});
+
+const resolveDryRunOutcomeCommand = Effect.fn("upstream-sync.resolveOutcome")(function* (
+  githubOutput: boolean,
+  lanesPath: string | undefined,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const readEnv = (name: string) =>
+    Config.String(name).pipe(
+      Config.withDefault(""),
+      Effect.mapError(
+        (cause) => new UpstreamSyncError({ message: `Failed to read ${name}: ${String(cause)}` }),
+      ),
+    );
+  const nullWhenEmpty = (value: string): string | null => (value === "" ? null : value);
+  const input: DryRunOutcomeInput = {
+    mergeStatus: nullWhenEmpty(yield* readEnv("DRY_RUN_MERGE_STATUS")),
+    mergeResult: yield* readEnv("DRY_RUN_MERGE_RESULT"),
+    reportPresent: (yield* readEnv("DRY_RUN_REPORT_PRESENT")) === "true",
+    linux: {
+      result: yield* readEnv("DRY_RUN_LINUX_RESULT"),
+      verification: nullWhenEmpty(yield* readEnv("DRY_RUN_LINUX_VERIFICATION")),
+    },
+    windows: {
+      result: yield* readEnv("DRY_RUN_WINDOWS_RESULT"),
+      verification: nullWhenEmpty(yield* readEnv("DRY_RUN_WINDOWS_VERIFICATION")),
+    },
+  };
+  const outcome = resolveDryRunOutcome(input);
+
+  if (lanesPath !== undefined) {
+    yield* fs.writeFileString(lanesPath, renderDryRunOutcomeSummary(input, outcome)).pipe(
+      Effect.mapError(
+        (cause) =>
+          new UpstreamSyncError({
+            message: `Failed to write the lane states at ${lanesPath}: ${cause.message}`,
+          }),
+      ),
+    );
+  }
+  if (githubOutput) {
+    const outputPath = yield* Config.NonEmptyString("GITHUB_OUTPUT").pipe(
+      Effect.mapError(
+        (cause) =>
+          new UpstreamSyncError({ message: `Failed to resolve GITHUB_OUTPUT: ${String(cause)}` }),
+      ),
+    );
+    const serialized = `outcome=${outcome.outcome}\noutcome_json=${jsonText(outcome).replace(
+      /[\r\n]/g,
+      " ",
+    )}\n`;
+    yield* fs.writeFileString(outputPath, serialized, { flag: "a" }).pipe(
+      Effect.mapError(
+        (cause) =>
+          new UpstreamSyncError({
+            message: `Failed to append the outcome to ${outputPath}: ${cause.message}`,
+          }),
+      ),
+    );
+  }
+
+  yield* Console.log(prettyJsonText(outcome));
+  for (const problem of outcome.problems) {
+    yield* Console.error(`::error::${problem}`);
+  }
+  if (!outcome.success) {
+    return yield* new UpstreamSyncError({
+      message: `Dry-run outcome: ${outcome.outcome}`,
+    });
+  }
+});
+
 const sharedFlags = {
-  tag: Flag.String("tag").pipe(Flag.withDescription("Upstream release tag in vX.Y.Z form.")),
+  tag: Flag.String("tag").pipe(
+    Flag.withDescription('Upstream release tag in vX.Y.Z form; dry-run also accepts "latest".'),
+    // Optional at the parser level so resolve-outcome needs no tag; every
+    // tag-taking command rejects a missing value with the error below.
+    Flag.optional,
+  ),
   cwd: Flag.String("cwd").pipe(
     Flag.withDescription("Repository directory."),
     Flag.withDefault("."),
@@ -546,11 +1467,15 @@ const upstreamSyncRootCommand = Command.make("upstream-sync").pipe(
   Command.withSharedFlags(sharedFlags),
 );
 
+const missingTagError = () => new UpstreamSyncError({ message: "Missing required flag --tag." });
+
 const runWithSharedOptions = Effect.fn("upstream-sync.runWithSharedOptions")(function* <A, E, R>(
   operation: (options: UpstreamSyncOptions) => Effect.Effect<A, E, R>,
 ) {
   const options = yield* upstreamSyncRootCommand;
-  yield* operation(options);
+  const tag = Option.getOrUndefined(options.tag);
+  if (tag === undefined) return yield* missingTagError();
+  yield* operation({ tag, cwd: options.cwd });
 });
 
 export const prepareCommand = Command.make("prepare").pipe(
@@ -573,9 +1498,98 @@ export const nextTagCommand = Command.make("next-tag").pipe(
   Command.withHandler(() => runWithSharedOptions(nextUpstreamForkTag)),
 );
 
+export const dryRunCommand = Command.make("dry-run", {
+  report: Flag.String("report").pipe(
+    Flag.withDescription("Write the versioned JSON report to this path."),
+    Flag.optional,
+  ),
+  summary: Flag.String("summary").pipe(
+    Flag.withDescription("Write the Markdown summary to this path."),
+    Flag.optional,
+  ),
+  githubOutput: Flag.Boolean("github-output").pipe(
+    Flag.withDescription("Append the dry-run values to GITHUB_OUTPUT."),
+    Flag.withDefault(false),
+  ),
+}).pipe(
+  Command.withDescription(
+    "Merge an upstream tag into the fork base on a detached ref, read-only, and report the outcome.",
+  ),
+  Command.withHandler((config) =>
+    Effect.gen(function* () {
+      const shared = yield* upstreamSyncRootCommand;
+      const tag = Option.getOrUndefined(shared.tag);
+      if (tag === undefined) return yield* missingTagError();
+      yield* dryRunUpstreamSync({
+        tag,
+        cwd: shared.cwd,
+        reportPath: Option.getOrUndefined(config.report),
+        summaryPath: Option.getOrUndefined(config.summary),
+        githubOutput: config.githubOutput,
+      });
+    }),
+  ),
+);
+
+export const replayDryRunCommand = Command.make("replay-dry-run", {
+  baseSha: Flag.String("base-sha").pipe(
+    Flag.withDescription("Full fork base SHA the dry run merged."),
+  ),
+  upstreamSha: Flag.String("upstream-sha").pipe(
+    Flag.withDescription("Full upstream commit SHA the dry run merged."),
+  ),
+  expectedTree: Flag.String("expected-tree").pipe(
+    Flag.withDescription("Full tree SHA the verified dry-run merge produced."),
+  ),
+}).pipe(
+  Command.withDescription(
+    "Reproduce a verified dry-run merge from scratch and fail on any identity mismatch.",
+  ),
+  Command.withHandler((config) =>
+    Effect.gen(function* () {
+      const shared = yield* upstreamSyncRootCommand;
+      const tag = Option.getOrUndefined(shared.tag);
+      if (tag === undefined) return yield* missingTagError();
+      yield* replayDryRun({
+        tag,
+        cwd: shared.cwd,
+        baseSha: config.baseSha,
+        upstreamSha: config.upstreamSha,
+        expectedTree: config.expectedTree,
+      });
+    }),
+  ),
+);
+
+export const resolveOutcomeCommand = Command.make("resolve-outcome", {
+  githubOutput: Flag.Boolean("github-output").pipe(
+    Flag.withDescription("Append the overall outcome to GITHUB_OUTPUT."),
+    Flag.withDefault(false),
+  ),
+  lanes: Flag.String("lanes").pipe(
+    Flag.withDescription("Write the final lane states Markdown to this path."),
+    Flag.optional,
+  ),
+}).pipe(
+  Command.withDescription(
+    "Apply the fail-closed outcome matrix to the DRY_RUN_* lane environment values.",
+  ),
+  Command.withHandler((config) =>
+    resolveDryRunOutcomeCommand(config.githubOutput, Option.getOrUndefined(config.lanes)),
+  ),
+);
+
 export const upstreamSyncCommand = upstreamSyncRootCommand.pipe(
   Command.withDescription("Synchronize an upstream release into the fork in explicit phases."),
-  Command.withSubcommands([prepareCommand, verifyCommand, finishCommand, nextTagCommand]),
+  Command.withSubcommands([
+    prepareCommand,
+    verifyCommand,
+    finishCommand,
+    nextTagCommand,
+    dryRunCommand,
+    replayDryRunCommand,
+    resolveOutcomeCommand,
+  ]),
 );
 
 if (import.meta.main) {

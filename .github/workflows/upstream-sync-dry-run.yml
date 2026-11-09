@@ -1,0 +1,314 @@
+# Read-only upstream sync dry run (#49). Nightly, or dispatched with a strict
+# tag, this rehearses the next upstream sync without ever pushing, writing a
+# ref, opening a PR, or holding a secret: the merge happens on a detached HEAD
+# with hooks disabled, clean merges are replayed and verified independently on
+# Linux and Windows, and the report job fails closed on any missing, cancelled,
+# or unexpected outcome. The real sync flow stays the manual one documented in
+# docs/operations/release.md.
+name: Upstream Sync Dry Run
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Upstream release tag to rehearse, e.g. v1.2.3. Strict vX.Y.Z only: no branches, SHAs, prereleases, or 'latest'."
+        type: string
+        required: true
+  schedule:
+    # Daily; picks the greatest strict stable upstream tag itself.
+    - cron: "17 6 * * *"
+
+permissions:
+  contents: read
+  id-token: none
+
+concurrency:
+  group: upstream-sync-dry-run-main
+  cancel-in-progress: false
+
+jobs:
+  merge:
+    name: Dry-run merge
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # Manual runs carry a validated tag; the schedule resolves "latest".
+      REQUESTED_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || 'latest' }}
+    outputs:
+      status: ${{ steps.dry_run.outputs.status }}
+      tag: ${{ steps.dry_run.outputs.tag }}
+      base_sha: ${{ steps.dry_run.outputs.base_sha }}
+      upstream_sha: ${{ steps.dry_run.outputs.upstream_sha }}
+      merge_commit: ${{ steps.dry_run.outputs.merge_commit }}
+      merge_tree: ${{ steps.dry_run.outputs.merge_tree }}
+      windows_packages: ${{ steps.dry_run.outputs.windows_packages }}
+    steps:
+      - name: Require the default branch and a strict tag
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          if [[ "$GITHUB_REF" != "refs/heads/$DEFAULT_BRANCH" ]]; then
+            echo "::error::The upstream dry run only runs on the default branch; got $GITHUB_REF." >&2
+            exit 1
+          fi
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            # Env-carried, never shell-interpolated: rejects branches, SHAs,
+            # prereleases, ref syntax, whitespace, newlines, option-like values,
+            # and "latest".
+            if ! [[ "$REQUESTED_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+              echo "::error::tag must be a strict upstream release tag vX.Y.Z." >&2
+              exit 1
+            fi
+          fi
+
+      # Full history so the merge sees the real ancestry; no credentials ever.
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Point upstream at the canonical repository
+        run: |
+          git remote get-url upstream >/dev/null 2>&1 ||
+            git remote add upstream https://github.com/pingdotgg/t3code.git
+          git remote get-url origin
+          git remote get-url upstream
+
+      - name: Setup Vite+
+        uses: ./.github/actions/setup-ci-deps
+
+      # The dry run must be driven by helpers this commit already trusts.
+      - name: Test the trusted helpers
+        run: node --test .github/scripts/ci-changes.test.cjs .github/scripts/pr-ownership-label.test.cjs
+
+      - name: Dry-run merge
+        id: dry_run
+        run: node scripts/upstream-sync.ts dry-run --tag "$REQUESTED_TAG" --cwd . --report "$RUNNER_TEMP/upstream-sync-report.json" --summary "$RUNNER_TEMP/upstream-sync-report.md" --github-output
+
+      - name: Upload diagnostics
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: upstream-sync-dry-run-report
+          path: |
+            ${{ runner.temp }}/upstream-sync-report.json
+            ${{ runner.temp }}/upstream-sync-report.md
+          if-no-files-found: warn
+
+      - name: Write basic results to the step summary
+        if: ${{ !cancelled() }}
+        run: |
+          if [[ -s "$RUNNER_TEMP/upstream-sync-report.md" ]]; then
+            cat "$RUNNER_TEMP/upstream-sync-report.md" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "The dry run produced no summary; see the job log." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  # Replays the clean merge from scratch and runs the changed-file checks.
+  # Independent of the Windows lane: one lane failing cannot suppress the other.
+  verify_linux:
+    name: Verify merge (Linux)
+    needs: merge
+    if: ${{ !cancelled() && needs.merge.outputs.status == 'clean' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    outputs:
+      verification_result: ${{ steps.result.outputs.result }}
+    steps:
+      - name: Require the replay inputs
+        env:
+          DRY_TAG: ${{ needs.merge.outputs.tag }}
+          DRY_BASE_SHA: ${{ needs.merge.outputs.base_sha }}
+          DRY_UPSTREAM_SHA: ${{ needs.merge.outputs.upstream_sha }}
+          DRY_MERGE_TREE: ${{ needs.merge.outputs.merge_tree }}
+        run: |
+          if [[ -z "$DRY_TAG" || -z "$DRY_BASE_SHA" || -z "$DRY_UPSTREAM_SHA" || -z "$DRY_MERGE_TREE" ]]; then
+            echo "::error::a clean merge must supply tag, base SHA, upstream SHA, and merge tree." >&2
+            exit 1
+          fi
+          if ! [[ "$DRY_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::the merge job supplied a malformed tag." >&2
+            exit 1
+          fi
+          for value in "$DRY_BASE_SHA" "$DRY_UPSTREAM_SHA" "$DRY_MERGE_TREE"; do
+            if ! [[ "$value" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "::error::the merge job supplied a malformed SHA or tree." >&2
+              exit 1
+            fi
+          done
+
+      - name: Checkout the dry-run base
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.merge.outputs.base_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Point upstream at the canonical repository
+        run: |
+          git remote get-url upstream >/dev/null 2>&1 ||
+            git remote add upstream https://github.com/pingdotgg/t3code.git
+          git remote get-url upstream
+
+      # Prerequisites the current checks need: process-tree fixtures compile
+      # with cc, and the desktop tests build the browser secret helper.
+      - name: Install C toolchain and secret helper build libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential libsecret-1-dev pkg-config
+          command -v cc
+
+      - name: Setup Vite+ (trusted base dependencies)
+        uses: ./.github/actions/setup-ci-deps
+
+      # Any identity mismatch fails here, before merged dependencies or tests.
+      - name: Replay the merge
+        env:
+          DRY_TAG: ${{ needs.merge.outputs.tag }}
+          DRY_BASE_SHA: ${{ needs.merge.outputs.base_sha }}
+          DRY_UPSTREAM_SHA: ${{ needs.merge.outputs.upstream_sha }}
+          DRY_MERGE_TREE: ${{ needs.merge.outputs.merge_tree }}
+        run: node scripts/upstream-sync.ts replay-dry-run --tag "$DRY_TAG" --base-sha "$DRY_BASE_SHA" --upstream-sha "$DRY_UPSTREAM_SHA" --expected-tree "$DRY_MERGE_TREE" --cwd .
+
+      - name: Setup Vite+ (merged dependencies)
+        uses: ./.github/actions/setup-ci-deps
+
+      - name: Cache Electron download
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/electron
+          key: electron-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('node_modules/.pnpm/electron@*/node_modules/electron/package.json') }}
+
+      - name: Ensure Electron runtime is installed
+        run: vp run --filter @t3tools/desktop ensure:electron
+
+      - name: Resolve Playwright version
+        id: playwright_version
+        run: echo "version=$(node -p "require('./apps/web/node_modules/playwright/package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Chromium
+        id: chromium_cache
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-shell-${{ runner.os }}-${{ runner.arch }}-${{ steps.playwright_version.outputs.version }}
+
+      - name: Install Chromium for web browser tests
+        if: steps.chromium_cache.outputs.cache-hit != 'true'
+        run: node apps/web/node_modules/playwright/cli.js install --only-shell chromium
+
+      - name: Install missing Chromium system dependencies
+        run: |
+          browser=$(find "$HOME/.cache/ms-playwright" -name chrome-headless-shell -type f -print -quit)
+          test -n "$browser"
+          if ldd "$browser" | grep '=> not found'; then
+            node apps/web/node_modules/playwright/cli.js install-deps chromium
+          fi
+
+      - name: Verify the merged tree
+        id: check
+        env:
+          DRY_BASE_SHA: ${{ needs.merge.outputs.base_sha }}
+        run: vp run check:changed "$DRY_BASE_SHA"
+
+      # Anything that kept the check from running and failing on its own is an
+      # infrastructure error, never a silent pass.
+      - name: Record verification result
+        id: result
+        if: always()
+        env:
+          CHECK_OUTCOME: ${{ steps.check.outcome }}
+        run: |
+          result=error
+          case "$CHECK_OUTCOME" in
+            success) result=passed ;;
+            failure) result=verification_failed ;;
+          esac
+          echo "result=$result" >> "$GITHUB_OUTPUT"
+
+  # Full distribution scope, replayed independently of Linux.
+  windows:
+    name: Verify merge (Windows)
+    needs: merge
+    if: ${{ !cancelled() && needs.merge.outputs.status == 'clean' }}
+    uses: ./.github/workflows/windows-tests.yml
+    with:
+      package: ${{ needs.merge.outputs.windows_packages }}
+      dry_run_tag: ${{ needs.merge.outputs.tag }}
+      dry_run_base_sha: ${{ needs.merge.outputs.base_sha }}
+      dry_run_upstream_sha: ${{ needs.merge.outputs.upstream_sha }}
+      dry_run_merge_tree: ${{ needs.merge.outputs.merge_tree }}
+
+  # Fail-closed aggregation: missing outputs or diagnostics, cancelled or
+  # skipped lanes, and unexpected states are errors, and an infrastructure
+  # error outranks a verification failure on the other lane.
+  report:
+    name: Report
+    needs: [merge, verify_linux, windows]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      outcome: ${{ steps.outcome.outputs.outcome }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Vite+
+        uses: ./.github/actions/setup-ci-deps
+
+      - name: Download diagnostics
+        id: diagnostics
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          name: upstream-sync-dry-run-report
+          path: ${{ runner.temp }}/diagnostics
+
+      - name: Resolve the outcome
+        id: outcome
+        env:
+          DRY_RUN_MERGE_STATUS: ${{ needs.merge.outputs.status }}
+          DRY_RUN_MERGE_RESULT: ${{ needs.merge.result }}
+          DRY_RUN_REPORT_PRESENT: ${{ steps.diagnostics.outcome == 'success' }}
+          DRY_RUN_LINUX_RESULT: ${{ needs.verify_linux.result }}
+          DRY_RUN_LINUX_VERIFICATION: ${{ needs.verify_linux.outputs.verification_result }}
+          DRY_RUN_WINDOWS_RESULT: ${{ needs.windows.result }}
+          DRY_RUN_WINDOWS_VERIFICATION: ${{ needs.windows.outputs.verification_result }}
+        run: node scripts/upstream-sync.ts resolve-outcome --github-output --lanes "$RUNNER_TEMP/final-lane-states.md"
+
+      - name: Write the final summary
+        if: ${{ !cancelled() }}
+        env:
+          OUTCOME: ${{ steps.outcome.outputs.outcome }}
+        run: |
+          {
+            if [[ -s "$RUNNER_TEMP/diagnostics/upstream-sync-report.md" ]]; then
+              cat "$RUNNER_TEMP/diagnostics/upstream-sync-report.md"
+            fi
+            echo
+            if [[ -s "$RUNNER_TEMP/final-lane-states.md" ]]; then
+              cat "$RUNNER_TEMP/final-lane-states.md"
+            else
+              echo "## Final lane states"
+              echo
+              echo "The outcome step produced no lane states (outcome: ${OUTCOME:-unknown})."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the final report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: upstream-sync-dry-run-final
+          path: |
+            ${{ runner.temp }}/diagnostics/
+            ${{ runner.temp }}/final-lane-states.md
+          if-no-files-found: warn

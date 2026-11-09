@@ -262,6 +262,49 @@ Upstream stable is this fork's base. Keep that path ordinary:
 4. Dispatch a nightly on the new base and verify it.
 5. Dispatch stable with `version` empty. The ++ revision starts again at `.1` on the new base.
 
+### Rehearsing a sync with the dry run
+
+The **Upstream Sync Dry Run** workflow answers "would today's upstream release merge cleanly, and
+does the result pass our checks?" without touching anything. It runs on a schedule each morning and
+can be dispatched by hand from the default branch.
+
+- **Scheduled** runs pick the greatest strict stable upstream tag (`vX.Y.Z`) themselves.
+- **Manual** runs take one `tag`, which must be a strict `vX.Y.Z`: branches, SHAs, prereleases,
+  `latest`, and anything option-like are rejected. A manual tag never falls back to the newest.
+
+The merge job fetches the fork base and the tag into a disposable `refs/upstream-sync/` ref, merges
+on a detached HEAD with hooks disabled, and runs the same integrity checks the real sync uses. It
+never creates a branch, moves a tag, pushes, opens a PR, or holds a secret or write token. A clean
+merge is then replayed from scratch and verified twice: `check:changed` against the base on Linux,
+and the full seven-package Windows distribution lane. The lanes are independent, so one failing
+cannot hide the other.
+
+Read the result from the run's job summary and the `upstream-sync-dry-run-final` artifact. The
+report names the outcome and splits incoming paths into ++-owned, integration-seam, and shared code
+with the same registry that labels ++ PRs, so a conflict arrives already sorted by who owns it:
+
+- **already integrated** and **passed** succeed; nothing to do until you choose to sync.
+- **conflict** lists the unmerged paths and stages. Recover with the real flow below.
+- **merge verification failed** means the merge was clean but broke an integrity check, such as a
+  leftover conflict marker; treat it like a conflict.
+- **verification failed** means the merged tree failed the Linux or Windows checks.
+- **error** is an infrastructure failure, a missing report, a cancelled lane, or an unexpected
+  state. Reporting fails closed: any of these outranks a passing sibling lane.
+
+A dry run is reconnaissance, not the sync. It changes no ref, so it cannot land upstream code. When
+the dry run is green and you want the change, run the real phases that do move refs, in order:
+
+```sh
+node scripts/upstream-sync.ts prepare --tag vX.Y.Z   # branch + staged merge, uncommitted
+node scripts/upstream-sync.ts verify --tag vX.Y.Z     # integrity-check the pending merge
+node scripts/upstream-sync.ts finish --tag vX.Y.Z     # commit exactly the verified tree
+node scripts/upstream-sync.ts next-tag --tag vX.Y.Z   # next fork release tag
+```
+
+Resolve a conflict the dry run predicted in the `prepare` step, then `verify` and `finish`. The dry
+run and these phases share their merge and integrity code; only the dry run refuses to keep the
+result.
+
 ## Required credentials
 
 None. Current ++ desktop releases are unsigned: the Windows installer and CLI archive carry no
