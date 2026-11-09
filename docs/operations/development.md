@@ -283,6 +283,26 @@ secrets. Do not add a workflow that installs, builds, or tests untrusted code un
 `pull_request_target`; [pr-size.yml](../../.github/workflows/pr-size.yml) is the narrow exception and
 reads PR commits only as passive git data.
 
+### Upstream sync designations
+
+`upstream-sync` is a protected designation, not a taxonomy tag: a verified designation forces the
+full CI pipeline (Windows included) plus the `Upstream Sync Merge` identity validation on a sync PR,
+and an invalid or unproven claim forces the same full run and fails `Check`. Only maintainers/triage
+may attach or remove it, plus the reconciliation workflow's own official `github-actions[bot]`
+writes; [upstream-sync-pr.yml](../../.github/workflows/upstream-sync-pr.yml) removes unauthorized
+additions and restores unauthorized removals of a provable designation.
+
+The fork-boundary check (#39, A7) is not implemented yet. When it lands, it must resolve the
+designation through `resolveUpstreamSyncDesignation` in
+[upstream-sync-pr.cjs](../../.github/scripts/upstream-sync-pr.cjs), executed from trusted base code:
+
+- Exclude only PRs whose designation resolves to `designated`. Nothing else is a sync PR.
+- `invalid` results and lookup errors mean no exclusion, and the error must be surfaced; never fail
+  open into skipping the boundary check.
+- Never infer the designation from the raw label's presence, branch name, PR title or body, or the
+  author. Those are all attacker-controlled inputs; the resolver's timeline and permission proof is
+  the only source of truth.
+
 ## Desktop artifacts
 
 Local artifact builds are unsigned by default and write to `release/`:

@@ -48,11 +48,13 @@ const GATES = [
   "build",
   "release_smoke",
   "rust",
+  "sync_designation_error",
   "test",
   "test_packages",
   "test_server",
   "test_web",
   "typecheck",
+  "upstream_sync",
   "windows",
   "windows_packages",
 ];
@@ -266,6 +268,52 @@ for (const file of ["apps/server/src/ws.ts", "apps/web/src/App.tsx", "apps/mobil
   });
 }
 
+// The protected upstream-sync designation (#50): a verified claim forces the
+// full run plus the merge job; an invalid or unproven claim forces the same
+// full run and additionally fails Check; no claim keeps ordinary filtering.
+test("an ordinary change leaves the sync gates off", () => {
+  const { outputs } = decide(["apps/web/src/App.tsx"], packages, false);
+  assert.equal(outputs.upstream_sync, false);
+  assert.equal(outputs.sync_designation_error, false);
+});
+
+test("a verified designation forces the full run, sync, and Windows", () => {
+  const { affected, outputs } = decide(["docs/user/install.md"], packages, false, "designated");
+  assert.deepEqual(affected, packages.map((pkg) => pkg.name).sort());
+  assert.equal(outputs.upstream_sync, true);
+  assert.equal(outputs.sync_designation_error, false);
+  assert.equal(outputs.windows, true);
+  assert.equal(outputs.windows_packages, FULL_WINDOWS_PACKAGES);
+  for (const gate of [
+    "typecheck",
+    "build",
+    "test",
+    "test_web",
+    "test_server",
+    "rust",
+    "release_smoke",
+  ]) {
+    assert.equal(outputs[gate], true, gate);
+  }
+});
+
+// An unauthorized label, an unproven timeline, or a resolver/API failure can
+// only add work or fail Check: full run, sync job on, designation error set.
+for (const sync of ["invalid"]) {
+  test(`a claimed-unverified or failed resolution (${sync}) forces full CI and errors`, () => {
+    const { outputs } = decide(["apps/web/src/App.tsx"], packages, false, sync);
+    assert.equal(outputs.upstream_sync, true);
+    assert.equal(outputs.sync_designation_error, true);
+    assert.equal(outputs.test_packages, "");
+    assert.equal(outputs.windows, true);
+    assert.equal(outputs.windows_packages, FULL_WINDOWS_PACKAGES);
+  });
+}
+
+test("an unknown sync designation is rejected rather than guessed", () => {
+  assert.throws(() => decide([], packages, false, "maybe"), /--sync/);
+});
+
 test("an inert docs change runs no gated job", () => {
   const { affected, outputs } = decide(["docs/user/install.md"], packages, false);
   assert.deepEqual(affected, []);
@@ -408,6 +456,7 @@ test("a hostile inventory edit stripping boundary entries still runs every job",
     ["config/fork-inventory.json", ".github/scripts/ci-changes.cjs"],
     packages,
     false,
+    "none",
     new Set(),
   );
   assertEverything(outputs, "config/fork-inventory.json");
@@ -419,12 +468,12 @@ test("a scripts file outside the boundary list stays scoped", () => {
 });
 
 test("an unreadable boundary policy runs every job rather than guessing", () => {
-  const { outputs } = decide(["docs/user/install.md"], packages, false, null);
+  const { outputs } = decide(["docs/user/install.md"], packages, false, "none", null);
   assertEverything(outputs, "unreadable policy");
 });
 
 test("an inert docs diff still runs nothing when the policy is readable", () => {
-  const { outputs } = decide(["docs/user/install.md"], packages, false, new Set());
+  const { outputs } = decide(["docs/user/install.md"], packages, false, "none", new Set());
   assert.deepEqual(outputs.test_packages, "");
   assert.equal(outputs.rust, false);
 });
@@ -505,7 +554,15 @@ test("--check-results passes a green run and fails unexplained results", () => {
   const os = require("node:os");
   const script = path.join(__dirname, "ci-changes.cjs");
   const green = {
-    changes: { result: "success", outputs: { fail_open: "false", windows: "true" } },
+    changes: {
+      result: "success",
+      outputs: {
+        fail_open: "false",
+        sync_designation_error: "false",
+        upstream_sync: "false",
+        windows: "true",
+      },
+    },
     lint: { result: "success", outputs: {} },
     build: { result: "success", outputs: {} },
     test: { result: "success", outputs: {} },
@@ -515,6 +572,7 @@ test("--check-results passes a green run and fails unexplained results", () => {
     release_smoke: { result: "success", outputs: {} },
     shared_persistence_compat: { result: "success", outputs: {} },
     windows: { result: "success", outputs: {} },
+    sync: { result: "success", outputs: {} },
   };
   const run = (needs) => {
     try {
@@ -540,6 +598,71 @@ test("--check-results passes a green run and fails unexplained results", () => {
   });
   assert.equal(failOpen.status, 1);
   assert.match(failOpen.output, /fail_open/);
+
+  // The sync job skips only when the detector turned the designation gate off.
+  const syncSkippedOff = run({
+    ...green,
+    sync: { result: "skipped", outputs: {} },
+  });
+  assert.equal(syncSkippedOff.status, 0);
+  const syncSkippedOn = run({
+    ...green,
+    changes: {
+      result: "success",
+      outputs: { fail_open: "false", sync_designation_error: "false", upstream_sync: "true" },
+    },
+    sync: { result: "skipped", outputs: {} },
+  });
+  assert.equal(syncSkippedOn.status, 1);
+  assert.match(syncSkippedOn.output, /sync/);
+
+  // A designation error fails Check even when every job, sync included, is green.
+  const designationError = run({
+    ...green,
+    changes: {
+      result: "success",
+      outputs: { fail_open: "false", sync_designation_error: "true", upstream_sync: "true" },
+    },
+  });
+  assert.equal(designationError.status, 1);
+  assert.match(designationError.output, /sync_designation_error/);
+  // A missing all-clear is as bad as an explicit true.
+  const missingAllClear = run({
+    ...green,
+    changes: { result: "success", outputs: { fail_open: "false" } },
+  });
+  assert.equal(missingAllClear.status, 1);
+  assert.match(missingAllClear.output, /sync_designation_error/);
+});
+
+// The sync PR gate wiring (#50): CI subscribes to label events, the sync job
+// exists with the right name and gate, and Check aggregates it.
+test("ci.yml wires the upstream-sync label gate and the sync merge job", () => {
+  const workflow = fs.readFileSync(
+    path.join(path.resolve(__dirname, "../.."), ".github/workflows/ci.yml"),
+    "utf8",
+  );
+  assert.match(workflow, /on:\n  pull_request:\n(    #[^\n]*\n)*    types:/);
+  const typesLine = workflow.match(/pull_request:\n(?:    #[^\n]*\n)*    types: \[([^\]]*)\]/);
+  assert.ok(typesLine, "ci.yml must list pull_request types");
+  for (const type of ["opened", "reopened", "synchronize", "labeled", "unlabeled"]) {
+    assert.ok(
+      typesLine[1]
+        .split(",")
+        .map((entry) => entry.trim())
+        .includes(type),
+      `ci.yml pull_request types must include ${type}`,
+    );
+  }
+  const syncJob =
+    "  sync:\n    name: Upstream Sync Merge\n    needs: changes\n    if: ${{ !cancelled() && needs.changes.outputs.upstream_sync != 'false' }}";
+  assert.ok(workflow.includes(syncJob), "ci.yml must gate the sync job on upstream_sync");
+  assert.match(workflow, /needs\.changes\.outputs\.sync_designation_error == 'true'/);
+  // The changes job and the self-gating shards can resolve the designation.
+  assert.match(workflow, /issues: read/);
+  assert.match(workflow, /pull-requests: read/);
+  const shardGate = workflow.slice(workflow.indexOf("Require healthy change detection"));
+  assert.match(shardGate, /sync_designation_error/);
 });
 
 // The upstream sync dry run (#49) is read-only automation: no write token,

@@ -2,6 +2,10 @@ name: CI
 
 on:
   pull_request:
+    # labeled/unlabeled so a protected upstream-sync designation (#50) re-runs
+    # detection: adding the label forces the full run, and Check rejects an
+    # invalid or unproven claim.
+    types: [opened, reopened, synchronize, labeled, unlabeled]
   push:
     branches:
       - main
@@ -24,6 +28,12 @@ jobs:
     name: Changes
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    # issues/pull-requests read: the designation resolver reads the timeline
+    # and collaborator permissions when a PR claims upstream-sync.
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
     outputs:
       typecheck: ${{ steps.detect.outputs.typecheck }}
       build: ${{ steps.detect.outputs.build }}
@@ -36,6 +46,8 @@ jobs:
       windows: ${{ steps.detect.outputs.windows }}
       windows_packages: ${{ steps.detect.outputs.windows_packages }}
       fail_open: ${{ steps.detect.outputs.fail_open }}
+      upstream_sync: ${{ steps.detect.outputs.upstream_sync }}
+      sync_designation_error: ${{ steps.detect.outputs.sync_designation_error }}
     steps:
       # Only the package manifests the script reads to build the dependency graph.
       # Depth 2 brings the base commit the change is diffed against.
@@ -46,6 +58,7 @@ jobs:
           sparse-checkout: |
             /pnpm-workspace.yaml
             /.github/scripts/ci-changes.cjs
+            /.github/scripts/upstream-sync-pr.cjs
             /.github/actions/ci-changes/
             /config/fork-inventory.json
             /*/package.json
@@ -339,6 +352,8 @@ jobs:
   test_server:
     permissions:
       contents: read
+      issues: read
+      pull-requests: read
     name: Test Server ${{ matrix.shard }}
     runs-on: ubuntu-latest
     # A shard takes 2-5 minutes, and eight run side by side.
@@ -449,12 +464,17 @@ jobs:
 
       # The shard gates itself on its own detection, so a fetch/diff fallback
       # ran the full shard but its result is not trustworthy: fail the shard
-      # rather than report a healthy run. Check enforces the same all-clear.
+      # rather than report a healthy run. An invalid upstream-sync designation
+      # claim is the same kind of untrustworthy detection. Check enforces both.
       - name: Require healthy change detection
         if: ${{ !cancelled() }}
         run: |
           if [[ "${{ steps.changes.outputs.fail_open }}" != "false" ]]; then
             echo "Change detection failed open; this shard's result is not trustworthy." >&2
+            exit 1
+          fi
+          if [[ "${{ steps.changes.outputs.sync_designation_error }}" != "false" ]]; then
+            echo "The upstream-sync designation claim is invalid; this shard's result is not trustworthy." >&2
             exit 1
           fi
 
@@ -595,6 +615,62 @@ jobs:
     with:
       package: ${{ needs.changes.outputs.windows_packages }}
 
+  # Protected sync PR merge validation (#50): runs only when the detector
+  # verified an upstream-sync designation claim. An invalid or unproven claim
+  # fails immediately here, and Check rejects the run through
+  # sync_designation_error whatever this job does. Checks out the trusted base,
+  # never the PR merge commit; the PR head is fetched as passive git objects
+  # only, and nothing from the head tree is installed or executed.
+  sync:
+    name: Upstream Sync Merge
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.upstream_sync != 'false' }}
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Require a verified designation
+        if: needs.changes.outputs.sync_designation_error == 'true'
+        run: |
+          echo "::error::The upstream-sync label claim is invalid or unproven. Full CI ran, but this PR cannot merge until an authorized user applies the label."
+          exit 1
+
+      - name: Checkout the trusted base
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+          sparse-checkout: |
+            /*
+            !/.repos/
+            !/apps/mobile/modules/t3-terminal/Vendor/**/*.a
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Vite+
+        uses: ./.github/actions/setup-ci-deps
+
+      - name: Point upstream at the canonical repository
+        run: |
+          git remote get-url upstream >/dev/null 2>&1 ||
+            git remote add upstream https://github.com/pingdotgg/t3code.git
+
+      - name: Validate the sync merge
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_REPO: ${{ github.event.pull_request.base.repo.full_name }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: >-
+          node scripts/upstream-sync.ts validate-merge --cwd .
+          --pr-number "$PR_NUMBER" --head-sha "$HEAD_SHA" --base-sha "$BASE_SHA"
+          --base-repo "$BASE_REPO" --base-ref "$BASE_REF"
+          --head-repo "$HEAD_REPO" --head-ref "$HEAD_REF"
+
   # Branch protection requires this job by its name, `Check`. It fails when any
   # other job fails, is cancelled, or is skipped without a reason, so splitting
   # or resharding jobs needs no ruleset change. Add every new job to `needs`,
@@ -616,6 +692,7 @@ jobs:
         release_smoke,
         shared_persistence_compat,
         windows,
+        sync,
       ]
     runs-on: ubuntu-latest
     timeout-minutes: 5
