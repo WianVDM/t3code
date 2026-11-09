@@ -647,12 +647,24 @@ describe("background work kinds from older or newer servers", () => {
         { taskId: "bg-1", kind: "command", startedAt: "2026-04-20T00:00:01.000Z" },
         { taskId: "bg-2", kind: "workflow", startedAt: "2026-04-20T00:00:02.000Z" },
         { taskId: "bg-3", kind: "command" },
+        {
+          taskId: "bg-4",
+          kind: "command",
+          startedAt: "2026-04-20T00:00:03.000Z",
+          plusplus: { startedAt: "2026-04-20T00:00:03.000Z" },
+        },
       ],
     });
     expect(providerThread.pendingBackgroundTasks).toEqual([
       { taskId: "bg-1", kind: "command", startedAt: "2026-04-20T00:00:01.000Z" },
       { taskId: "bg-2", kind: "background_task", startedAt: "2026-04-20T00:00:02.000Z" },
       { taskId: "bg-3", kind: "command" },
+      {
+        taskId: "bg-4",
+        kind: "command",
+        startedAt: "2026-04-20T00:00:03.000Z",
+        plusplus: { startedAt: "2026-04-20T00:00:03.000Z" },
+      },
     ]);
     // Round-trips unchanged, so a persisted roster never loses a stamped start.
     expect(encodeOrchestrationV2ProviderThreadJson(providerThread).pendingBackgroundTasks).toEqual(

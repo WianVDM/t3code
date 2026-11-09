@@ -55,6 +55,8 @@ export const ServerProviderUsageLimits = Schema.Struct({
       message: Schema.optional(TrimmedNonEmptyString),
     }),
   ),
+  /** Fork sidecar carrier; typed areas live in `@t3tools/plusplus/contracts`. Upstream never reads it. */
+  plusplus: Schema.optionalKey(Schema.Unknown),
 });
 export type ServerProviderUsageLimits = typeof ServerProviderUsageLimits.Type;
 

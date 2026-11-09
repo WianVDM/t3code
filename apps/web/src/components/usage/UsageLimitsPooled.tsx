@@ -13,6 +13,7 @@ import {
   type LimitPoolWindow,
   paceRemainingPercent,
   remainingPercent,
+  readMonetaryUsage,
 } from "@t3tools/shared/usageLimits";
 import { formatUsd } from "@t3tools/shared/usageFormat";
 import type { ProviderDriverKind } from "@t3tools/contracts";
@@ -139,7 +140,7 @@ function Row({ label, children }: { readonly label: string; readonly children: R
 type MonetaryUsage = NonNullable<LimitAccount["limits"]["monetaryUsage"]>;
 
 function monetaryUsageOf(limits: LimitAccount["limits"]): MonetaryUsage | null {
-  const monetary = limits.monetaryUsage;
+  const monetary = readMonetaryUsage(limits);
   if (!monetary) return null;
   const { usedUsd, remainingUsd, limitUsd } = monetary;
   return usedUsd === undefined && remainingUsd === undefined && limitUsd === undefined

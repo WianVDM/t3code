@@ -1,5 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
 import type { EnvironmentId } from "@t3tools/contracts";
+import { readContextBridgeSettings } from "@t3tools/shared/serverSettings";
 
 import { useEnvironmentSettings, useUpdateEnvironmentSettings } from "../../hooks/useSettings";
 import { deriveProviderInstanceEntries } from "../../providerInstances";
@@ -36,7 +37,7 @@ export function ContextBridgeSettingsSection({
   const updateSettings = useUpdateEnvironmentSettings(environmentId);
   const availableDrivers = useAvailableBridgeDrivers(environmentId);
 
-  const contextBridge = settings.contextBridge;
+  const contextBridge = readContextBridgeSettings(settings);
   const defaultSource = contextBridge.defaultSource || "claudeAgent";
   const defaultSourceOptions = buildDefaultSourceOptions(defaultSource, availableDrivers);
 
@@ -105,7 +106,7 @@ export function ProviderContextBridgeSection({
   const updateSettings = useUpdateEnvironmentSettings(environmentId);
   const availableDrivers = useAvailableBridgeDrivers(environmentId);
 
-  const contextBridge = settings.contextBridge;
+  const contextBridge = readContextBridgeSettings(settings);
   const route = contextBridge.routes[driver];
   const routeOptions = buildRouteOptions(driver, contextBridge.defaultSource, availableDrivers);
 

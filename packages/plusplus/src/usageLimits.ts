@@ -10,6 +10,8 @@ import {
   resolveProjectProviderInstanceEnabled,
 } from "@t3tools/contracts";
 
+import { readMonetaryUsage, readUsageAccounts, withUsageAccounts } from "./contracts.ts";
+
 /**
  * Provider-neutral usage-limit algebra: snapshot construction, sparse update
  * merging, probe reconciliation, window pace math, and new-thread fallback
@@ -170,22 +172,23 @@ export function reconcileProviderUsageSnapshot(input: {
       });
   const workspaceId =
     usageLimits === probedSnapshot.usageLimits ? undefined : published.auth.workspaceId;
-  const probedAccountCount = probedSnapshot.usageAccounts?.length ?? 0;
+  const probedAccounts = readUsageAccounts(probedSnapshot);
+  const publishedAccounts = readUsageAccounts(published);
   // Sign-out, uninstall, and account switches still drop the accounts.
   const retainedAccounts =
     !switchedAccount &&
     probedSnapshot.installed &&
     probedSnapshot.auth.status === "authenticated" &&
-    probedAccountCount === 0 &&
-    (published.usageAccounts?.length ?? 0) > 0
-      ? published.usageAccounts
+    (probedAccounts?.length ?? 0) === 0 &&
+    (publishedAccounts?.length ?? 0) > 0
+      ? publishedAccounts
       : undefined;
   const withWorkspace =
     workspaceId && !probedSnapshot.auth.workspaceId
       ? { ...probedSnapshot, auth: { ...probedSnapshot.auth, workspaceId } }
       : probedSnapshot;
   return snapshotWithUsageLimits(
-    retainedAccounts ? { ...withWorkspace, usageAccounts: retainedAccounts } : withWorkspace,
+    retainedAccounts ? withUsageAccounts(withWorkspace, retainedAccounts) : withWorkspace,
     usageLimits,
   );
 }
@@ -277,7 +280,7 @@ export function limitsNotice(limits: ServerProviderUsageLimits): string | null {
     return limits.unavailable.message ?? "Could not read limits.";
   }
   if (limits.windows.length > 0) return null;
-  const monetary = limits.monetaryUsage;
+  const monetary = readMonetaryUsage(limits);
   if (monetary !== undefined && Object.values(monetary).some((value) => value !== undefined)) {
     return null;
   }

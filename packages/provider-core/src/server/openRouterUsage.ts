@@ -7,6 +7,7 @@ import {
   openRouterUsageAccount,
   type OpenRouterUsageInput,
 } from "@t3tools/plusplus/openRouterUsage";
+import { withUsageAccountSidecars } from "@t3tools/plusplus/contracts";
 
 /**
  * OpenRouter usage facade: payload interpretation lives in
@@ -38,5 +39,5 @@ export const readOpenRouterUsageAccount = Effect.fn("readOpenRouterUsageAccount"
     // Stalled or malformed probes fold into the existing probeFailed account, with no retry.
     Effect.orElseSucceed(() => undefined),
   );
-  return openRouterUsageAccount(input, data);
+  return withUsageAccountSidecars(openRouterUsageAccount(input, data));
 });

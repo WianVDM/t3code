@@ -39,6 +39,19 @@ describe("ServerProvider", () => {
       expect(decodeServerProvider(wire)).toEqual(decoded);
     }
   });
+
+  it("round-trips the plusplus carrier and leaves released snapshots without one", () => {
+    const encode = Schema.encodeSync(ServerProvider);
+    const decodedBase = decodeServerProvider(baseProviderSnapshot);
+    expect("plusplus" in decodedBase).toBe(false);
+
+    const carrier = { usageAccounts: [], future: 1 };
+    const decoded = decodeServerProvider({ ...baseProviderSnapshot, plusplus: carrier });
+    expect(decoded.plusplus).toEqual(carrier);
+    const wire = JSON.parse(JSON.stringify(encode(decoded)));
+    expect(wire.plusplus).toEqual(carrier);
+    expect(decodeServerProvider(wire)).toEqual(decoded);
+  });
 });
 
 describe("server config forward compatibility", () => {

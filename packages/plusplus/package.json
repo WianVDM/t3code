@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./contracts": {
+      "types": "./src/contracts.ts",
+      "import": "./src/contracts.ts"
+    },
     "./contextBridge": {
       "types": "./src/contextBridge.ts",
       "import": "./src/contextBridge.ts"

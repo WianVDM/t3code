@@ -63,3 +63,62 @@ describe("UsageLimitsPooled ChatGPT usage card", () => {
       .toBeVisible();
   });
 });
+
+function sidecarAccountProvider(): ServerProvider {
+  return {
+    instanceId: ProviderInstanceId.make("pi"),
+    driver: ProviderDriverKind.make("pi"),
+    displayName: "Pi",
+    enabled: true,
+    installed: true,
+    version: "1.0.0",
+    status: "ready",
+    auth: { status: "authenticated" },
+    checkedAt,
+    models: [],
+    slashCommands: [],
+    skills: [],
+    usageLimits: { checkedAt, windows: [] },
+    usageAccounts: [
+      {
+        id: "openrouter-sidecar-only",
+        driver: ProviderDriverKind.make("openrouter"),
+        usageLimits: {
+          checkedAt,
+          windows: [{ id: "credit_limit", kind: "other", label: "Credits", usedPercent: 12 }],
+          plusplus: { monetaryUsage: { usedUsd: 1.25 } },
+        },
+      },
+      {
+        id: "openrouter-conflicting",
+        driver: ProviderDriverKind.make("openrouter"),
+        usageLimits: {
+          checkedAt,
+          windows: [],
+          monetaryUsage: { usedUsd: 1 },
+          plusplus: { monetaryUsage: { usedUsd: 2.5, limitUsd: 10 } },
+        },
+      },
+    ],
+  };
+}
+
+describe("UsageLimitsPooled monetary sidecar", () => {
+  it("renders sidecar-only monetary usage and prefers it over a conflicting legacy field", async () => {
+    const presentations = new Map([
+      [
+        EnvironmentId.make("desk"),
+        {
+          entry: { target: { label: "Desk" } },
+          serverConfig: { providers: [sidecarAccountProvider()] },
+        },
+      ],
+    ]);
+    await using screen = await render(
+      <UsageLimitsPooled presentations={presentations} now={Date.parse(checkedAt)} />,
+    );
+
+    await expect.element(screen.getByText("$1.25 used")).toBeVisible();
+    await expect.element(screen.getByText("$2.50 used · $10.00 limit")).toBeVisible();
+  });
+});

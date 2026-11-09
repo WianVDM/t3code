@@ -536,3 +536,35 @@ describe("server model preferences", () => {
     expect(decodeServerSettingsPatch(input)).toEqual(input);
   });
 });
+
+describe("plusplus sidecar carrier", () => {
+  const carrier = { contextBridge: { enabled: true, defaultSource: "pi", routes: {} }, future: 1 };
+
+  it("stays absent for settings stored before the carrier existed", () => {
+    const decoded = decodeServerSettings({});
+    expect("plusplus" in decoded).toBe(false);
+    expect("plusplus" in encodeServerSettings(decoded)).toBe(false);
+  });
+
+  it("round-trips settings and patches verbatim, unknown areas included", () => {
+    const decoded = decodeServerSettings({ plusplus: carrier });
+    expect(decoded.plusplus).toEqual(carrier);
+    expect(encodeServerSettings(decoded).plusplus).toEqual(carrier);
+    const patch = decodeServerSettingsPatch({ plusplus: carrier });
+    expect(patch.plusplus).toEqual(carrier);
+    expect(encodeServerSettingsPatch(patch).plusplus).toEqual(carrier);
+  });
+
+  it("keeps the released contextBridge field independent of the carrier", () => {
+    const decoded = decodeServerSettings({
+      contextBridge: { enabled: true, defaultSource: "claudeAgent", routes: {} },
+      plusplus: carrier,
+    });
+    expect(decoded.contextBridge).toEqual({
+      enabled: true,
+      defaultSource: "claudeAgent",
+      routes: {},
+    });
+    expect(decoded.plusplus).toEqual(carrier);
+  });
+});

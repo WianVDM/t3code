@@ -1017,6 +1017,8 @@ const PendingBackgroundTaskFields = {
    * subagent. Only the agent knows whether a command is a wait or a dev server it left running.
    */
   awaited: Schema.optional(Schema.Literal(true)),
+  /** Fork sidecar carrier; typed areas live in `@t3tools/plusplus/contracts`. Upstream never reads it. */
+  plusplus: Schema.optionalKey(Schema.Unknown),
 };
 
 export const OrchestrationV2PendingBackgroundTask = kindUnionWithFallback(
@@ -1033,11 +1035,12 @@ export const OrchestrationV2PendingBackgroundTask = kindUnionWithFallback(
     Schema.Struct({ ...PendingBackgroundTaskFields, kind: Schema.Literal("background_task") }),
   ],
   (kind) => Schema.Struct({ ...PendingBackgroundTaskFields, kind }),
-  ({ taskId, description, parentTaskId, startedAt }) => ({
+  ({ taskId, description, parentTaskId, startedAt, plusplus }) => ({
     taskId,
     ...(description === undefined ? {} : { description }),
     ...(parentTaskId === undefined ? {} : { parentTaskId }),
     ...(startedAt === undefined ? {} : { startedAt }),
+    ...(plusplus === undefined ? {} : { plusplus }),
     kind: "background_task",
   }),
 );

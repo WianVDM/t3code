@@ -446,6 +446,45 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings"
     }).pipe(Effect.provide(layerServerSettings())),
   );
 
+  it.effect("persists the plusplus carrier and dual-writes context bridge patches", () =>
+    Effect.gen(function* () {
+      const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
+
+      const seeded = yield* serverSettings.updateSettings({
+        plusplus: { future: { kept: true } },
+      });
+      assert.deepEqual(seeded.plusplus, { future: { kept: true } });
+
+      const patched = yield* serverSettings.updateSettings({
+        contextBridge: { enabled: true, defaultSource: "pi" },
+      });
+      assert.deepEqual(patched.contextBridge, {
+        enabled: true,
+        defaultSource: "pi",
+        routes: {},
+      });
+      assert.deepEqual(patched.plusplus, {
+        future: { kept: true },
+        contextBridge: patched.contextBridge,
+      });
+
+      // A sidecar patch wins over a conflicting legacy patch and survives normalization.
+      const sidecarPatched = yield* serverSettings.updateSettings({
+        contextBridge: { enabled: false },
+        plusplus: { contextBridge: { enabled: true, routes: { codex: { skills: "pi" } } } },
+      });
+      assert.deepEqual(sidecarPatched.contextBridge, {
+        enabled: true,
+        defaultSource: "pi",
+        routes: { codex: { skills: "pi" } },
+      });
+      assert.deepEqual(sidecarPatched.plusplus, {
+        future: { kept: true },
+        contextBridge: sidecarPatched.contextBridge,
+      });
+    }).pipe(Effect.provide(layerServerSettings())),
+  );
+
   it.effect("keeps an external settings edit that the watcher has not reloaded yet", () =>
     Effect.gen(function* () {
       const config = yield* ServerConfig.ServerConfig;

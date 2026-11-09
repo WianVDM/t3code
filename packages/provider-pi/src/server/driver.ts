@@ -20,6 +20,7 @@ import {
 } from "@t3tools/provider-core/server/upstreamUsage";
 import { readKimiCodeUsageAccount } from "@t3tools/provider-core/server/kimiUsage";
 import { readOpenRouterUsageAccount } from "@t3tools/provider-core/server/openRouterUsage";
+import { usageAccountsFields } from "@t3tools/plusplus/contracts";
 import { piUsageReader } from "./usage.ts";
 import { makePiTextGeneration } from "./textGeneration.ts";
 import { PiAdapterV2Driver, type PiAdapterV2DriverEnv } from "./adapter.ts";
@@ -216,7 +217,7 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv, Path.Path> = {
           return {
             ...draft,
             usageLimits,
-            ...(usageAccounts.length > 0 ? { usageAccounts } : {}),
+            ...usageAccountsFields(usageAccounts.length > 0 ? usageAccounts : undefined),
           };
         }),
       ),

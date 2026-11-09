@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import type { ModelCapabilities } from "@t3tools/contracts";
+import { type ModelCapabilities, ProviderDriverKind } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { createModelCapabilities } from "@t3tools/shared/model";
 import * as Effect from "effect/Effect";
@@ -9,6 +9,7 @@ import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
 import {
+  buildServerProvider,
   isCommandMissingCause,
   parseGenericCliVersion,
   providerModelsFromSettings,
@@ -156,5 +157,45 @@ describe("ProviderCommandNotFoundError", () => {
       expect(error).not.toHaveProperty("stderr");
       expect(error.message).not.toContain("secret-token-value");
     });
+  });
+});
+
+describe("buildServerProvider usage accounts sidecar", () => {
+  const probe = {
+    installed: true,
+    version: "1.0.0",
+    status: "ready" as const,
+    auth: { status: "authenticated" as const },
+  };
+  const base = {
+    presentation: { displayName: "Pi" },
+    enabled: true,
+    checkedAt: "2026-04-10T00:00:00.000Z",
+    models: [],
+    probe,
+  };
+  const accounts = [
+    {
+      id: "openrouter",
+      driver: ProviderDriverKind.make("openrouter"),
+      usageLimits: { checkedAt: "2026-04-10T00:00:00.000Z", windows: [] },
+    },
+  ];
+
+  it("dual-writes probed accounts, keeps an empty list authoritative, and stays sparse without them", () => {
+    const withAccounts = buildServerProvider({
+      ...base,
+      probe: { ...probe, usageAccounts: accounts },
+    });
+    expect(withAccounts.usageAccounts).toEqual(accounts);
+    expect(withAccounts.plusplus).toEqual({ usageAccounts: accounts });
+
+    const empty = buildServerProvider({ ...base, probe: { ...probe, usageAccounts: [] } });
+    expect(empty.usageAccounts).toEqual([]);
+    expect(empty.plusplus).toEqual({ usageAccounts: [] });
+
+    const none = buildServerProvider(base);
+    expect(none.usageAccounts).toBeUndefined();
+    expect("plusplus" in none).toBe(false);
   });
 });
