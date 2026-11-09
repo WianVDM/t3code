@@ -17,6 +17,7 @@ import {
   type BridgedSkillFrontmatter,
   type BridgedSkillSnapshotIo,
 } from "@t3tools/plusplus/contextBridge";
+import { readContextBridgeSettings } from "@t3tools/plusplus/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -38,7 +39,7 @@ export const currentContextBridgeSettings = Effect.fn(
   "ContextBridgeRuntime.currentContextBridgeSettings",
 )(function* (host: ProviderHost["Service"]) {
   return yield* host.settings.get.pipe(
-    Effect.map((settings) => settings.contextBridge),
+    Effect.map((settings) => readContextBridgeSettings(settings)),
     Effect.catchCause((cause) =>
       Effect.logWarning("context-bridge.settings-read-failed", { cause }).pipe(
         Effect.as(undefined),

@@ -9,8 +9,12 @@ import type {
 import { isOrchestrationV2WorkActive } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Predicate from "effect/Predicate";
+import { pendingBackgroundTaskStartedAtFields } from "@t3tools/plusplus/contracts";
 
 import { resolveT3McpToolId } from "./t3McpToolPresentation.ts";
+
+// Sidecar-first read facade for clients; resolution lives in `@t3tools/plusplus/contracts`.
+export { readPendingBackgroundTaskStartedAt } from "@t3tools/plusplus/contracts";
 
 const BACKGROUND_TURN_ITEM_TYPES = new Set<OrchestrationV2TurnItem["type"]>([
   "command_execution",
@@ -208,9 +212,11 @@ function pendingTaskFromTurnItem(
     taskId,
     ...(description === undefined ? {} : { description }),
     // Only the item's own start is truthful timing; nothing is backfilled when it is unknown.
-    ...(item.startedAt === undefined || item.startedAt === null
-      ? {}
-      : { startedAt: DateTime.formatIso(item.startedAt) }),
+    ...pendingBackgroundTaskStartedAtFields(
+      item.startedAt === undefined || item.startedAt === null
+        ? undefined
+        : DateTime.formatIso(item.startedAt),
+    ),
   };
   switch (item.type) {
     case "subagent":
@@ -419,7 +425,7 @@ function pullRequestWatchTasks(
             taskId: `${PULL_REQUEST_WATCH_TASK_ID_PREFIX}${link.host.toLowerCase()}/${link.repository.toLowerCase()}#${link.number}`,
             description: `Watching pull request #${link.number}`,
             kind: "monitor" as const,
-            startedAt: link.watch.startedAt,
+            ...pendingBackgroundTaskStartedAtFields(link.watch.startedAt),
             awaited: true as const,
           },
         ],

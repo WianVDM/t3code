@@ -1001,6 +1001,7 @@ it.effect("SQL shells use the latest subagent owner for duplicate provider-threa
         taskId: nativeTaskId,
         description: item.title,
         startedAt: DateTime.formatIso(item.startedAt!),
+        plusplus: { startedAt: DateTime.formatIso(item.startedAt!) },
         kind: "subagent",
         providerInstanceId,
       },
@@ -7915,6 +7916,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
           description: "Watching pull request #7",
           kind: "monitor",
           startedAt: DateTime.formatIso(at),
+          plusplus: { startedAt: DateTime.formatIso(at) },
           awaited: true,
         },
       ]);

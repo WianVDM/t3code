@@ -281,6 +281,24 @@ describe("deriveThreadProcessTaskRows", () => {
     ]);
   });
 
+  it("prefers the roster sidecar start over a conflicting legacy stamp", () => {
+    const rows = deriveThreadProcessTaskRows({
+      threadId,
+      tasks: [
+        {
+          taskId: "opaque-1",
+          kind: "background_task",
+          startedAt: "2026-04-20T00:00:02.000Z",
+          plusplus: { startedAt: "2026-04-20T00:00:03.000Z" },
+        },
+      ],
+      turnItems: [],
+      runs: [],
+      visibleTurnItems: [],
+    });
+    expect(rows[0]?.startedAt).toBe("2026-04-20T00:00:03.000Z");
+  });
+
   it("keeps a candidate's timing when the details row left the visible projection", () => {
     const item = turnItem({
       id: "item-1",

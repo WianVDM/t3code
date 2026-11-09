@@ -13,6 +13,7 @@ import type { PendingBackgroundWorkTurnItem } from "@t3tools/shared/orchestratio
 import {
   PULL_REQUEST_WATCH_TASK_ID_PREFIX,
   pendingBackgroundTurnItemsByTaskId,
+  readPendingBackgroundTaskStartedAt,
 } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import * as DateTime from "effect/DateTime";
 
@@ -208,7 +209,7 @@ export function deriveThreadProcessTaskRows<Item extends PendingBackgroundWorkTu
       startedAt:
         candidate?.startedAt != null
           ? DateTime.formatIso(candidate.startedAt)
-          : (task.startedAt ?? null),
+          : (readPendingBackgroundTaskStartedAt(task) ?? null),
     });
   }
   return rows;

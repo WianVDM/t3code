@@ -25,6 +25,7 @@ import {
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
+import { mergeContextBridgeSettingsPatch, mergeSidecarCarriers } from "@t3tools/plusplus/contracts";
 import { deepMerge } from "./Struct.ts";
 import { fromLenientJson } from "./schemaJson.ts";
 import { createModelSelection, readCustomModelEntries } from "./model.ts";
@@ -34,6 +35,9 @@ import {
   normalizeServerBackgroundActivitySettings,
   resolveBackgroundActivitySettings,
 } from "./backgroundActivitySettings.ts";
+
+// Sidecar-first read facade for clients; resolution lives in `@t3tools/plusplus/contracts`.
+export { readContextBridgeSettings } from "@t3tools/plusplus/contracts";
 
 // Only observability: a value the server migrates on load elsewhere in the file must not drop it.
 const ServerObservabilitySettingsJson = fromLenientJson(
@@ -393,6 +397,8 @@ export function applyServerSettingsPatch(
     // `routes` replaces wholesale below: deepMerge would resurrect a route
     // the client deleted to reset that provider back to native.
     contextBridge: contextBridgePatch,
+    // Merged per sidecar area below; deepMerge must not recurse into the unknown carrier.
+    plusplus: plusplusPatch,
     // Already translated into `projectSettingsOverrides` above; the legacy
     // maps are derived views and must never be merged directly.
     projectAgentBrowserAccessOverrides: _legacyBrowserAccess,
@@ -488,6 +494,16 @@ export function applyServerSettingsPatch(
     };
   }
   const next = deepMerge(current, patchForMerge);
+  // Sidecar-first resolution; the result dual-writes the released legacy field (EXC-09).
+  const nextContextBridge = mergeContextBridgeSettingsPatch(current, {
+    contextBridge: contextBridgePatch,
+    plusplus: plusplusPatch,
+  });
+  const mergedSidecarCarrier = mergeSidecarCarriers(current.plusplus, plusplusPatch);
+  const nextPlusPlus =
+    nextContextBridge !== null
+      ? { ...mergedSidecarCarrier, contextBridge: nextContextBridge }
+      : mergedSidecarCarrier;
   const nextWithReplacementsBase = {
     ...next,
     favorites,
@@ -589,15 +605,8 @@ export function applyServerSettingsPatch(
     ...(patch.defaultModelSelection !== undefined
       ? { defaultModelSelection: patch.defaultModelSelection }
       : {}),
-    ...(contextBridgePatch !== undefined
-      ? {
-          contextBridge: {
-            enabled: contextBridgePatch.enabled ?? current.contextBridge.enabled,
-            defaultSource: contextBridgePatch.defaultSource ?? current.contextBridge.defaultSource,
-            routes: contextBridgePatch.routes ?? current.contextBridge.routes,
-          },
-        }
-      : {}),
+    ...(nextContextBridge !== null ? { contextBridge: nextContextBridge } : {}),
+    ...(nextPlusPlus !== undefined ? { plusplus: nextPlusPlus } : {}),
     ...(patch.fallbackModelSelection !== undefined
       ? { fallbackModelSelection: patch.fallbackModelSelection }
       : {}),
