@@ -24,7 +24,7 @@ const state = vi.hoisted(() => ({
   reveal: vi.fn(),
 }));
 
-vi.mock(import("../../lib/revealThreadTerminal"), () => ({
+vi.mock(import("../lib/revealThreadTerminal"), () => ({
   revealThreadTerminal: ((...args: ReadonlyArray<unknown>) => state.reveal(...args)) as never,
   revealThreadTerminalInRightPanel: ((...args: ReadonlyArray<unknown>) =>
     state.reveal(...args)) as never,
@@ -65,9 +65,9 @@ vi.mock(import("~/state/query"), async (original) => ({
 
 import { AppAtomRegistryProvider } from "~/rpc/atomRegistry";
 import { act, fakeTimers, render } from "../../../test/render";
-import { ProcessDetailsDialogHost } from "./ChatOverlayHosts";
+import { ProcessDetailsDialogHost } from "./ProcessDetailsDialogHost";
 import { ThreadProcessesPanel } from "./ThreadProcessesPanel";
-import { retainThreadOverlaysForThread } from "./threadOverlayRetention";
+import { retainThreadOverlaysForThread } from "~/components/chat/threadOverlayRetention";
 
 const environmentId = EnvironmentId.make("env-1");
 const threadId = ThreadId.make("thread-1");
@@ -160,8 +160,7 @@ function subject(input: SetupInput): ReactElement {
       />
       <ProcessDetailsDialogHost
         threadKey={`${environmentId}:${threadId}`}
-        environmentId={environmentId}
-        visibleTurnItems={state.visibleTurnItems as ReadonlyArray<OrchestrationV2ProjectedTurnItem>}
+        threadRef={{ environmentId, threadId }}
         cwd={undefined}
         workspaceRoot={undefined}
         onOpenToolDiff={() => {}}

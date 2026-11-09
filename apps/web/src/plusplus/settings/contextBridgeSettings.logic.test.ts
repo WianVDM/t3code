@@ -5,7 +5,7 @@ import {
   ProviderInstanceId,
   type ServerProvider,
 } from "@t3tools/contracts";
-import type { ProviderInstanceEntry } from "../../providerInstances";
+import type { ProviderInstanceEntry } from "~/providerInstances";
 import {
   buildDefaultSourceOptions,
   buildRouteOptions,

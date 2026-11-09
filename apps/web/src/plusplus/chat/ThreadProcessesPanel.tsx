@@ -20,17 +20,17 @@ import {
 } from "lucide-react";
 import { useState, type ReactNode } from "react";
 
-import { revealThreadTerminalInRightPanel } from "../../lib/revealThreadTerminal";
+import { revealThreadTerminalInRightPanel } from "../lib/revealThreadTerminal";
 import { useThreadProjection, useThreadVisibleTurnItems } from "../../state/entities";
 import { useEnvironmentScope } from "../../state/session";
 import { useKnownTerminalSessions } from "../../state/terminalSessions";
-import { ThreadHoverCardPopup } from "../ThreadHoverCard";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
-import { AgentElapsed } from "./AgentElapsed";
-import { openProcessDetailsDialog } from "./ChatOverlayHosts";
+import { ThreadHoverCardPopup } from "~/components/ThreadHoverCard";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
+import { AgentElapsed } from "~/components/chat/AgentElapsed";
+import { openProcessDetailsDialog } from "./ProcessDetailsDialogHost";
 import { ProcessTooltipContent } from "./ProcessTooltipContent";
-import { ThreadDetailsControl } from "./ThreadDetailsControl";
-import { ThreadDetailsSection } from "./ThreadDetailsSection";
+import { ThreadDetailsControl } from "~/components/chat/ThreadDetailsControl";
+import { ThreadDetailsSection } from "~/components/chat/ThreadDetailsSection";
 import {
   deriveRunlessBackgroundOwnerActive,
   deriveThreadProcessTaskRows,
@@ -47,7 +47,7 @@ import {
 import {
   THREAD_DETAILS_PANEL_LOCKED_ROW_CLASS,
   THREAD_DETAILS_PANEL_ROW_CONTENT_CLASS,
-} from "./threadDetailsPanelStyles";
+} from "~/components/chat/threadDetailsPanelStyles";
 
 const THREAD_PROCESSES_INITIAL_COUNT = 6;
 const THREAD_PROCESSES_PAGE_COUNT = 12;

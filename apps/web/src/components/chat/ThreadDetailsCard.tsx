@@ -19,11 +19,15 @@ import {
 import { observeResize } from "../../lib/observeResize";
 import { requestWorkspaceFocus } from "../../lib/workspaceFocus";
 
+const SCROLLABLE_CONTENT_SELECTOR =
+  "[data-thread-relationships-panel], [data-thread-side-chats-panel], [data-thread-details-pr-list], [data-thread-automations-panel], [data-thread-details-server-overflow]";
+
 export function ThreadDetailsCard({
   threadRef,
   anchor,
   handle,
   contentKey,
+  additionalScrollableContentSelector,
   onContextMenu,
   children,
 }: {
@@ -32,6 +36,8 @@ export function ThreadDetailsCard({
   handle: ReturnType<typeof PopoverCreateHandle>;
   /** Changes when the set of rendered items changes, so cached heights are measured again. */
   contentKey: string;
+  /** Extra growing lists that must not count toward density, as a querySelectorAll argument. */
+  additionalScrollableContentSelector?: string;
   onContextMenu?: MouseEventHandler<HTMLDivElement>;
   children: (density: "full" | "compact" | "essential") => ReactNode;
 }) {
@@ -81,7 +87,9 @@ export function ThreadDetailsCard({
       // PR lists, servers, processes, lineage, side chats and automations scroll as they grow.
       // Counting them toward density would hide the section and workspace controls.
       const lists = element.querySelectorAll<HTMLElement>(
-        "[data-thread-relationships-panel], [data-thread-side-chats-panel], [data-thread-details-pr-list], [data-thread-automations-panel], [data-thread-processes-panel], [data-thread-details-server-overflow]",
+        additionalScrollableContentSelector
+          ? `${SCROLLABLE_CONTENT_SELECTOR}, ${additionalScrollableContentSelector}`
+          : SCROLLABLE_CONTENT_SELECTOR,
       );
       const fittingHeight =
         next - Array.from(lists).reduce((sum, list) => sum + list.offsetHeight, 0);
@@ -107,6 +115,7 @@ export function ThreadDetailsCard({
     contentElement,
     density,
     measurementKey,
+    additionalScrollableContentSelector,
     cardWidth,
     measureDetailsCard,
     environmentId,

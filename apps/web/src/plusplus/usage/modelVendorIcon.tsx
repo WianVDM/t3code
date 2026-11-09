@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import { ProviderDriverKind } from "@t3tools/contracts";
 
 import { cn } from "~/lib/utils";
-import { ClaudeAI, type Icon, OpenAI } from "../Icons";
+import { ClaudeAI, type Icon, OpenAI } from "~/components/Icons";
 
 const KimiLogo: Icon = ({ className, ...props }) => (
   <svg {...props} viewBox="0 0 24 24" fillRule="evenodd" className={cn("fill-current", className)}>

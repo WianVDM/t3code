@@ -16,7 +16,7 @@ const state = vi.hoisted(() => ({
 vi.mock(import("../../state/desktopUpdate"), () => ({
   useDesktopUpdateState: () => state.update,
 }));
-vi.mock(import("../../state/upstreamRelease"), () => ({
+vi.mock(import("../state/upstreamRelease"), () => ({
   useUpstreamRelease: () => state.release,
   startUpstreamMerge: state.startUpstreamMerge,
   runManualUpstreamCheck: state.runManualUpstreamCheck,
@@ -32,7 +32,7 @@ vi.mock(import("../upstreamRelease.logic"), async (original) => ({
 }));
 // The real row reads write permission and overrides from live environment state;
 // this suite tests the merge gate.
-vi.mock(import("./settingsLayout"), async (original) => ({
+vi.mock(import("~/components/settings/settingsLayout"), async (original) => ({
   ...(await original()),
   SettingsRow: ({
     title,

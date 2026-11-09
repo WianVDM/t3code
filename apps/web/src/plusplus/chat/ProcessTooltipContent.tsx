@@ -1,8 +1,8 @@
 import { FolderIcon, GitBranchIcon, TerminalIcon } from "lucide-react";
 
-import { ThreadHoverCard } from "../ThreadHoverCard";
-import { MiddleTruncate } from "../ui/middle-truncate";
-import { AgentElapsed } from "./AgentElapsed";
+import { ThreadHoverCard } from "~/components/ThreadHoverCard";
+import { MiddleTruncate } from "~/components/ui/middle-truncate";
+import { AgentElapsed } from "~/components/chat/AgentElapsed";
 
 /**
  * Rich hover for a Processes row, in the Lineage style. Everything shown is already projected or

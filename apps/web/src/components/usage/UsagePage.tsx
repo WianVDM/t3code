@@ -100,7 +100,7 @@ import {
   resolveUsageShortcut,
   type UsageMetric,
 } from "./usageShortcuts";
-import { ModelVendorIcon, usesModelVendorIcon } from "./modelVendorIcon";
+import { ModelVendorIcon, usesModelVendorIcon } from "~/plusplus/usage/modelVendorIcon";
 import { PROVIDER_ORDER, PROVIDER_PRESENTATION, providersWithUsage } from "./usageProviders";
 import {
   readUsagePagePreferences,
