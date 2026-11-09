@@ -507,11 +507,22 @@ export const makeCloudflaredRelayClient = Effect.fn("cloudflared.make")(function
         fileSystem.remove(directory, { recursive: true, force: true }).pipe(Effect.ignore),
     );
     yield* fileSystem.writeFileString(path.join(candidate, owner), "");
+    // oxlint-disable-next-line t3code/no-global-process-runtime -- Lock publication must branch on the real host kernel's rename semantics, not the injectable target platform.
+    const windowsHost = process.platform === "win32";
     for (let attempt = 0; attempt < INSTALL_LOCK_RETRY_COUNT; attempt += 1) {
-      const acquired = yield* Effect.acquireRelease(
-        // Publish a populated directory atomically, with no ownerless acquisition window.
-        fileSystem.rename(candidate, lockPath),
-        () => releaseOwnedLock(lockPath, owner),
+      // Windows rename silently replaces an occupied file target, so reserve the path with an exclusive wx write and rename over it; POSIX rename fails on an occupied target and publishes directly.
+      const publish = windowsHost
+        ? Effect.acquireUseRelease(
+            fileSystem.writeFileString(lockPath, owner, { flag: "wx" }),
+            () => fileSystem.rename(candidate, lockPath),
+            (_reservation, exit) =>
+              Exit.isSuccess(exit)
+                ? Effect.void
+                : fileSystem.remove(lockPath, { force: true }).pipe(Effect.ignore),
+          )
+        : fileSystem.rename(candidate, lockPath);
+      const acquired = yield* Effect.acquireRelease(publish, () =>
+        releaseOwnedLock(lockPath, owner),
       ).pipe(
         Effect.as(true),
         Effect.catchIf(isLockContention, () => Effect.succeed(false)),

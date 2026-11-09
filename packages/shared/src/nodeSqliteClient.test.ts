@@ -358,10 +358,7 @@ it.effect("fails a read-only transaction whose reader stops, then starts a new r
 );
 
 const withFileClient = <A, E>(
-  setup: (
-    sql: SqlClient.SqlClient,
-    filename: string,
-  ) => Effect.Effect<A, E, SqlClient.SqlClient | FileSystem.FileSystem>,
+  setup: (sql: SqlClient.SqlClient) => Effect.Effect<A, E, SqlClient.SqlClient>,
 ) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -369,17 +366,16 @@ const withFileClient = <A, E>(
     const directory = yield* fs.makeTempDirectoryScoped({ prefix: "t3-sqlite-reader-off-" });
     const filename = path.join(directory, "state.sqlite");
     return yield* Effect.gen(function* () {
-      return yield* setup(yield* SqlClient.SqlClient, filename);
+      return yield* setup(yield* SqlClient.SqlClient);
     }).pipe(Effect.provide(SqliteClient.layer({ filename, readerWorker: true })));
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer));
 
 it.effect("uses the writer when the reader cannot open the database", () =>
-  withFileClient((sql, filename) =>
+  withFileClient((sql) =>
     Effect.gen(function* () {
-      yield* sql`PRAGMA journal_mode = WAL`;
+      // Windows forbids deleting the open file; staying on the default journal mode makes the reader worker report unavailable at startup instead.
       yield* sql`CREATE TABLE entries(name TEXT NOT NULL)`;
       yield* sql`INSERT INTO entries VALUES ('kept')`;
-      yield* (yield* FileSystem.FileSystem).remove(filename);
       const startedBefore = startedWorkers.length;
 
       assert.equal(yield* sql.withTransaction(countEntries(sql)).pipe(SqliteClient.readOnly), 1);
