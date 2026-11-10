@@ -15,6 +15,18 @@
     }
   },
   "plusplusOwnedRoots": ["assets/fork", "packages/plusplus", "apps/web/src/plusplus"],
+  "boundaryInfrastructure": [
+    "package.json",
+    "scripts/forkInventory.ts",
+    "scripts/forkInventory.test.ts",
+    "scripts/check-fork-boundaries.ts",
+    "scripts/check-fork-boundaries.test.ts",
+    "scripts/check-changed.ts",
+    "scripts/check-changed.test.ts",
+    ".github/scripts/ci-changes.cjs",
+    ".github/scripts/ci-changes.test.cjs",
+    ".github/workflows/ci.yml"
+  ],
   "conflictHistory": [
     {
       "commit": "af021cfa142e947486cd78469bb45aa052a686a3",
@@ -507,372 +519,319 @@
       "id": "DEL-001",
       "category": "upstream-owned",
       "change": "deleted",
-      "path": ".agents/skills/contribution-triage/SKILL.md",
-      "inUpstreamHead": true
+      "path": ".agents/skills/contribution-triage/SKILL.md"
     },
     {
       "id": "DEL-002",
       "category": "upstream-owned",
       "change": "deleted",
-      "path": ".github/TRIAGE_EXEMPTIONS.td",
-      "inUpstreamHead": true
+      "path": ".github/TRIAGE_EXEMPTIONS.td"
     },
     {
       "id": "DEL-003",
       "category": "upstream-owned",
       "change": "deleted",
-      "path": ".github/VOUCHED.td",
-      "inUpstreamHead": true
+      "path": ".github/VOUCHED.td"
     },
     {
       "id": "DEL-004",
       "category": "upstream-owned",
       "change": "deleted",
-      "path": ".github/scripts/mirror-play-apk.cjs",
-      "inUpstreamHead": true
+      "path": ".github/scripts/mirror-play-apk.cjs"
     },
     {
       "id": "DEL-005",
       "category": "upstream-owned",
       "change": "deleted",
-      "path": ".github/scripts/relay-state-output.test.cjs",
-      "inUpstreamHead": true
+      "path": ".github/scripts/relay-state-output.test.cjs"
     },
     {
       "id": "DEL-006",
       "category": "upstream-owned",
       "change": "deleted",
-      "path": ".github/scripts/stage-preview-bundle.py",
-      "inUpstreamHead": true
+      "path": ".github/scripts/stage-preview-bundle.py"
     },
     {
       "id": "DEL-007",
       "category": "upstream-owned",
       "change": "deleted",
-      "path": ".github/scripts/stage-preview-bundle.test.py",
-      "inUpstreamHead": true
+      "path": ".github/scripts/stage-preview-bundle.test.py"
     },
     {
       "id": "DEL-008",
       "category": "upstream-owned",
       "change": "deleted",
-      "path": ".github/scripts/vercel-deployment-output.test.cjs",
-      "inUpstreamHead": true
+      "path": ".github/scripts/vercel-deployment-output.test.cjs"
     },
     {
       "id": "DEL-009",
       "category": "upstream-owned",
       "change": "deleted",
-      "path": ".github/workflows/deploy-relay.yml",
-      "inUpstreamHead": true
+      "path": ".github/workflows/deploy-relay.yml"
     },
     {
       "id": "DEL-010",
       "category": "upstream-owned",
       "change": "deleted",
-      "path": ".github/workflows/desktop-macos-preview-publish.yml",
-      "inUpstreamHead": true
+      "path": ".github/workflows/desktop-macos-preview-publish.yml"
     },
     {
       "id": "DEL-011",
       "category": "upstream-owned",
       "change": "deleted",
-      "path": ".github/workflows/desktop-macos-preview.yml",
-      "inUpstreamHead": true
+      "path": ".github/workflows/desktop-macos-preview.yml"
     },
     {
       "id": "DEL-012",
       "category": "upstream-owned",
       "change": "deleted",
-      "path": ".github/workflows/mobile-android-apk.yml",
-      "inUpstreamHead": true
+      "path": ".github/workflows/mobile-android-apk.yml"
     },
     {
       "id": "DEL-013",
       "category": "upstream-owned",
       "change": "deleted",
-      "path": ".github/workflows/mobile-eas-preview-fork.yml",
-      "inUpstreamHead": true
+      "path": ".github/workflows/mobile-eas-preview-fork.yml"
     },
     {
       "id": "DEL-014",
       "category": "upstream-owned",
       "change": "deleted",
-      "path": ".github/workflows/mobile-eas-preview.yml",
-      "inUpstreamHead": true
+      "path": ".github/workflows/mobile-eas-preview.yml"
     },
     {
       "id": "DEL-015",
       "category": "upstream-owned",
       "change": "deleted",
-      "path": ".github/workflows/mobile-eas-production.yml",
-      "inUpstreamHead": true
+      "path": ".github/workflows/mobile-eas-production.yml"
     },
     {
       "id": "DEL-016",
       "category": "upstream-owned",
       "change": "deleted",
-      "path": ".github/workflows/mobile-fingerprint-check.yml",
-      "inUpstreamHead": true
+      "path": ".github/workflows/mobile-fingerprint-check.yml"
     },
     {
       "id": "DEL-017",
       "category": "upstream-owned",
       "change": "deleted",
-      "path": ".github/workflows/mobile-fingerprint-label.yml",
-      "inUpstreamHead": true
+      "path": ".github/workflows/mobile-fingerprint-label.yml"
     },
     {
       "id": "DEL-018",
       "category": "upstream-owned",
       "change": "deleted",
-      "path": ".github/workflows/mobile-showcase-screenshots.yml",
-      "inUpstreamHead": true
+      "path": ".github/workflows/mobile-showcase-screenshots.yml"
     },
     {
       "id": "DEL-019",
       "category": "upstream-owned",
       "change": "deleted",
-      "path": ".github/workflows/pr-vouch.yml",
-      "inUpstreamHead": true
+      "path": ".github/workflows/pr-vouch.yml"
     },
     {
       "id": "DEL-020",
       "category": "upstream-owned",
       "change": "deleted",
-      "path": ".github/workflows/publish-aur.yml",
-      "inUpstreamHead": true
+      "path": ".github/workflows/publish-aur.yml"
     },
     {
       "id": "DEL-021",
       "category": "upstream-owned",
       "change": "deleted",
-      "path": ".github/workflows/relay-preview-cleanup.yml",
-      "inUpstreamHead": true
+      "path": ".github/workflows/relay-preview-cleanup.yml"
     },
     {
       "id": "DEL-022",
       "category": "upstream-owned",
       "change": "deleted",
-      "path": ".github/workflows/relay-preview.yml",
-      "inUpstreamHead": true
+      "path": ".github/workflows/relay-preview.yml"
     },
     {
       "id": "DEL-023",
       "category": "upstream-owned",
       "change": "deleted",
-      "path": ".github/workflows/web-preview.yml",
-      "inUpstreamHead": true
+      "path": ".github/workflows/web-preview.yml"
     },
     {
       "id": "DEL-024",
       "category": "upstream-owned",
       "change": "deleted",
-      "path": ".macroscope/approvability.md",
-      "inUpstreamHead": true
+      "path": ".macroscope/approvability.md"
     },
     {
       "id": "DEL-025",
       "category": "upstream-owned",
       "change": "deleted",
-      "path": ".macroscope/check-run-agents/effect-service-conventions.md",
-      "inUpstreamHead": true
+      "path": ".macroscope/check-run-agents/effect-service-conventions.md"
     },
     {
       "id": "DEL-026",
       "category": "upstream-owned",
       "change": "deleted",
-      "path": ".macroscope/check-run-agents/test-signal.md",
-      "inUpstreamHead": true
+      "path": ".macroscope/check-run-agents/test-signal.md"
     },
     {
       "id": "DEL-027",
       "category": "upstream-owned",
       "change": "deleted",
-      "path": ".macroscope/check-run-agents/ui-consistency.md",
-      "inUpstreamHead": true
+      "path": ".macroscope/check-run-agents/ui-consistency.md"
     },
     {
       "id": "DEL-028",
       "category": "upstream-owned",
       "change": "deleted",
-      "path": ".macroscope/ignore.md",
-      "inUpstreamHead": true
+      "path": ".macroscope/ignore.md"
     },
     {
       "id": "DEL-029",
       "category": "upstream-owned",
       "change": "deleted",
-      "path": "apps/marketing/public/nightly-sky.svg",
-      "inUpstreamHead": true
+      "path": "apps/marketing/public/nightly-sky.svg"
     },
     {
       "id": "DEL-030",
       "category": "upstream-owned",
       "change": "deleted",
-      "path": "apps/marketing/src/assets/icon-nightly.webp",
-      "inUpstreamHead": true
+      "path": "apps/marketing/src/assets/icon-nightly.webp"
     },
     {
       "id": "DEL-031",
       "category": "upstream-owned",
       "change": "deleted",
-      "path": "apps/web/src/state/npmRelease.test.ts",
-      "inUpstreamHead": true
+      "path": "apps/web/src/state/npmRelease.test.ts"
     },
     {
       "id": "DEL-032",
       "category": "upstream-owned",
       "change": "deleted",
-      "path": "apps/web/src/state/npmRelease.ts",
-      "inUpstreamHead": true
+      "path": "apps/web/src/state/npmRelease.ts"
     },
     {
       "id": "DEL-033",
       "category": "upstream-owned",
       "change": "deleted",
-      "path": "docs/operations/mobile-app-store-screenshots.md",
-      "inUpstreamHead": true
+      "path": "docs/operations/mobile-app-store-screenshots.md"
     },
     {
       "id": "DEL-034",
       "category": "upstream-owned",
       "change": "deleted",
-      "path": "evals/test-signal/README.md",
-      "inUpstreamHead": true
+      "path": "evals/test-signal/README.md"
     },
     {
       "id": "DEL-035",
       "category": "upstream-owned",
       "change": "deleted",
-      "path": "evals/test-signal/cases.ts",
-      "inUpstreamHead": true
+      "path": "evals/test-signal/cases.ts"
     },
     {
       "id": "DEL-036",
       "category": "upstream-owned",
       "change": "deleted",
-      "path": "evals/test-signal/grade.ts",
-      "inUpstreamHead": true
+      "path": "evals/test-signal/grade.ts"
     },
     {
       "id": "DEL-037",
       "category": "upstream-owned",
       "change": "deleted",
-      "path": "evals/test-signal/run.test.ts",
-      "inUpstreamHead": true
+      "path": "evals/test-signal/run.test.ts"
     },
     {
       "id": "DEL-038",
       "category": "upstream-owned",
       "change": "deleted",
-      "path": "evals/test-signal/run.ts",
-      "inUpstreamHead": true
+      "path": "evals/test-signal/run.ts"
     },
     {
       "id": "DEL-039",
       "category": "upstream-owned",
       "change": "deleted",
-      "path": "packaging/aur/.gitignore",
-      "inUpstreamHead": true
+      "path": "packaging/aur/.gitignore"
     },
     {
       "id": "DEL-040",
       "category": "upstream-owned",
       "change": "deleted",
-      "path": "packaging/aur/README.md",
-      "inUpstreamHead": true
+      "path": "packaging/aur/README.md"
     },
     {
       "id": "DEL-041",
       "category": "upstream-owned",
       "change": "deleted",
-      "path": "packaging/aur/scripts/release.sh",
-      "inUpstreamHead": true
+      "path": "packaging/aur/scripts/release.sh"
     },
     {
       "id": "DEL-042",
       "category": "upstream-owned",
       "change": "deleted",
-      "path": "packaging/aur/t3code-bin/PKGBUILD",
-      "inUpstreamHead": true
+      "path": "packaging/aur/t3code-bin/PKGBUILD"
     },
     {
       "id": "DEL-043",
       "category": "upstream-owned",
       "change": "deleted",
-      "path": "packaging/aur/t3code-nightly-bin/PKGBUILD",
-      "inUpstreamHead": true
+      "path": "packaging/aur/t3code-nightly-bin/PKGBUILD"
     },
     {
       "id": "DEL-044",
       "category": "upstream-owned",
       "change": "deleted",
-      "path": "scripts/build-npm-launcher.test.ts",
-      "inUpstreamHead": true
+      "path": "scripts/build-npm-launcher.test.ts"
     },
     {
       "id": "DEL-045",
       "category": "upstream-owned",
       "change": "deleted",
-      "path": "scripts/build-npm-launcher.ts",
-      "inUpstreamHead": true
+      "path": "scripts/build-npm-launcher.ts"
     },
     {
       "id": "DEL-046",
       "category": "upstream-owned",
       "change": "deleted",
-      "path": "scripts/generate-release-notes.test.ts",
-      "inUpstreamHead": true
+      "path": "scripts/generate-release-notes.test.ts"
     },
     {
       "id": "DEL-047",
       "category": "upstream-owned",
       "change": "deleted",
-      "path": "scripts/generate-release-notes.ts",
-      "inUpstreamHead": true
+      "path": "scripts/generate-release-notes.ts"
     },
     {
       "id": "DEL-048",
       "category": "upstream-owned",
       "change": "deleted",
-      "path": "scripts/merge-update-manifests.test.ts",
-      "inUpstreamHead": true
+      "path": "scripts/merge-update-manifests.test.ts"
     },
     {
       "id": "DEL-049",
       "category": "upstream-owned",
       "change": "deleted",
-      "path": "scripts/merge-update-manifests.ts",
-      "inUpstreamHead": true
+      "path": "scripts/merge-update-manifests.ts"
     },
     {
       "id": "DEL-050",
       "category": "upstream-owned",
       "change": "deleted",
-      "path": "scripts/notify-discord-release.test.ts",
-      "inUpstreamHead": true
+      "path": "scripts/notify-discord-release.test.ts"
     },
     {
       "id": "DEL-051",
       "category": "upstream-owned",
       "change": "deleted",
-      "path": "scripts/notify-discord-release.ts",
-      "inUpstreamHead": true
+      "path": "scripts/notify-discord-release.ts"
     },
     {
       "id": "DEL-052",
       "category": "upstream-owned",
       "change": "deleted",
-      "path": "scripts/npm-launcher/bin.mjs",
-      "inUpstreamHead": true
+      "path": "scripts/npm-launcher/bin.mjs"
     },
     {
       "id": "DEL-053",
       "category": "upstream-owned",
       "change": "deleted",
-      "path": "scripts/npm-launcher/t3.mjs",
-      "inUpstreamHead": true
+      "path": "scripts/npm-launcher/t3.mjs"
     },
     {
       "id": "SEAM-001",

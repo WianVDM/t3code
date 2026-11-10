@@ -21,10 +21,15 @@ const REPO_ROOT = NodePath.resolve(import.meta.dirname, "..");
 
 const decodeForkInventory = Schema.decodeUnknownSync(ForkInventory);
 
+const decodeForkInventoryStrict = Schema.decodeUnknownSync(ForkInventory, {
+  onExcessProperty: "error",
+});
+
+const loadRecordedInventorySource = (): unknown =>
+  JSON.parse(NodeFS.readFileSync(NodePath.join(REPO_ROOT, FORK_INVENTORY_PATH), "utf8"));
+
 const loadRecordedInventory = (): ForkInventory =>
-  decodeForkInventory(
-    JSON.parse(NodeFS.readFileSync(NodePath.join(REPO_ROOT, FORK_INVENTORY_PATH), "utf8")),
-  );
+  decodeForkInventory(loadRecordedInventorySource());
 
 type Mutable<T> =
   T extends ReadonlyArray<infer U>
@@ -50,6 +55,7 @@ const minimalInventory = (): Mutable<ForkInventory> => ({
     },
   },
   plusplusOwnedRoots: [],
+  boundaryInfrastructure: [],
   conflictHistory: [],
   exceptions: [],
   entries: [
@@ -299,11 +305,79 @@ describe("validateForkInventory", () => {
     assert.isTrue(issues.includes("conflictHistory: shortsha has no subject"));
     assert.isTrue(issues.includes("conflictHistory: shortsha lists no conflicted files"));
   });
+
+  it("accepts unique normalized boundaryInfrastructure file paths", () => {
+    const inventory = minimalInventory();
+    inventory.boundaryInfrastructure = [
+      "package.json",
+      "scripts/check-changed.ts",
+      ".github/workflows/ci.yml",
+    ];
+    assert.deepStrictEqual(validateForkInventory(inventory), []);
+  });
+
+  it("rejects boundaryInfrastructure globs, directories, and unnormalized paths", () => {
+    const inventory = minimalInventory();
+    inventory.boundaryInfrastructure = [
+      "scripts/*.ts",
+      "scripts/check?.ts",
+      ".github/scripts/[ci].cjs",
+      "scripts/",
+      "/package.json",
+      "./package.json",
+      "scripts//check-changed.ts",
+      "../outside/package.json",
+      "scripts\\check-changed.ts",
+      " package.json ",
+    ];
+    const issues = validateForkInventory(inventory);
+    for (const path of inventory.boundaryInfrastructure) {
+      assert.isTrue(
+        issues.includes(
+          `boundaryInfrastructure: ${path} is not a normalized repo-relative file path`,
+        ),
+        `expected rejection of ${path}`,
+      );
+    }
+  });
+
+  it("rejects duplicate boundaryInfrastructure paths and self-reference", () => {
+    const inventory = minimalInventory();
+    inventory.boundaryInfrastructure = [
+      "scripts/check-changed.ts",
+      "scripts/check-changed.ts",
+      "config/fork-inventory.json",
+    ];
+    const issues = validateForkInventory(inventory);
+    assert.isTrue(
+      issues.includes("boundaryInfrastructure: duplicate path scripts/check-changed.ts"),
+    );
+    assert.isTrue(
+      issues.includes(
+        "boundaryInfrastructure: must not list the policy file config/fork-inventory.json itself",
+      ),
+    );
+  });
+
+  it("fails closed when the policy is missing boundaryInfrastructure or has a malformed one", () => {
+    const { boundaryInfrastructure: _omitted, ...withoutField } = minimalInventory();
+    assert.throws(() => decodeForkInventory(withoutField));
+    assert.throws(() =>
+      decodeForkInventory({ ...minimalInventory(), boundaryInfrastructure: "scripts/*.ts" }),
+    );
+    assert.throws(() =>
+      decodeForkInventory({ ...minimalInventory(), boundaryInfrastructure: [42] }),
+    );
+    assert.throws(() =>
+      decodeForkInventoryStrict({ ...minimalInventory(), boundarySpoof: ["package.json"] }),
+    );
+  });
 });
 
 describe("recorded fork inventory", () => {
-  it("decodes, validates clean, and matches the issue #33 baseline", () => {
+  it("decodes strictly, validates clean, and matches the issue #33 baseline", () => {
     const inventory = loadRecordedInventory();
+    assert.deepStrictEqual(decodeForkInventoryStrict(loadRecordedInventorySource()), inventory);
     assert.deepStrictEqual(validateForkInventory(inventory), []);
     assert.strictEqual(inventory.baseline.counts.total, 363);
     assert.strictEqual(inventory.baseline.counts.plusplusOwned, 65);
@@ -312,6 +386,18 @@ describe("recorded fork inventory", () => {
     assert.strictEqual(inventory.baseline.counts.sharedModified, 244);
     assert.strictEqual(inventory.baseline.counts.renamed, 1);
     assert.strictEqual(new Set(inventory.entries.map((entry) => entry.id)).size, 363);
+    assert.deepStrictEqual(inventory.boundaryInfrastructure, [
+      "package.json",
+      "scripts/forkInventory.ts",
+      "scripts/forkInventory.test.ts",
+      "scripts/check-fork-boundaries.ts",
+      "scripts/check-fork-boundaries.test.ts",
+      "scripts/check-changed.ts",
+      "scripts/check-changed.test.ts",
+      ".github/scripts/ci-changes.cjs",
+      ".github/scripts/ci-changes.test.cjs",
+      ".github/workflows/ci.yml",
+    ]);
     assert.isTrue(inventory.exceptions.length > 0);
     const deletedWithException = new Set(
       inventory.exceptions.flatMap((exception: ForkInventoryException) => exception.entryIds),
