@@ -86,6 +86,7 @@ export const ForkInventory = Schema.Struct({
   issue: Schema.String,
   baseline: ForkInventoryBaseline,
   plusplusOwnedRoots: Schema.Array(Schema.String),
+  boundaryInfrastructure: Schema.Array(Schema.String),
   conflictHistory: Schema.Array(ForkInventoryConflict),
   exceptions: Schema.Array(ForkInventoryException),
   entries: Schema.Array(ForkInventoryEntry),
@@ -123,6 +124,17 @@ export function parseNameStatusZ(output: string): NameStatusRecord[] {
     }
   }
   return records;
+}
+
+const GLOB_OR_BACKSLASH_PATTERN = /[*?[\]\\]/;
+
+function isNormalizedRepoFilePath(path: string): boolean {
+  if (path.length === 0 || path.trim() !== path) return false;
+  if (path.startsWith("/") || path.endsWith("/")) return false;
+  if (GLOB_OR_BACKSLASH_PATTERN.test(path)) return false;
+  return path
+    .split("/")
+    .every((segment) => segment.length > 0 && segment !== "." && segment !== "..");
 }
 
 const byPath = (a: { path: string }, b: { path: string }): number =>
@@ -269,6 +281,20 @@ export function validateForkInventory(inventory: ForkInventory): string[] {
           `${exception.id}: exceptions must not reference plusplus-owned entry ${entryId}`,
         );
       }
+    }
+  }
+
+  const seenBoundaryPaths = new Set<string>();
+  for (const path of inventory.boundaryInfrastructure) {
+    if (seenBoundaryPaths.has(path)) issues.push(`boundaryInfrastructure: duplicate path ${path}`);
+    seenBoundaryPaths.add(path);
+    if (!isNormalizedRepoFilePath(path)) {
+      issues.push(`boundaryInfrastructure: ${path} is not a normalized repo-relative file path`);
+    }
+    if (path === FORK_INVENTORY_PATH) {
+      issues.push(
+        `boundaryInfrastructure: must not list the policy file ${FORK_INVENTORY_PATH} itself`,
+      );
     }
   }
 
