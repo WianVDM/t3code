@@ -6,6 +6,9 @@
 // coverage of the changed client files).
 // A dependency change also gets the unused-patch install check below. CI still
 // runs the full test suites and the jobs listed in the summary.
+// Every run also gets the ++ fork-boundary check against the resolved base
+// (scripts/check-fork-boundaries.ts); its violations fail this command even
+// though CI runs the same check only as an advisory job.
 //
 //   vp run check:changed                  compare against the closest merge base with any remote main
 //   vp run check:changed <ref>            compare against the merge base with <ref>
@@ -504,6 +507,12 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
   const compilerFiles = compilerApps.reduce((count, app) => count + app.names.length, 0);
 
   const steps: Array<Step<never>> = [
+    // Unconditional: the ++ fork-boundary checker reads its policy from this
+    // run's resolved base, and its failures propagate like any other step.
+    {
+      name: "fork boundaries",
+      run: vp(["exec", "node", "scripts/check-fork-boundaries.ts", base]),
+    },
     ...(runPatchCheck ? [{ name: "unused patches", run: checkPatches }] : []),
     ...(present.length > 0
       ? [command("format", ["fmt", "--check", "--no-error-on-unmatched-pattern", ...present])]
