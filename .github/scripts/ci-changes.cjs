@@ -18,6 +18,32 @@ const RUNS_EVERYTHING = [
   /^apps\/mobile\/deps\//,
 ];
 
+// The ++ fork-boundary infrastructure named by the trusted policy shapes how
+// every other change is gated, so a change to any of its files runs full CI.
+// A missing or unreadable policy is fail-closed (null) and also runs full CI;
+// the boundary checker itself only trusts the policy at the base commit.
+const BOUNDARY_INVENTORY_PATH = path.join(root, "config", "fork-inventory.json");
+
+function boundaryInfrastructureOf(policyText) {
+  try {
+    const policy = JSON.parse(policyText);
+    const paths = policy?.boundaryInfrastructure;
+    return Array.isArray(paths) && paths.every((entry) => typeof entry === "string")
+      ? new Set(paths)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function readBoundaryInfrastructure() {
+  try {
+    return boundaryInfrastructureOf(fs.readFileSync(BOUNDARY_INVENTORY_PATH, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
 // Includes cross-package reads absent from package.json dependencies.
 const EXTRA_OWNERS = [
   // Vite configs and tsconfigs of these apps import scripts/lib directly.
@@ -106,14 +132,19 @@ function ownersOf(file, packages) {
   return extra.length > 0 ? extra : null;
 }
 
-function decide(files, packages, full) {
+function decide(files, packages, full, boundaryInfra = readBoundaryInfrastructure()) {
   const all = new Set(packages.map((pkg) => pkg.name));
   let affected = new Set();
-  let everything = full || files === null;
+  let everything = full || files === null || boundaryInfra === null;
   let rust = false;
 
   for (const file of files ?? []) {
     if (RUST.test(file)) rust = true;
+    if (boundaryInfra?.has(file)) {
+      everything = true;
+      console.error(`Boundary infrastructure runs everything: ${file}`);
+      continue;
+    }
     const owners = ownersOf(file, packages);
     if (owners === null) {
       everything = true;
@@ -181,6 +212,6 @@ function main() {
   for (const [key, value] of Object.entries(outputs)) console.log(`${key}=${value}`);
 }
 
-module.exports = { readWorkspace, decide };
+module.exports = { readWorkspace, decide, boundaryInfrastructureOf };
 
 if (require.main === module) main();
