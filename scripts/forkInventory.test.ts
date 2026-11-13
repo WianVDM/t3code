@@ -84,6 +84,24 @@ describe("parseNameStatusZ", () => {
       { status: "R", path: "meta/fork-app.xml", upstreamPath: "meta/app.xml" },
     ]);
   });
+
+  it("rejects typechange and copy statuses instead of skipping them", () => {
+    assert.throws(
+      () => parseNameStatusZ("T\0scripts/tool.sh\0"),
+      /unsupported git name-status "T"/,
+    );
+    assert.throws(
+      () => parseNameStatusZ("C075\0meta/app.xml\0meta/fork-app.xml\0"),
+      /unsupported git name-status "C075"/,
+    );
+  });
+
+  it("rejects an unknown status rather than misreading the tokens that follow it", () => {
+    assert.throws(
+      () => parseNameStatusZ("A\0docs/fork.md\0T\0Makefile\0A\0other.md\0"),
+      /unsupported git name-status "T"/,
+    );
+  });
 });
 
 describe("buildBaselineEntries", () => {
