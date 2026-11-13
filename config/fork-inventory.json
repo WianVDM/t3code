@@ -72,54 +72,14 @@
     {
       "id": "EXC-01",
       "appliesTo": ["A2"],
-      "rationale": "Upstream-hosted preview and deploy infrastructure (relay previews, Vercel web preview, macOS desktop previews) that the fork does not operate. Deletions are intentional; A2 must not restore them.",
-      "entryIds": [
-        "DEL-005",
-        "DEL-006",
-        "DEL-007",
-        "DEL-008",
-        "DEL-009",
-        "DEL-010",
-        "DEL-011",
-        "DEL-021",
-        "DEL-022",
-        "DEL-023"
-      ]
-    },
-    {
-      "id": "EXC-02",
-      "appliesTo": ["A2"],
-      "rationale": "Upstream mobile store publishing (EAS, Google Play mirroring, fingerprint automation, showcase screenshots) runs against pingdotgg accounts the fork cannot use. Deletions are intentional.",
-      "entryIds": [
-        "DEL-004",
-        "DEL-012",
-        "DEL-013",
-        "DEL-014",
-        "DEL-015",
-        "DEL-016",
-        "DEL-017",
-        "DEL-018",
-        "DEL-033"
-      ]
+      "rationale": "These three preview tests assert on upstream release.yml steps that the fork's release seam does not provide; they cannot pass without out-of-scope release changes. They stay deleted until B13 reconciles the release seam. The scripts and workflows they cover are restored.",
+      "entryIds": ["DEL-005", "DEL-007", "DEL-008"]
     },
     {
       "id": "EXC-03",
       "appliesTo": ["A2"],
-      "rationale": "Upstream npm publishing pipeline (npm launcher, update-manifest merging, Discord release notes, npmRelease state) was replaced by the fork release pipeline: scripts/build-release-metadata.ts, scripts/verify-fork-release.ts, scripts/upstream-sync.ts, and apps/web/src/state/releaseMetadata.ts. Deletions are intentional.",
-      "entryIds": [
-        "DEL-031",
-        "DEL-032",
-        "DEL-044",
-        "DEL-045",
-        "DEL-046",
-        "DEL-047",
-        "DEL-048",
-        "DEL-049",
-        "DEL-050",
-        "DEL-051",
-        "DEL-052",
-        "DEL-053"
-      ]
+      "rationale": "Discord release notifications post to pingdotgg's Discord webhook, which the fork does not hold. Deletions are intentional; the rest of the upstream npm/release pipeline is restored by A2 under fork ownership.",
+      "entryIds": ["DEL-050", "DEL-051"]
     },
     {
       "id": "EXC-04",
@@ -136,25 +96,8 @@
     {
       "id": "EXC-06",
       "appliesTo": ["A2"],
-      "rationale": "Upstream-internal macroscope review agents and the test-signal eval suite were dropped from the fork; evals/README.md and fork CI do not reference them. Deletions are intentional.",
-      "entryIds": [
-        "DEL-024",
-        "DEL-025",
-        "DEL-026",
-        "DEL-027",
-        "DEL-028",
-        "DEL-034",
-        "DEL-035",
-        "DEL-036",
-        "DEL-037",
-        "DEL-038"
-      ]
-    },
-    {
-      "id": "EXC-07",
-      "appliesTo": ["A2"],
-      "rationale": "Nightly-channel marketing assets belong to upstream's nightly distribution, which the fork does not publish. Deletions are intentional.",
-      "entryIds": ["DEL-029", "DEL-030"]
+      "rationale": "Upstream-internal macroscope review agent configuration was dropped from the fork; fork CI does not run macroscope. Deletions are intentional; the test-signal eval suite they referenced is restored by A2.",
+      "entryIds": ["DEL-024", "DEL-025", "DEL-026", "DEL-027", "DEL-028"]
     },
     {
       "id": "EXC-08",
