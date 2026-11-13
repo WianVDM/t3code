@@ -16,6 +16,9 @@ const INERT = [
 const RUNS_EVERYTHING = [
   /^packages\/shared\/src\/(HostProcess|testing\/(longTempDir|providerEnv))\.ts$/,
   /^apps\/mobile\/deps\//,
+  // The policy is read from the head checkout, so editing it runs every job: a PR
+  // cannot strip boundaryInfrastructure entries to narrow its own run.
+  /^config\/fork-inventory\.json$/,
 ];
 
 // The ++ fork-boundary infrastructure named by the trusted policy shapes how
