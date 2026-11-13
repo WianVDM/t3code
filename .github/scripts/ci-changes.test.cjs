@@ -245,6 +245,17 @@ test("every recorded boundaryInfrastructure path runs every job", () => {
   }
 });
 
+// The empty set stands in for a head policy stripped of every boundary entry.
+test("a hostile inventory edit stripping boundary entries still runs every job", () => {
+  const { outputs } = decide(
+    ["config/fork-inventory.json", ".github/scripts/ci-changes.cjs"],
+    packages,
+    false,
+    new Set(),
+  );
+  assertEverything(outputs, "config/fork-inventory.json");
+});
+
 test("a scripts file outside the boundary list stays scoped", () => {
   const { outputs } = decide(["scripts/build-cli-archive.ts"], packages, false);
   assertNotEverything(outputs);
