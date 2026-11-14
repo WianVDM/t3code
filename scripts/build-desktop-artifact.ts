@@ -15,6 +15,7 @@ import {
   type DirectoryRecord,
 } from "@electron/asar";
 
+import { resolveForkGitHubPublishConfig } from "@t3tools/shared/cliRelease";
 import { fromYaml } from "@t3tools/shared/schemaYaml";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { clerkFrontendApiHostnameFromPublishableKey } from "@t3tools/shared/relayAuth";
@@ -2695,42 +2696,9 @@ export function resolveDesktopRuntimeDependencies(
   );
 }
 
-// T3 Code ++ releases publish to WianVDM/t3code unless T3CODE_DESKTOP_UPDATE_REPOSITORY or GITHUB_REPOSITORY overrides it.
-const DEFAULT_UPDATE_REPOSITORY = { owner: "WianVDM", repo: "t3code" } as const;
-
-function githubPublishConfig(
-  repository: { readonly owner: string; readonly repo: string },
-  updateChannel: "latest" | "nightly",
-) {
-  return {
-    provider: "github",
-    owner: repository.owner,
-    repo: repository.repo,
-    releaseType: updateChannel === "nightly" ? "prerelease" : "release",
-    ...(updateChannel === "nightly" ? { channel: "nightly" as const } : {}),
-  };
-}
-
-export const resolveGitHubPublishConfig = Effect.fn("resolveGitHubPublishConfig")(function* (
-  updateChannel: "latest" | "nightly",
-  variant: DesktopBuildVariant = "official",
-) {
-  const env = yield* Config.all({
-    updateRepository: Config.String("T3CODE_DESKTOP_UPDATE_REPOSITORY").pipe(Config.option),
-    githubRepository: Config.String("GITHUB_REPOSITORY").pipe(Config.option),
-  });
-  const rawRepo = (
-    Option.getOrUndefined(env.updateRepository)?.trim() ||
-    Option.getOrUndefined(env.githubRepository)?.trim() ||
-    (variant === "fork" ? FORK_DESKTOP_BUILD.updateRepository : "")
-  ).trim();
-  if (!rawRepo) return undefined;
-
-  const [owner, repo, ...rest] = rawRepo.split("/");
-  if (!owner || !repo || rest.length > 0) return undefined;
-
-  return githubPublishConfig({ owner, repo }, updateChannel);
-});
+// The fork owns update-feed resolution: fork and ++ builds always publish to the fork and never
+// read GITHUB_REPOSITORY, while an official build only inherits a valid one.
+export { resolveForkGitHubPublishConfig };
 
 export function resolveDesktopUpdateChannel(version: string): "latest" | "nightly" {
   return /-nightly\.\d{8}\.\d+$/.test(version) ? "nightly" : "latest";
@@ -2849,7 +2817,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   buildConfig.publish = null;
   // Unsigned mac builds ship no updater feed (see release.yml); electron-updater would fail its signature check.
   if (!isDesktopPreviewVersion(version) && (platform !== "mac" || signed)) {
-    const publishConfig = yield* resolveGitHubPublishConfig(updateChannel, variant);
+    const publishConfig = yield* resolveForkGitHubPublishConfig(updateChannel, variant);
     if (publishConfig) {
       buildConfig.publish = [publishConfig];
     } else if (mockUpdates) {
@@ -2859,8 +2827,6 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
           url: resolveMockUpdateServerUrl(mockUpdateServerPort),
         },
       ];
-    } else {
-      buildConfig.publish = [githubPublishConfig(DEFAULT_UPDATE_REPOSITORY, updateChannel)];
     }
   }
 
