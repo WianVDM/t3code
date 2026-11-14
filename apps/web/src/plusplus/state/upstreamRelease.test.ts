@@ -1,5 +1,7 @@
 import type { StartThreadTurnInput } from "@t3tools/client-runtime/operations";
 import { AuthOrchestrationOperateScope, DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
+import * as AsyncResult from "effect/reactivity/AsyncResult";
 import { describe, expect, it, vi } from "vite-plus/test";
 
 const state = vi.hoisted(() => {
@@ -78,6 +80,7 @@ const state = vi.hoisted(() => {
     readProjects: vi.fn(),
     readProject: vi.fn(),
     useProjects: vi.fn(),
+    useAtomValue: vi.fn(),
     useEffect: vi.fn(),
     useLiveRefresh: vi.fn(),
     newThread: vi.fn(),
@@ -110,10 +113,14 @@ const state = vi.hoisted(() => {
     isUpstreamCacheEntryFresh: vi.fn(),
     // isUpstreamReleaseNotificationBuild is read as a boolean constant, not called.
     notificationBuild: { value: true },
+    noAccessAtom: { key: "no-upstream-merge-access" },
+    accessResult: true as unknown,
+    upstreamMergeAccess: vi.fn(),
+    readUpstreamMergeAccess: vi.fn(),
   };
 });
 
-vi.mock("@effect/atom-react", () => ({ useAtomValue: vi.fn() }));
+vi.mock("@effect/atom-react", () => ({ useAtomValue: state.useAtomValue }));
 vi.mock("react", () => ({ useEffect: state.useEffect }));
 vi.mock("@t3tools/client-runtime/environment", () => ({
   scopeProjectRef: (environmentId: string, projectId: string) => ({ environmentId, projectId }),
@@ -153,6 +160,11 @@ vi.mock("../upstreamRelease.logic", () => ({
   refreshUpstreamReleaseNow: state.refreshUpstreamReleaseNow,
   shouldDeferUpstreamMerge: state.shouldDeferUpstreamMerge,
   UPSTREAM_POLL_INTERVAL_MS: 1_000,
+}));
+vi.mock("./upstreamMergeAccess", () => ({
+  noUpstreamMergeAccessAtom: state.noAccessAtom,
+  upstreamMergeAccess: state.upstreamMergeAccess,
+  readUpstreamMergeAccess: state.readUpstreamMergeAccess,
 }));
 vi.mock("../../components/ui/toast", () => ({
   stackedThreadToast: state.stackedThreadToast,
@@ -199,6 +211,15 @@ function setup() {
   state.readProjects.mockReset().mockReturnValue([state.project]);
   state.readProject.mockReset().mockReturnValue(state.project);
   state.useProjects.mockReset().mockReturnValue([state.project]);
+  state.accessResult = AsyncResult.success(true);
+  state.noAccessAtom = { key: "no-upstream-merge-access" };
+  state.useAtomValue
+    .mockReset()
+    .mockImplementation((atom) =>
+      atom === state.noAccessAtom ? AsyncResult.success(false) : atom,
+    );
+  state.upstreamMergeAccess.mockReset().mockImplementation(() => state.accessResult);
+  state.readUpstreamMergeAccess.mockReset().mockResolvedValue(true);
   state.useEffect.mockReset();
   state.useLiveRefresh.mockReset();
   state.newThread.mockReset().mockResolvedValue({
@@ -252,9 +273,24 @@ describe("useUpstreamMergeEligible", () => {
     state.pickForkProject.mockReturnValue(null);
 
     expect(useUpstreamMergeEligible()).toBe(false);
+    expect(state.upstreamMergeAccess).not.toHaveBeenCalled();
   });
 
-  it("is true when a project matches the fork", () => {
+  it("is false when the fork environment denies push access", () => {
+    setup();
+    state.accessResult = AsyncResult.success(false);
+
+    expect(useUpstreamMergeEligible()).toBe(false);
+  });
+
+  it("is false when the access query fails", () => {
+    setup();
+    state.accessResult = AsyncResult.failure(Cause.fail(new Error("RPC unavailable")));
+
+    expect(useUpstreamMergeEligible()).toBe(false);
+  });
+
+  it("is true when a project matches the fork and its environment grants push access", () => {
     setup();
 
     expect(useUpstreamMergeEligible()).toBe(true);
@@ -266,6 +302,7 @@ describe("useUpstreamMergeEligible", () => {
 
     expect(useUpstreamMergeEligible()).toBe(false);
     expect(state.pickForkProject).not.toHaveBeenCalled();
+    expect(state.upstreamMergeAccess).not.toHaveBeenCalled();
   });
 });
 
@@ -287,7 +324,23 @@ describe("useUpstreamReleasePolling", () => {
     expect(state.refreshUpstreamReleaseIfStale).not.toHaveBeenCalled();
   });
 
-  it("enables live refresh for a matching fork checkout", async () => {
+  it("disables release fetching when the fork environment denies push access", () => {
+    setup();
+    state.accessResult = AsyncResult.success(false);
+
+    useUpstreamReleasePolling();
+
+    const effect = state.useEffect.mock.calls[0]?.[0] as () => void;
+    effect();
+    expect(state.refreshUpstreamReleaseIfStale).not.toHaveBeenCalled();
+    expect(state.useLiveRefresh).toHaveBeenCalledWith(null, {
+      enabled: false,
+      key: "upstream-release",
+      intervalMs: 1_000,
+    });
+  });
+
+  it("enables live refresh for a matching fork checkout with push access", async () => {
     setup();
     state.refreshUpstreamReleaseIfStale.mockResolvedValue({ kind: "unmerged", tag: state.tag });
 
@@ -320,12 +373,28 @@ describe("startUpstreamMerge", () => {
 
     await startUpstreamMerge(state.tag, { newThread: state.newThread });
 
+    expect(state.readUpstreamMergeAccess).not.toHaveBeenCalled();
     expect(state.newThread).not.toHaveBeenCalled();
     expect(state.runAtomCommand).not.toHaveBeenCalled();
     expect(state.toastAdd).toHaveBeenCalledWith({
       type: "error",
       title:
         "No project found for github.com/WianVDM/t3code. Add the fork checkout as a project first.",
+    });
+  });
+
+  it("reports denied push access without opening a runner", async () => {
+    setup();
+    state.readUpstreamMergeAccess.mockResolvedValue(false);
+
+    await startUpstreamMerge(state.tag, { newThread: state.newThread });
+
+    expect(state.readUpstreamMergeAccess).toHaveBeenCalledWith(state.projectRef.environmentId);
+    expect(state.newThread).not.toHaveBeenCalled();
+    expect(state.runAtomCommand).not.toHaveBeenCalled();
+    expect(state.toastAdd).toHaveBeenCalledWith({
+      type: "error",
+      title: "No push access to WianVDM/t3code",
     });
   });
 
@@ -512,6 +581,19 @@ describe("runManualUpstreamCheck", () => {
 
     await runManualUpstreamCheck();
 
+    expect(state.readUpstreamMergeAccess).not.toHaveBeenCalled();
+    expect(state.refreshUpstreamReleaseNow).not.toHaveBeenCalled();
+    expect(state.registrySet).not.toHaveBeenCalled();
+    expect(state.toastAdd).not.toHaveBeenCalled();
+  });
+
+  it("does not fetch releases when the fork environment denies push access", async () => {
+    setup();
+    state.readUpstreamMergeAccess.mockResolvedValue(false);
+
+    await runManualUpstreamCheck();
+
+    expect(state.readUpstreamMergeAccess).toHaveBeenCalledWith(state.projectRef.environmentId);
     expect(state.refreshUpstreamReleaseNow).not.toHaveBeenCalled();
     expect(state.registrySet).not.toHaveBeenCalled();
     expect(state.toastAdd).not.toHaveBeenCalled();
@@ -560,16 +642,13 @@ describe("runManualUpstreamCheck", () => {
       onClick!();
       expect(state.toastClose).toHaveBeenCalledWith(state.toastId);
 
-      // Flush the single microtask between the runner resolving and dispatch;
-      // startUpstreamMerge has no awaits in between.
-      await Promise.resolve();
+      await vi.waitFor(() => expect(state.runAtomCommand).toHaveBeenCalledTimes(1));
 
       expect(state.newThread).toHaveBeenCalledWith(state.projectRef, {
         envMode: "worktree",
         branch: "main",
       });
       expect(state.markPromotedDraftThreadByRef).toHaveBeenCalledTimes(1);
-      expect(state.runAtomCommand).toHaveBeenCalledTimes(1);
     } finally {
       unregister();
     }

@@ -7,6 +7,10 @@
       "types": "./src/contracts.ts",
       "import": "./src/contracts.ts"
     },
+    "./forkRepository": {
+      "types": "./src/forkRepository.ts",
+      "import": "./src/forkRepository.ts"
+    },
     "./contextBridge": {
       "types": "./src/contextBridge.ts",
       "import": "./src/contextBridge.ts"

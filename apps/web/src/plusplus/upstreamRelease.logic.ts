@@ -3,6 +3,7 @@ import type { DesktopUpdateState, ScopedProjectRef } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
 export const UPSTREAM_REPOSITORY = "pingdotgg/t3code";
+// Mirrors the server constant because apps/web deliberately does not depend on @t3tools/plusplus.
 export const FORK_REPOSITORY = "WianVDM/t3code";
 export const UPSTREAM_CHECK_STALE_AFTER_MS = 60 * 60 * 1000;
 export const UPSTREAM_UNKNOWN_RETRY_AFTER_MS = 5 * 60 * 1000;

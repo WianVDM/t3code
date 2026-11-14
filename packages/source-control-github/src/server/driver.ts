@@ -6,6 +6,7 @@ import {
 } from "@t3tools/source-control-core/server/driver";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
 
 import { definition } from "../shared/definition.ts";
 
@@ -80,6 +81,28 @@ export const makeIsRepositoryStarred = Effect.gen(function* () {
   );
 });
 
+const decodeRepositoryPermissions = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(Schema.Struct({ permissions: Schema.Struct({ push: Schema.Boolean }) })),
+);
+
+export const makeCanPushRepository = Effect.gen(function* () {
+  const api = yield* GitHubRest.GitHubRest;
+  return Effect.fn("GitHubDriver.canPushRepository")(
+    function* (host: string, repository: string) {
+      const response = yield* api.rest({
+        host,
+        operation: "canPushRepository",
+        path: `repos/${repository}`,
+        allowReserve: false,
+      });
+      if (response.status !== 200) return false;
+      const decoded = yield* decodeRepositoryPermissions(response.body);
+      return decoded.permissions.push;
+    },
+    Effect.orElseSucceed(() => false),
+  );
+});
+
 // False on any failure, such as a token or app sign-in without permission to star.
 export const makeStarRepository = Effect.gen(function* () {
   const api = yield* GitHubRest.GitHubRest;
@@ -101,6 +124,7 @@ const makeInstance = Effect.all({
   fetchMedia: GitHubMediaFetch.make,
   signIn: makeSignIn,
   isRepositoryStarred: makeIsRepositoryStarred,
+  canPushRepository: makeCanPushRepository,
   starRepository: makeStarRepository,
 });
 

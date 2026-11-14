@@ -14,7 +14,12 @@
       "renamed": 1
     }
   },
-  "plusplusOwnedRoots": ["assets/fork", "packages/plusplus", "apps/web/src/plusplus"],
+  "plusplusOwnedRoots": [
+    "assets/fork",
+    "packages/plusplus",
+    "apps/server/src/plusplus",
+    "apps/web/src/plusplus"
+  ],
   "boundaryInfrastructure": [
     "package.json",
     "scripts/forkInventory.ts",
@@ -2303,6 +2308,54 @@
       "category": "integration-seam",
       "change": "modified",
       "path": "vite.config.ts"
+    },
+    {
+      "id": "SEAM-246",
+      "category": "integration-seam",
+      "change": "modified",
+      "path": "packages/contracts/src/rpc.ts"
+    },
+    {
+      "id": "SEAM-247",
+      "category": "integration-seam",
+      "change": "modified",
+      "path": "apps/server/src/ws.ts"
+    },
+    {
+      "id": "SEAM-248",
+      "category": "integration-seam",
+      "change": "modified",
+      "path": "packages/source-control-core/src/server/driver.ts"
+    },
+    {
+      "id": "SEAM-249",
+      "category": "integration-seam",
+      "change": "modified",
+      "path": "packages/source-control-github/src/server/driver.ts"
+    },
+    {
+      "id": "SEAM-250",
+      "category": "integration-seam",
+      "change": "modified",
+      "path": "packages/source-control-github/src/server/driver.test.ts"
+    },
+    {
+      "id": "SEAM-251",
+      "category": "integration-seam",
+      "change": "modified",
+      "path": "apps/server/src/observability/RpcInstrumentation.ts"
+    },
+    {
+      "id": "SEAM-252",
+      "category": "integration-seam",
+      "change": "modified",
+      "path": "apps/server/src/ws.test.ts"
+    },
+    {
+      "id": "SEAM-253",
+      "category": "integration-seam",
+      "change": "modified",
+      "path": "apps/server/src/auth/RpcAuthorization.ts"
     }
   ]
 }

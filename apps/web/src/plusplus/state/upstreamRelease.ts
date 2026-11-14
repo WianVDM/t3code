@@ -7,7 +7,7 @@ import {
   type StartThreadTurnInput,
 } from "@t3tools/client-runtime/operations";
 import { runAtomCommand, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
-import { Atom } from "effect/reactivity";
+import { AsyncResult, Atom } from "effect/reactivity";
 import { useEffect } from "react";
 
 import {
@@ -42,6 +42,11 @@ import { environmentServerConfigsAtom, providersIgnoringCheckedAtAtom } from "..
 import { readEnvironmentScope } from "../../state/session";
 import { threadEnvironment } from "../../state/threads";
 import { ORCHESTRATION_OPERATE_DENIED_MESSAGE } from "../../state/use-orchestration-command";
+import {
+  noUpstreamMergeAccessAtom,
+  readUpstreamMergeAccess,
+  upstreamMergeAccess,
+} from "./upstreamMergeAccess";
 
 const NO_PROJECT_FOUND_MESSAGE = `No project found for github.com/${FORK_REPOSITORY}. Add the fork checkout as a project first.`;
 const START_MERGE_FAILED_MESSAGE = "Could not start upstream merge";
@@ -79,17 +84,16 @@ async function refreshAndPublishIfStale(): Promise<void> {
   appAtomRegistry.set(upstreamReleaseStateAtom, result);
 }
 
-/**
- * Maintainer eligibility: a fork/plusplus build whose project list contains a matching
- * local fork checkout. Ordinary installations never poll or show upstream-merge UI.
- */
+/** Only the fork checkout's environment can authorize its upstream-merge UI. */
 export function useUpstreamMergeEligible(): boolean {
   const projects = useProjects();
-  return isUpstreamReleaseNotificationBuild && pickForkProject(projects) !== null;
-}
-
-function readForkCheckoutExists(): boolean {
-  return pickForkProject(readProjects()) !== null;
+  const projectRef = isUpstreamReleaseNotificationBuild ? pickForkProject(projects) : null;
+  const access = useAtomValue(
+    projectRef === null
+      ? noUpstreamMergeAccessAtom
+      : upstreamMergeAccess({ environmentId: projectRef.environmentId, input: {} }),
+  );
+  return projectRef !== null && AsyncResult.getOrElse(access, () => false);
 }
 
 export function useUpstreamReleasePolling(): void {
@@ -139,6 +143,16 @@ export async function startUpstreamMerge(
       stackedThreadToast({
         type: "error",
         title: NO_PROJECT_FOUND_MESSAGE,
+      }),
+    );
+    return;
+  }
+
+  if (!(await readUpstreamMergeAccess(projectRef.environmentId))) {
+    toastManager.add(
+      stackedThreadToast({
+        type: "error",
+        title: "No push access to WianVDM/t3code",
       }),
     );
     return;
@@ -313,7 +327,8 @@ export async function startUpstreamMerge(
 }
 
 export async function runManualUpstreamCheck(): Promise<void> {
-  if (!isUpstreamReleaseNotificationBuild || !readForkCheckoutExists()) {
+  const projectRef = isUpstreamReleaseNotificationBuild ? pickForkProject(readProjects()) : null;
+  if (projectRef === null || !(await readUpstreamMergeAccess(projectRef.environmentId))) {
     return;
   }
 
