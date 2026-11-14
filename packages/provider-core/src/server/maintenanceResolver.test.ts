@@ -94,7 +94,8 @@ function writeExecutable(path: string) {
 function linkIntoPackage(tempDir: string, name: string, packageSegments: ReadonlyArray<string>) {
   const target = NodePath.join(tempDir, ...packageSegments, "bin", `${name}.js`);
   writeExecutable(target);
-  const link = NodePath.join(tempDir, "bin", name);
+  // Windows resolveCommandPath only accepts PATHEXT extensions, so the bin link needs one.
+  const link = NodePath.join(tempDir, "bin", windowsHost ? `${name}.cmd` : name);
   NodeFS.mkdirSync(NodePath.dirname(link), { recursive: true });
   NodeFS.symlinkSync(target, link);
   return link;
@@ -433,6 +434,8 @@ it.layer(
         ]);
         // A version manager's Node, which only the provider's settings put on PATH.
         const providerEnv = { PATH: NodePath.join(tempDir, "bin") };
+        // The prefix is reported with forward slashes so it stays shell-usable on Windows.
+        const expectedPrefix = tempDir.replaceAll("\\", "/");
 
         const capabilities = yield* resolveProviderMaintenanceCapabilitiesEffect(
           packageToolUpdate,
@@ -446,13 +449,13 @@ it.layer(
           provider: driver("packageTool"),
           packageName: "@example/package-tool",
           update: {
-            command: `npm install -g --prefix ${tempDir} --allow-scripts=@example/package-tool @example/package-tool@latest`,
+            command: `npm install -g --prefix ${expectedPrefix} --allow-scripts=@example/package-tool @example/package-tool@latest`,
             executable: "npm",
             args: [
               "install",
               "-g",
               "--prefix",
-              tempDir,
+              expectedPrefix,
               "--allow-scripts=@example/package-tool",
               "@example/package-tool@latest",
             ],
@@ -1176,7 +1179,8 @@ it.layer(
           "package-tool.js",
         );
         writeExecutable(target);
-        const link = NodePath.join(tempDir, "bin", "package-tool");
+        const linkName = windowsHost ? "package-tool.cmd" : "package-tool";
+        const link = NodePath.join(tempDir, "bin", linkName);
         NodeFS.mkdirSync(NodePath.dirname(link), { recursive: true });
         NodeFS.symlinkSync(target, link);
 
@@ -1190,7 +1194,7 @@ it.layer(
 
         expect(capabilities.update).toMatchObject({
           executable: "npm",
-          args: expect.arrayContaining(["--prefix", keg]),
+          args: expect.arrayContaining(["--prefix", keg.replaceAll("\\", "/")]),
           lockKey: `npm-global:${normalizeCommandPath(keg)}`,
         });
       }),
@@ -1521,9 +1525,11 @@ it.layer(
     () =>
       Effect.gen(function* () {
         const voltaHome = NodePath.join(yield* makeTempDir("t3-volta-capabilities"), ".volta");
-        const shim = NodePath.join(voltaHome, "bin", "volta-shim");
+        const shimName = windowsHost ? "volta-shim.exe" : "volta-shim";
+        const shim = NodePath.join(voltaHome, "bin", shimName);
         writeExecutable(shim);
-        const link = NodePath.join(voltaHome, "bin", "package-tool");
+        const linkName = windowsHost ? "package-tool.cmd" : "package-tool";
+        const link = NodePath.join(voltaHome, "bin", linkName);
         NodeFS.symlinkSync(shim, link);
         const resolve = resolveProviderMaintenanceCapabilitiesEffect(packageToolUpdate, {
           binaryPath: link,

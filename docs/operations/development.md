@@ -226,8 +226,16 @@ refactors built in. VS Code uses it through `js/ts.tsdk.path` in `.vscode/settin
 
 Use `vp run lint:mobile` for native mobile changes. CI owns the full suite; see
 [ci.yml](../../.github/workflows/ci.yml) for its current jobs.
-The [manual Windows lane](../../.github/workflows/windows-tests.yml) is available for focused
-Windows investigation while that suite is not a required gate.
+Windows verification is scoped and aggregates through CI's `Check`: a change that can affect the
+desktop distribution or the release scripts runs the affected packages in the desktop distribution
+closure (desktop's workspace dependencies, without client-runtime's web-only provider and
+source-control registries), plus `scripts`, on a Windows runner; every other PR skips the lane.
+The runner tests each selected package to completion and fails at the end if any package failed,
+so one run exposes every failure instead of stopping at the first. `Check` also rejects
+a run whose change detection fell back (`fail_open`), so an unresolvable diff never merges on
+healthy-looking skips. The [Windows lane](../../.github/workflows/windows-tests.yml) still takes
+manual runs for focused investigation over one package or a file list; Windows is not an
+individually required check.
 
 ### Unused code
 

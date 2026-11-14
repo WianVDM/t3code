@@ -142,7 +142,10 @@ const makeFakeUvToolchain = Effect.fn("AcpRegistrySupport.test.makeFakeUvToolcha
   };
 });
 
-describe("AcpRegistrySupport", () => {
+// This suite pins HostProcess.Platform to linux and drives POSIX mode bits,
+// colon-separated PATH, and /bin/sh fake toolchains on the real host
+// filesystem; it is not a Windows behavior test.
+describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("AcpRegistrySupport", () => {
   it("selects the preferred compatible distribution", () => {
     const agent = makeAgent({
       binary: {

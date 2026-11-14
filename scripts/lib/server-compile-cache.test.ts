@@ -6,26 +6,32 @@ import * as NodeURL from "node:url";
 import { expect, it } from "vite-plus/test";
 import { cacheKey, seedPreparedCache } from "./server-compile-cache.ts";
 
-it.each(["x64", "arm64"])("skips prepared bytecode generation on Linux %s", async (arch) => {
-  const { spawnSync } = await import("node:child_process");
-  const hook = NodeURL.fileURLToPath(
-    new URL("../prepare-server-compile-cache.cjs", import.meta.url),
-  );
-  const result = spawnSync(
-    process.execPath,
-    [
-      "-e",
-      `Object.defineProperty(process, "platform", { value: "linux" });
+// oxlint-disable-next-line t3code/no-global-process-runtime -- The electron-builder packaging hook only runs on macOS/Linux build hosts; Windows packaging is covered by release builds.
+const itPackagingHook = it.skipIf(process.platform === "win32");
+
+itPackagingHook.each(["x64", "arm64"])(
+  "skips prepared bytecode generation on Linux %s",
+  async (arch) => {
+    const { spawnSync } = await import("node:child_process");
+    const hook = NodeURL.fileURLToPath(
+      new URL("../prepare-server-compile-cache.cjs", import.meta.url),
+    );
+    const result = spawnSync(
+      process.execPath,
+      [
+        "-e",
+        `Object.defineProperty(process, "platform", { value: "linux" });
        Object.defineProperty(process, "arch", { value: ${JSON.stringify(arch)} });
        require(${JSON.stringify(hook)})({ electronPlatformName: "linux", arch: ${arch === "x64" ? 1 : 3} }).catch(error => { console.error(error); process.exitCode = 1; });`,
-    ],
-    { encoding: "utf8" },
-  );
-  expect(result.status, result.stderr).toBe(0);
-  expect(result.stdout).toContain("Skipping unsupported target linux");
-});
+      ],
+      { encoding: "utf8" },
+    );
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain("Skipping unsupported target linux");
+  },
+);
 
-it("prepares macOS x64 cache on an ARM64 build host", async () => {
+itPackagingHook("prepares macOS x64 cache on an ARM64 build host", async () => {
   const { spawnSync } = await import("node:child_process");
   const root = NodeFS.realpathSync(
     NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-rosetta-cache-")),

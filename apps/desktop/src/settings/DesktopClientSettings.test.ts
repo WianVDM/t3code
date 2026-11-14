@@ -1,6 +1,7 @@
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
+import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
 import {
   ClientSettingsSchema,
   DEFAULT_CLIENT_SETTINGS,
@@ -10,6 +11,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 
@@ -116,32 +118,35 @@ const withClientSettings = <A, E, R>(
   }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)), Effect.scoped);
 
 describe("DesktopClientSettings", () => {
-  it.effect("saves through a symlinked client settings file without replacing the link", () =>
-    withClientSettings(
-      Effect.gen(function* () {
-        const environment = yield* DesktopEnvironment.DesktopEnvironment;
-        const fileSystem = yield* FileSystem.FileSystem;
-        const settings = yield* DesktopClientSettings.DesktopClientSettings;
-        const dotfiles = yield* fileSystem.makeTempDirectoryScoped({
-          prefix: "t3-desktop-client-settings-dotfiles-",
-        });
-        const linkedSettingsPath = `${dotfiles}/client-settings.json`;
-        yield* fileSystem.writeFileString(linkedSettingsPath, "{}\n");
-        yield* fileSystem.makeDirectory(environment.stateDir, { recursive: true });
-        yield* fileSystem.symlink(linkedSettingsPath, environment.clientSettingsPath);
+  it.effect.skipIf(!symlinksSupported)(
+    "saves through a symlinked client settings file without replacing the link",
+    () =>
+      withClientSettings(
+        Effect.gen(function* () {
+          const environment = yield* DesktopEnvironment.DesktopEnvironment;
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const settings = yield* DesktopClientSettings.DesktopClientSettings;
+          const dotfiles = yield* fileSystem.makeTempDirectoryScoped({
+            prefix: "t3-desktop-client-settings-dotfiles-",
+          });
+          const linkedSettingsPath = path.join(dotfiles, "client-settings.json");
+          yield* fileSystem.writeFileString(linkedSettingsPath, "{}\n");
+          yield* fileSystem.makeDirectory(environment.stateDir, { recursive: true });
+          yield* fileSystem.symlink(linkedSettingsPath, environment.clientSettingsPath);
 
-        yield* settings.set(clientSettings);
+          yield* settings.set(clientSettings);
 
-        assert.equal(
-          yield* fileSystem.readLink(environment.clientSettingsPath),
-          linkedSettingsPath,
-        );
-        assert.deepEqual(
-          yield* decodeClientSettingsJson(yield* fileSystem.readFileString(linkedSettingsPath)),
-          clientSettings,
-        );
-      }),
-    ),
+          assert.equal(
+            yield* fileSystem.readLink(environment.clientSettingsPath),
+            linkedSettingsPath,
+          );
+          assert.deepEqual(
+            yield* decodeClientSettingsJson(yield* fileSystem.readFileString(linkedSettingsPath)),
+            clientSettings,
+          );
+        }),
+      ),
   );
 
   it.effect("removes its temporary file when replacing the settings file fails", () =>

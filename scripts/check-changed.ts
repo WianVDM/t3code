@@ -41,7 +41,7 @@ import * as Stream from "effect/Stream";
 import { Argument, Command, Flag } from "effect/cli";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
-import { decide, readWorkspace } from "../.github/scripts/ci-changes.cjs";
+import { checkJobResults, decide, readWorkspace } from "../.github/scripts/ci-changes.cjs";
 import { vitePlusCommand } from "./check-changed-command.ts";
 
 const GiB = 1024 ** 3;
@@ -211,36 +211,16 @@ const CI_ONLY_JOBS: ReadonlyArray<readonly [string, ReadonlyArray<string>]> = [
   ["build", ["build"]],
   ["rust", ["rust"]],
   ["release smoke", ["release_smoke"]],
+  ["windows", ["windows"]],
 ];
 
 export const ciOnlyJobs = (gates: Record<string, unknown>) =>
   CI_ONLY_JOBS.flatMap(([job, keys]) => (keys.some((key) => gates[key] === true) ? [job] : []));
 
-// ci.yml's `Check` job passes when every job succeeds, or skips because
-// `changes` turned off every gate it represents (`build` merges build and
-// typecheck). A job this map does not know cannot skip, so one left in `needs`
-// after its job was deleted fails instead of passing silently.
-const JOB_GATES: Record<string, ReadonlyArray<string>> = {
-  lint: ["lint"],
-  build: ["build", "typecheck"],
-  test: ["test"],
-  test_web: ["test_web"],
-  test_server: ["test_server"],
-  rust: ["rust"],
-  release_smoke: ["release_smoke"],
-  shared_persistence_compat: ["shared_persistence_compat"],
-};
-
-export const checkJobResults = (
-  results: Readonly<Record<string, { readonly result: string }>>,
-  gates: Readonly<Record<string, string | undefined>>,
-) =>
-  Object.entries(results).every(([job, { result }]) => {
-    if (result === "success") return true;
-    if (result !== "skipped") return false;
-    const required = JOB_GATES[job];
-    return required !== undefined && required.every((gate) => gates[gate] === "false");
-  });
+// Re-exported so local `check:changed` callers and the CI Check job share
+// the same fail-closed result policy. The canonical definition lives in
+// .github/scripts/ci-changes.cjs.
+export { checkJobResults };
 
 // Tests that read a doc; a changed doc has no test beside it to select them.
 export const docReaderTests = (files: ReadonlyArray<string>) =>
