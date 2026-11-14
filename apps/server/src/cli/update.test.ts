@@ -56,14 +56,19 @@ it.effect("authenticates each release page until the requested channel is found"
       assert.equal(request.headers.authorization, "Bearer gh-token");
       const page = url.searchParams.get("page") ?? "";
       pages.push(page);
-      const tag_name = page === "1" ? "v1.2.4-preview.20260101.1" : "v1.2.3";
+      const tag_name = page === "1" ? "v1.2.4-preview.20260101.1" : "v1.2.3-plusplus.4";
       return Effect.succeed(HttpClientResponse.fromWeb(request, Response.json([{ tag_name }])));
     });
     const version = yield* resolveNewestVersion("stable").pipe(
-      Effect.provideService(HostProcess.Environment, { GH_TOKEN: "gh-token" }),
+      // CI exports GITHUB_REPOSITORY on every workflow run; discovery must ignore it and
+      // keep reading the fork release index, whatever repository the job checked out.
+      Effect.provideService(HostProcess.Environment, {
+        GH_TOKEN: "gh-token",
+        GITHUB_REPOSITORY: "pingdotgg/t3code",
+      }),
       Effect.provideService(HttpClient.HttpClient, httpClient),
     );
-    assert.equal(version, "1.2.3");
+    assert.equal(version, "1.2.3-plusplus.4");
     assert.deepStrictEqual(pages, ["1", "2"]);
   }),
 );

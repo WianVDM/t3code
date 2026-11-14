@@ -2,7 +2,7 @@
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
-import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
+import { afterEach, beforeEach, expect, it as test, vi } from "vite-plus/test";
 
 const execute = vi.hoisted(() => vi.fn());
 const startEffects = vi.hoisted(() => vi.fn());
@@ -14,6 +14,9 @@ vi.mock("electron", () => ({
   },
 }));
 import { KdeCaptureSetup, captureKdeWindow, kdeCapturePaths } from "./KdeSnapShot.ts";
+
+// oxlint-disable-next-line t3code/no-global-process-runtime -- Test collection checks the host before starting these Linux-only KDE/DBus capture tests.
+const it = test.skipIf(process.platform === "win32");
 
 let directory: string;
 let paths: { bundle: string; dataHome: string };

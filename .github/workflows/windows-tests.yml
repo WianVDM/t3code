@@ -1,8 +1,9 @@
-# On-demand Windows test lane. Manual only: nothing in the suite passes on
-# Windows yet, so this exists to give contributors (and agents) a cloud Windows
-# box to iterate against. Once the suite is green here, fold it into ci.yml.
+# Scoped Windows lane. ci.yml calls this workflow with the workspace
+# directories `changes` selected (the desktop distribution closure plus scripts);
+# Check aggregates the result. Manual runs stay available for focused
+# investigation, over one package or a file list:
 #
-#   gh workflow run windows-tests.yml --ref <branch> -f package=packages/shared
+#   gh workflow run windows-tests.yml --ref <branch> -f package=apps/desktop
 #   gh workflow run windows-tests.yml --ref <branch> -f package=apps/server \
 #     -f files="src/process/externalLauncher.test.ts src/cli/theme.test.ts"
 #   gh run watch && gh run view --log-failed
@@ -16,9 +17,14 @@ on:
         type: string
         default: ""
       files:
-        description: "Space-separated test files relative to the package directory. Empty runs the package's whole suite. Requires package."
+        description: "Space-separated test files relative to the package directory. Empty runs the package's whole suite. Requires exactly one package."
         type: string
         default: ""
+  workflow_call:
+    inputs:
+      package:
+        description: "Space-separated workspace directories to test. Required: an empty value would silently expand to every non-server package."
+        type: string
 
 permissions:
   contents: read
@@ -29,6 +35,25 @@ jobs:
     runs-on: windows-2025
     timeout-minutes: 45
     steps:
+      # A called run must carry the selected scope; `files` stays manual-only.
+      - name: Validate inputs
+        shell: bash
+        run: |
+          package='${{ inputs.package }}'
+          files='${{ inputs.files }}'
+          if [[ '${{ github.event_name }}' == workflow_call && -z "$package" ]]; then
+            echo "::error::windows-tests.yml was called without a package; refusing to run every non-server package." >&2
+            exit 1
+          fi
+          if [[ -n "$files" && '${{ github.event_name }}' != workflow_dispatch ]]; then
+            echo "::error::files is only supported by manual runs." >&2
+            exit 1
+          fi
+          if [[ -n "$files" && ( -z "$package" || "$package" == *" "* ) ]]; then
+            echo "::error::files requires exactly one package." >&2
+            exit 1
+          fi
+
       - name: Checkout
         uses: actions/checkout@v6
         with:
@@ -61,21 +86,37 @@ jobs:
         run: vp install
 
       - name: Ensure Electron runtime is installed
-        if: inputs.package == '' || inputs.package == 'apps/desktop'
+        if: inputs.package == '' || contains(inputs.package, 'apps/desktop')
         run: vp run --filter "@t3tools/desktop" ensure:electron
 
       # `vp run ... test -- <files>` does not forward positional args to vitest,
       # so file-scoped runs call `vp test run` inside the package instead.
+      # Multiple directories run one package at a time to completion: `vp run
+      # --parallel` is fail-fast, which hides failures in packages that never
+      # start. The loop collects every failing package and exits nonzero after
+      # the last one, so a run exposes all remaining failures at once without
+      # weakening the gate.
       - name: Test
         shell: pwsh
         run: |
           $package = '${{ inputs.package }}'
           $files = '${{ inputs.files }}'
-          if ($package -eq '') {
+          $dirs = @($package -split '\s+' | Where-Object { $_ -ne '' })
+          if ($dirs.Count -eq 0) {
             vp run --parallel --concurrency-limit 4 --filter '!t3' --filter '!@t3tools/monorepo' test
-          } elseif ($files -eq '') {
-            vp run --filter "./$package" test
-          } else {
-            Set-Location $package
+          } elseif ($files -ne '') {
+            Set-Location $dirs[0]
             vp test run $files.Split(' ')
+          } elseif ($dirs.Count -eq 1) {
+            vp run --filter "./$dirs" test
+          } else {
+            $failed = @()
+            foreach ($dir in $dirs) {
+              Write-Output "::group::Test $dir"
+              vp run --filter "./$dir" test
+              if ($LASTEXITCODE -ne 0) { $failed += $dir }
+              Write-Output "::endgroup::"
+            }
+            foreach ($dir in $failed) { Write-Output "::error::Windows tests failed: $dir" }
+            if ($failed.Count -gt 0) { exit 1 }
           }

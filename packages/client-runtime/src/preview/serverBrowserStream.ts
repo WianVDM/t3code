@@ -5,6 +5,7 @@ import {
   type PreviewStreamHostSetup,
   type PreviewViewportSetting,
 } from "@t3tools/contracts";
+import { FORK_BROWSER_SETUP_COMMAND } from "@t3tools/shared/cliRelease";
 
 export const PREVIEW_STREAM_BASE_PATH = "/api/preview-stream";
 
@@ -460,7 +461,7 @@ const decodeHostSetup = (reason: string): PreviewStreamHostSetup => {
       return { need: value.need, command: value.command };
     }
   } catch {}
-  return { need: "sandbox", command: "sudo npx t3 browser setup" };
+  return { need: "sandbox", command: FORK_BROWSER_SETUP_COMMAND };
 };
 
 export const previewStreamHostSetupMessage = (setup: PreviewStreamHostSetup) =>

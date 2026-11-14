@@ -329,7 +329,12 @@ describe("third-party license generation", () => {
       packageManifests: [{ bundle: "web", path: fixture.appManifest }],
     });
 
-    expect(manifest.entries.find((entry) => entry.name === "demo-dependency")?.noticeText).toBe(
+    const noticeText = manifest.entries.find(
+      (entry) => entry.name === "demo-dependency",
+    )?.noticeText;
+    // The manifest ships POSIX separators whatever host generated it.
+    expect(noticeText).not.toContain("\\");
+    expect(noticeText).toBe(
       "dist/third-party/NOTICE.txt\n\nNested notice\n\n---\n\nLICENSE\n\nDemo MIT license text",
     );
   });

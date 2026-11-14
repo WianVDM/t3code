@@ -4,9 +4,12 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeEvents from "node:events";
 import type { Message, MessageBus } from "dbus-next";
-import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
+import { afterEach, beforeEach, expect, it as test, vi } from "vite-plus/test";
 import { GnomeCaptureSetup, installGnomeCaptureBundle } from "./GnomeCaptureSetup.ts";
 import { GNOME_CAPTURE_FILES, GNOME_CAPTURE_UUID } from "./gnomeCaptureBundle.ts";
+
+// oxlint-disable-next-line t3code/no-global-process-runtime -- Test collection checks the host before starting these Linux-only GNOME Shell extension tests.
+const it = test.skipIf(process.platform === "win32");
 
 let dataHome: string;
 const bundle = NodePath.resolve(import.meta.dirname, "../../gnome-extension");
