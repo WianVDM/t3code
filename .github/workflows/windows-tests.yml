@@ -1,7 +1,10 @@
 # Scoped Windows lane. ci.yml calls this workflow with the workspace
 # directories `changes` selected (the desktop distribution closure plus scripts);
-# Check aggregates the result. Manual runs stay available for focused
-# investigation, over one package or a file list:
+# Check aggregates the result. The upstream sync dry run calls it in replay
+# mode: all four dry_run inputs reproduce a verified detached merge before the
+# tests run, and `verification_result` reports the lane outcome fail-closed.
+# Manual runs stay available for focused investigation, over one package or a
+# file list:
 #
 #   gh workflow run windows-tests.yml --ref <branch> -f package=apps/desktop
 #   gh workflow run windows-tests.yml --ref <branch> -f package=apps/server \
@@ -25,6 +28,26 @@ on:
       package:
         description: "Space-separated workspace directories to test. Required: an empty value would silently expand to every non-server package."
         type: string
+      dry_run_tag:
+        description: "Upstream tag vX.Y.Z or vX.Y.Z-nightly.YYYYMMDD.N for a read-only dry-run replay. Requires all four dry_run inputs or none."
+        type: string
+        default: ""
+      dry_run_base_sha:
+        description: "Full fork base SHA the dry run merged. Requires all four dry_run inputs or none."
+        type: string
+        default: ""
+      dry_run_upstream_sha:
+        description: "Full upstream commit SHA the dry run merged. Requires all four dry_run inputs or none."
+        type: string
+        default: ""
+      dry_run_merge_tree:
+        description: "Full tree SHA the verified dry-run merge produced. Requires all four dry_run inputs or none."
+        type: string
+        default: ""
+    outputs:
+      verification_result:
+        description: "passed, verification_failed, or error. Dry-run callers require it; existing CI callers ignore it."
+        value: ${{ jobs.test.outputs.verification_result }}
 
 permissions:
   contents: read
@@ -34,9 +57,17 @@ jobs:
     name: Test (${{ inputs.package || 'all non-server' }})
     runs-on: windows-2025
     timeout-minutes: 45
+    outputs:
+      verification_result: ${{ steps.verification_result.outputs.result }}
     steps:
       # A called run must carry the selected scope; `files` stays manual-only.
       - name: Validate inputs
+        id: validate
+        env:
+          DRY_RUN_TAG: ${{ inputs.dry_run_tag }}
+          DRY_RUN_BASE_SHA: ${{ inputs.dry_run_base_sha }}
+          DRY_RUN_UPSTREAM_SHA: ${{ inputs.dry_run_upstream_sha }}
+          DRY_RUN_MERGE_TREE: ${{ inputs.dry_run_merge_tree }}
         shell: bash
         run: |
           package='${{ inputs.package }}'
@@ -53,10 +84,46 @@ jobs:
             echo "::error::files requires exactly one package." >&2
             exit 1
           fi
+          replay_count=0
+          for value in "$DRY_RUN_TAG" "$DRY_RUN_BASE_SHA" "$DRY_RUN_UPSTREAM_SHA" "$DRY_RUN_MERGE_TREE"; do
+            if [[ -n "$value" ]]; then replay_count=$((replay_count + 1)); fi
+          done
+          if [[ $replay_count -ne 0 && $replay_count -ne 4 ]]; then
+            echo "::error::a dry-run replay needs all four dry_run inputs or none (got $replay_count)." >&2
+            exit 1
+          fi
+          if [[ $replay_count -eq 4 ]]; then
+            if [[ '${{ github.event_name }}' != workflow_call ]]; then
+              echo "::error::dry-run replay inputs are only supported by workflow_call." >&2
+              exit 1
+            fi
+            if [[ -n "$files" ]]; then
+              echo "::error::a dry-run replay rejects a files scope." >&2
+              exit 1
+            fi
+            if ! [[ "$DRY_RUN_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-nightly\.(19|20)[0-9]{2}(0[1-9]|1[0-2])(0[1-9]|[12][0-9]|3[01])\.(0|[1-9][0-9]*))?$ ]]; then
+              echo "::error::dry_run_tag must be vX.Y.Z or vX.Y.Z-nightly.YYYYMMDD.N." >&2
+              exit 1
+            fi
+            for value in "$DRY_RUN_BASE_SHA" "$DRY_RUN_UPSTREAM_SHA" "$DRY_RUN_MERGE_TREE"; do
+              if ! [[ "$value" =~ ^[0-9a-f]{40}$ ]]; then
+                echo "::error::dry-run SHAs and trees must be full lowercase hex object SHAs." >&2
+                exit 1
+              fi
+            done
+            echo "replay=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "replay=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Checkout
         uses: actions/checkout@v6
         with:
+          # Replay mode checks out the exact dry-run base with full history and
+          # no credentials; normal runs keep the caller's default ref and depth.
+          ref: ${{ inputs.dry_run_base_sha }}
+          fetch-depth: ${{ inputs.dry_run_base_sha != '' && 0 || 1 }}
+          persist-credentials: ${{ inputs.dry_run_base_sha == '' }}
           sparse-checkout: |
             /*
             !/.repos/
@@ -77,12 +144,54 @@ jobs:
         run: '"path=$(vp pm cache dir)" >> $env:GITHUB_OUTPUT'
 
       - name: Cache packages
+        if: steps.validate.outputs.replay != 'true'
         uses: actions/cache@v6
         with:
           path: ${{ steps.package_cache_path.outputs.path }}
           key: windows-tests-packages-v1-${{ hashFiles('pnpm-lock.yaml') }}
 
+      # Replay mode restores the base store without saving it, so merged
+      # dependencies can never pollute the base lockfile's cache key.
+      - name: Restore base packages for replay
+        if: steps.validate.outputs.replay == 'true'
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ steps.package_cache_path.outputs.path }}
+          key: windows-tests-packages-v1-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: windows-tests-packages-v1-
+
       - name: Install
+        run: vp install
+
+      - name: Point upstream at the canonical repository
+        if: steps.validate.outputs.replay == 'true'
+        shell: bash
+        run: |
+          git remote get-url upstream >/dev/null 2>&1 ||
+            git remote add upstream https://github.com/pingdotgg/t3code.git
+          git remote get-url upstream
+
+      # Fails before the merged install and the test loop on any identity
+      # mismatch: moved tag, wrong base, replay conflict, or a different tree.
+      - name: Replay the upstream merge
+        if: steps.validate.outputs.replay == 'true'
+        shell: bash
+        env:
+          DRY_RUN_TAG: ${{ inputs.dry_run_tag }}
+          DRY_RUN_BASE_SHA: ${{ inputs.dry_run_base_sha }}
+          DRY_RUN_UPSTREAM_SHA: ${{ inputs.dry_run_upstream_sha }}
+          DRY_RUN_MERGE_TREE: ${{ inputs.dry_run_merge_tree }}
+        run: node scripts/upstream-sync.ts replay-dry-run --tag "$DRY_RUN_TAG" --base-sha "$DRY_RUN_BASE_SHA" --upstream-sha "$DRY_RUN_UPSTREAM_SHA" --expected-tree "$DRY_RUN_MERGE_TREE" --cwd .
+
+      - name: Cache replayed packages
+        if: steps.validate.outputs.replay == 'true'
+        uses: actions/cache@v6
+        with:
+          path: ${{ steps.package_cache_path.outputs.path }}
+          key: windows-tests-replay-v1-${{ hashFiles('pnpm-lock.yaml') }}
+
+      - name: Install merged dependencies
+        if: steps.validate.outputs.replay == 'true'
         run: vp install
 
       - name: Ensure Electron runtime is installed
@@ -97,6 +206,7 @@ jobs:
       # the last one, so a run exposes all remaining failures at once without
       # weakening the gate.
       - name: Test
+        id: test
         shell: pwsh
         run: |
           $package = '${{ inputs.package }}'
@@ -120,3 +230,20 @@ jobs:
             foreach ($dir in $failed) { Write-Output "::error::Windows tests failed: $dir" }
             if ($failed.Count -gt 0) { exit 1 }
           }
+
+      # Dry-run callers consume this; existing CI callers ignore it. Anything
+      # that kept the test step from running and failing on its own is an
+      # infrastructure error, never a silent pass.
+      - name: Record verification result
+        id: verification_result
+        if: always()
+        shell: bash
+        env:
+          TEST_OUTCOME: ${{ steps.test.outcome }}
+        run: |
+          result=error
+          case "$TEST_OUTCOME" in
+            success) result=passed ;;
+            failure) result=verification_failed ;;
+          esac
+          echo "result=$result" >> "$GITHUB_OUTPUT"
