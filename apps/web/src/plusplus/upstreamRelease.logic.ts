@@ -3,6 +3,7 @@ import type { DesktopUpdateState, ScopedProjectRef } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
 export const UPSTREAM_REPOSITORY = "pingdotgg/t3code";
+// Mirrors the server constant because apps/web deliberately does not depend on @t3tools/plusplus.
 export const FORK_REPOSITORY = "WianVDM/t3code";
 export const UPSTREAM_CHECK_STALE_AFTER_MS = 60 * 60 * 1000;
 export const UPSTREAM_UNKNOWN_RETRY_AFTER_MS = 5 * 60 * 1000;
@@ -14,10 +15,6 @@ const GITHUB_ACCEPT_HEADER = "application/vnd.github+json";
 const [forkOwner] = FORK_REPOSITORY.split("/");
 const FORK_COMPARE_HEAD = `${forkOwner}:main`;
 const FORK_CANONICAL_KEY = `github.com/${FORK_REPOSITORY.toLowerCase()}`;
-const T3CODE_KEYWORD = "t3code";
-
-const RANK_PRIMARY_REPOSITORY_MATCH = 1;
-const RANK_NAME_OR_PATH_MATCH = 2;
 
 export type UpstreamReleaseResult =
   | { readonly kind: "merged"; readonly tag: string }
@@ -85,7 +82,6 @@ Do not push, tag, or open a pull request. Finish with a report: conflicts and ho
 
 interface ScoredProject {
   readonly project: EnvironmentProject;
-  readonly rank: number;
   readonly index: number;
   readonly timestamp: number;
 }
@@ -103,35 +99,20 @@ function matchesForkRepository(identity: EnvironmentProject["repositoryIdentity"
   return originCanonicalKey === FORK_CANONICAL_KEY;
 }
 
-function resolveProjectMatchRank(project: EnvironmentProject): number | null {
-  if (matchesForkRepository(project.repositoryIdentity)) {
-    return RANK_PRIMARY_REPOSITORY_MATCH;
-  }
-  const titleMatches = project.title.toLowerCase().includes(T3CODE_KEYWORD);
-  const rootMatches = project.workspaceRoot.toLowerCase().includes(T3CODE_KEYWORD);
-  if (titleMatches || rootMatches) {
-    return RANK_NAME_OR_PATH_MATCH;
-  }
-  return null;
-}
-
+// Eligibility requires a checkout whose git remote resolves to the fork; a plain clone
+// named t3code (e.g. of pingdotgg/t3code) must never qualify.
 function scoreProject(project: EnvironmentProject, index: number): ScoredProject | null {
-  const rank = resolveProjectMatchRank(project);
-  if (rank === null) {
+  if (!matchesForkRepository(project.repositoryIdentity)) {
     return null;
   }
   return {
     project,
-    rank,
     index,
     timestamp: Date.parse(project.updatedAt) || 0,
   };
 }
 
 function compareScoredProjects(first: ScoredProject, second: ScoredProject): number {
-  if (first.rank !== second.rank) {
-    return first.rank - second.rank;
-  }
   if (first.timestamp !== second.timestamp) {
     return second.timestamp - first.timestamp;
   }

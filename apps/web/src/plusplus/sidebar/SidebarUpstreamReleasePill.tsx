@@ -1,6 +1,7 @@
 import { useNewThreadHandler } from "~/hooks/useHandleNewThread";
 import {
   startUpstreamMerge,
+  useUpstreamMergeEligible,
   useUpstreamRelease,
   useUpstreamReleasePolling,
 } from "../state/upstreamRelease";
@@ -15,11 +16,12 @@ import {
 
 function SidebarUpstreamReleasePillContent() {
   useUpstreamReleasePolling();
+  const eligible = useUpstreamMergeEligible();
   const newThread = useNewThreadHandler();
   const result = useUpstreamRelease();
   const desktopUpdateState = useDesktopUpdateState();
 
-  if (result?.kind !== "unmerged") {
+  if (!eligible || result?.kind !== "unmerged") {
     return null;
   }
 
@@ -30,7 +32,7 @@ function SidebarUpstreamReleasePillContent() {
     : `Upstream ${tag} ready to merge`;
   const description = deferred
     ? `Upstream release ${tag} is not yet merged into main. Install the pending fork update before merging upstream.`
-    : `Upstream release ${tag} is not yet merged into main. Click to start a merge thread.`;
+    : `Upstream release ${tag} is not yet merged into main. Click to create a local merge draft thread in your fork checkout. Nothing is pushed.`;
 
   const handleClick = () => {
     if (deferred) {

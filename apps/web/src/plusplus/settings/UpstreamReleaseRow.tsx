@@ -6,6 +6,7 @@ import { useDesktopUpdateState } from "../../state/desktopUpdate";
 import {
   runManualUpstreamCheck,
   startUpstreamMerge,
+  useUpstreamMergeEligible,
   useUpstreamRelease,
 } from "../state/upstreamRelease";
 import { Button } from "~/components/ui/button";
@@ -17,12 +18,13 @@ import {
 import { SettingsRow } from "~/components/settings/settingsLayout";
 
 function UpstreamReleaseRowContent() {
+  const eligible = useUpstreamMergeEligible();
   const newThread = useNewThreadHandler();
   const updateState = useDesktopUpdateState();
   const result = useUpstreamRelease();
   const [isChecking, setIsChecking] = useState(false);
 
-  if (!result || result.kind === "merged") {
+  if (!eligible || !result || result.kind === "merged") {
     return null;
   }
 
@@ -54,10 +56,14 @@ function UpstreamReleaseRowContent() {
     <SettingsRow
       title="Upstream release"
       description={`${result.tag} is ready to merge`}
-      status={deferMerge ? "Update the fork app first, then start the merge." : undefined}
+      status={
+        deferMerge
+          ? "Update the fork app first, then create the merge draft."
+          : "Creates a local merge draft thread in your fork checkout. Nothing is pushed."
+      }
       control={
         <Button size="sm" variant="outline" disabled={deferMerge} onClick={handleStartMerge}>
-          Start merge
+          Create local upstream merge draft
         </Button>
       }
     />

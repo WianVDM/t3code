@@ -7,6 +7,7 @@ import type { UpstreamReleaseResult } from "../upstreamRelease.logic";
 const state = vi.hoisted(() => ({
   update: null as DesktopUpdateState | null,
   release: null as UpstreamReleaseResult | null,
+  eligible: true,
   newThread: vi.fn(),
   startUpstreamMerge: vi.fn(),
 }));
@@ -16,6 +17,7 @@ vi.mock(import("../../state/desktopUpdate"), () => ({
 }));
 vi.mock(import("../state/upstreamRelease"), () => ({
   useUpstreamRelease: () => state.release,
+  useUpstreamMergeEligible: () => state.eligible,
   // Polling would hit the live atom registry and the network; the pill only needs the result.
   useUpstreamReleasePolling: () => {},
   registerNewThreadRunner: () => () => {},
@@ -64,6 +66,7 @@ const forkUpdateAvailable: DesktopUpdateState = {
 function setup() {
   state.update = null;
   state.release = { kind: "unmerged", tag: TAG };
+  state.eligible = true;
   state.newThread.mockReset();
   state.startUpstreamMerge.mockReset().mockResolvedValue(undefined);
 }
@@ -73,6 +76,16 @@ function pillButton(container: HTMLElement): HTMLButtonElement {
   expect(found, "upstream release pill button").not.toBeNull();
   return found!;
 }
+
+it("renders nothing when no local fork checkout matches", async () => {
+  setup();
+  state.eligible = false;
+  state.update = forkUpToDate;
+  await using screen = await render(<SidebarUpstreamReleasePill />);
+  expect(screen.container.querySelector("[data-sidebar-pill='upstream-release']")).toBeNull();
+  expect(screen.container.textContent).not.toContain("ready to merge");
+  expect(state.startUpstreamMerge).not.toHaveBeenCalled();
+});
 
 it("shows the unmerged pill but does not start the merge while a fork update is available", async () => {
   setup();
@@ -91,6 +104,8 @@ it("starts the merge with the tag and newThread runner when the fork is up to da
   await using screen = await render(<SidebarUpstreamReleasePill />);
   const button = pillButton(screen.container);
   expect(button.textContent).toContain(`Upstream ${TAG} ready to merge`);
+  expect(button.getAttribute("aria-label")).toContain("create a local merge draft thread");
+  expect(button.getAttribute("aria-label")).toContain("Nothing is pushed");
   expect(button.getAttribute("aria-disabled")).toBeNull();
   await act(async () => button.click());
   expect(state.startUpstreamMerge).toHaveBeenCalledTimes(1);

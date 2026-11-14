@@ -596,6 +596,7 @@ export const WS_METHODS = {
   sourceControlAppAccess: "sourceControl.appAccess",
   sourceControlStarred: "sourceControl.starred",
   sourceControlStar: "sourceControl.star",
+  plusplusUpstreamMergeAccess: "plusplus.upstreamMergeAccess",
   projectCloneStart: "projectClone.start",
   projectCloneCancel: "projectClone.cancel",
   projectCloneRetry: "projectClone.retry",
@@ -1256,6 +1257,12 @@ const WsSourceControlStarredRpc = Rpc.make(WS_METHODS.sourceControlStarred, {
 // Stars the repository as the server's forge account. False when the forge refused or cannot star.
 const WsSourceControlStarRpc = Rpc.make(WS_METHODS.sourceControlStar, {
   payload: SourceControlStarredInput,
+  success: Schema.Boolean,
+  error: EnvironmentAuthorizationError,
+});
+
+const WsPlusplusUpstreamMergeAccessRpc = Rpc.make(WS_METHODS.plusplusUpstreamMergeAccess, {
+  payload: Schema.Struct({}),
   success: Schema.Boolean,
   error: EnvironmentAuthorizationError,
 });
@@ -2099,6 +2106,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsSourceControlAppAccessRpc,
   WsSourceControlStarredRpc,
   WsSourceControlStarRpc,
+  WsPlusplusUpstreamMergeAccessRpc,
   WsProjectCloneStartRpc,
   WsProjectCloneCancelRpc,
   WsProjectCloneRetryRpc,

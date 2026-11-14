@@ -8,6 +8,7 @@ import type { UpstreamReleaseResult } from "../upstreamRelease.logic";
 const state = vi.hoisted(() => ({
   update: null as DesktopUpdateState | null,
   release: null as UpstreamReleaseResult | null,
+  eligible: true,
   newThread: vi.fn(),
   startUpstreamMerge: vi.fn(),
   runManualUpstreamCheck: vi.fn(),
@@ -18,6 +19,7 @@ vi.mock(import("../../state/desktopUpdate"), () => ({
 }));
 vi.mock(import("../state/upstreamRelease"), () => ({
   useUpstreamRelease: () => state.release,
+  useUpstreamMergeEligible: () => state.eligible,
   startUpstreamMerge: state.startUpstreamMerge,
   runManualUpstreamCheck: state.runManualUpstreamCheck,
 }));
@@ -87,39 +89,54 @@ const forkUpdateAvailable: DesktopUpdateState = {
 function setup() {
   state.update = null;
   state.release = { kind: "unmerged", tag: TAG };
+  state.eligible = true;
   state.newThread.mockReset();
   state.startUpstreamMerge.mockReset().mockResolvedValue(undefined);
   state.runManualUpstreamCheck.mockReset().mockResolvedValue(undefined);
 }
 
-function startMergeButton(container: HTMLElement): HTMLButtonElement {
+function mergeDraftButton(container: HTMLElement): HTMLButtonElement {
   const found = [...container.querySelectorAll("button")].find(
-    (element) => element.textContent === "Start merge",
+    (element) => element.textContent === "Create local upstream merge draft",
   );
-  expect(found, "Start merge button").toBeDefined();
+  expect(found, "Create local upstream merge draft button").toBeDefined();
   return found as HTMLButtonElement;
 }
 
-it("keeps Start merge disabled while a fork update is available", async () => {
+it("hides the merge row without a matching local fork checkout", async () => {
+  setup();
+  state.eligible = false;
+  state.update = forkUpToDate;
+  await using screen = await render(<UpstreamReleaseRow />);
+  expect(screen.container.textContent).toContain("Upstream base");
+  expect(screen.container.textContent).not.toContain("ready to merge");
+  expect(screen.container.querySelector("button")).toBeNull();
+  expect(state.startUpstreamMerge).not.toHaveBeenCalled();
+});
+
+it("keeps the merge draft action disabled while a fork update is available", async () => {
   setup();
   state.update = forkUpdateAvailable;
   await using screen = await render(<UpstreamReleaseRow />);
   expect(screen.container.textContent).toContain(`${TAG} is ready to merge`);
   expect(screen.container.textContent).toContain(
-    "Update the fork app first, then start the merge.",
+    "Update the fork app first, then create the merge draft.",
   );
-  const button = startMergeButton(screen.container);
+  const button = mergeDraftButton(screen.container);
   expect(button.disabled).toBe(true);
   await act(async () => button.click());
   expect(state.startUpstreamMerge).not.toHaveBeenCalled();
 });
 
-it("starts the merge with the tag and newThread runner when the fork is up to date", async () => {
+it("creates the local merge draft with the tag and newThread runner when the fork is up to date", async () => {
   setup();
   state.update = forkUpToDate;
   await using screen = await render(<UpstreamReleaseRow />);
   expect(screen.container.textContent).not.toContain("Update the fork app first");
-  const button = startMergeButton(screen.container);
+  expect(screen.container.textContent).toContain(
+    "Creates a local merge draft thread in your fork checkout. Nothing is pushed.",
+  );
+  const button = mergeDraftButton(screen.container);
   expect(button.disabled).toBe(false);
   await act(async () => button.click());
   expect(state.startUpstreamMerge).toHaveBeenCalledTimes(1);

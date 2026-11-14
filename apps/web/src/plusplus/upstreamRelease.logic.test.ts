@@ -453,7 +453,7 @@ describe("upstreamRelease cache behavior", () => {
   });
 });
 
-describe("pickForkProject ranking", () => {
+describe("pickForkProject fork-remote matching", () => {
   it("matches a fork checkout with both upstream and origin remotes as rank 1", () => {
     const forkProjectWithBothRemotes: EnvironmentProject = {
       ...mockProjectBase,
@@ -500,7 +500,7 @@ describe("pickForkProject ranking", () => {
     });
   });
 
-  it("treats a plain clone of upstream with t3code in path as rank 2, not rank 1", () => {
+  it("never picks a plain clone of upstream even with t3code in the title or path", () => {
     const plainUpstreamClone: EnvironmentProject = {
       ...mockProjectBase,
       id: "proj-upstream" as ProjectId,
@@ -517,21 +517,23 @@ describe("pickForkProject ranking", () => {
       updatedAt: "2026-06-01T00:00:00.000Z",
     };
 
-    expect(pickForkProject([plainUpstreamClone])).toEqual({
-      environmentId: "env-local",
-      projectId: "proj-upstream",
-    });
-
-    const plainUpstreamCloneNoMatch: EnvironmentProject = {
-      ...plainUpstreamClone,
-      title: "unrelated-title",
-      workspaceRoot: "C:\\code\\other",
-    };
-
-    expect(pickForkProject([plainUpstreamCloneNoMatch])).toBeNull();
+    expect(pickForkProject([plainUpstreamClone])).toBeNull();
   });
 
-  it("prioritizes a rank 1 fork project over a more recently updated upstream clone (rank beats recency)", () => {
+  it("never picks a project without a remote identity even when titled and rooted t3code", () => {
+    const plainNamedClone: EnvironmentProject = {
+      ...mockProjectBase,
+      id: "proj-named" as ProjectId,
+      title: "t3code",
+      workspaceRoot: "C:\\code\\t3code",
+      repositoryIdentity: null,
+      updatedAt: "2026-06-01T00:00:00.000Z",
+    };
+
+    expect(pickForkProject([plainNamedClone])).toBeNull();
+  });
+
+  it("picks the fork checkout over a more recently updated plain upstream clone", () => {
     const olderForkProject: EnvironmentProject = {
       ...mockProjectBase,
       id: "proj-fork-older" as ProjectId,
@@ -598,18 +600,28 @@ describe("pickForkProject ranking", () => {
     });
   });
 
-  it("breaks ties by most recent activity timestamp", () => {
+  it("breaks ties between fork checkouts by most recent activity timestamp", () => {
+    const forkIdentity = {
+      canonicalKey: "github.com/wianvdm/t3code",
+      locator: {
+        source: "git-remote" as const,
+        remoteName: "origin",
+        remoteUrl: "https://github.com/WianVDM/t3code.git",
+      },
+    };
     const projects: EnvironmentProject[] = [
       {
         ...mockProjectBase,
         id: "proj-older" as ProjectId,
-        title: "t3code older",
+        title: "older fork",
+        repositoryIdentity: forkIdentity,
         updatedAt: "2026-02-01T12:00:00.000Z",
       },
       {
         ...mockProjectBase,
         id: "proj-newer" as ProjectId,
-        title: "t3code newer",
+        title: "newer fork",
+        repositoryIdentity: forkIdentity,
         updatedAt: "2026-05-15T10:00:00.000Z",
       },
     ];
