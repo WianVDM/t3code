@@ -8,6 +8,11 @@ import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import { type CliShimTarget, renderCliShim } from "./DesktopCliShim.ts";
 
+// The POSIX launcher is executed by /bin/sh in these tests; the Windows .cmd
+// launcher test below stays active on every host.
+// oxlint-disable-next-line t3code/no-global-process-runtime -- Test collection checks the host before running the rendered POSIX launcher.
+const itPosix = it.skipIf(process.platform === "win32");
+
 const directories: Array<string> = [];
 afterEach(() => {
   for (const directory of directories.splice(0)) {
@@ -64,7 +69,7 @@ const fakeAppImage = (canMount = true) => {
 };
 
 describe("renderCliShim", () => {
-  it("extracts the AppImage where it cannot be mounted", () => {
+  itPosix("extracts the AppImage where it cannot be mounted", () => {
     const { shim } = fakeAppImage(false);
     const result = run(shim, ["--version"], { APPIMAGE_EXTRACT_AND_RUN: "1" });
     expect(result.status).toBe(3);
@@ -73,7 +78,7 @@ describe("renderCliShim", () => {
     );
   });
 
-  it("keeps the install's T3 home under sudo, unless one is set", () => {
+  itPosix("keeps the install's T3 home under sudo, unless one is set", () => {
     const root = tempRoot();
     writeExecutable(NodePath.join(root, "app"), REPORTER);
     const shim = writeShim(root, {
@@ -87,7 +92,7 @@ describe("renderCliShim", () => {
     expect(relative.stdout).toContain(`cli=${shim}`);
   });
 
-  it("runs an installed app's server directly", () => {
+  itPosix("runs an installed app's server directly", () => {
     const root = tempRoot();
     const executable = NodePath.join(root, "opt", "T3 Code", "t3code");
     writeExecutable(executable, REPORTER);

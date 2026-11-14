@@ -3,7 +3,7 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodeNet from "node:net";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
-import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
+import { afterEach, beforeEach, expect, it as test, vi } from "vite-plus/test";
 
 vi.mock("electron", () => ({
   nativeImage: {
@@ -15,6 +15,9 @@ vi.mock("electron", () => ({
 }));
 import { captureNiriWindow, checkNiriCaptureSupport, niriSocketPath } from "./NiriSnapShot.ts";
 import { captureLinuxWindow, getLinuxCaptureSupport } from "./LinuxSnapShot.ts";
+
+// oxlint-disable-next-line t3code/no-global-process-runtime -- Test collection checks the host before starting these Linux-only Niri compositor tests.
+const it = test.skipIf(process.platform === "win32");
 
 const png = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 0]);
 const window = {

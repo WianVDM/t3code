@@ -118,7 +118,7 @@ it.layer(NodeServices.layer)("writeFileStringAtomically", (it) => {
 
       yield* writeFileStringAtomically({ filePath: link, contents: "after" });
 
-      assert.strictEqual(yield* fs.readLink(link), "../config/settings.json");
+      assert.strictEqual(yield* fs.readLink(link), path.join("..", "config", "settings.json"));
       assert.strictEqual(yield* fs.readFileString(destination), "after");
     }),
   );

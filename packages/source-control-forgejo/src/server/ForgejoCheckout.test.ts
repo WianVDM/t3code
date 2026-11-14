@@ -30,6 +30,8 @@ it.effect(
         ["init", "-b", "main"],
         ["config", "user.name", "Test"],
         ["config", "user.email", "test@example.com"],
+        // Pin EOL behavior so inherited core.autocrlf cannot rewrite checked-out content on Windows.
+        ["config", "core.autocrlf", "false"],
       ])
         yield* git.run({ operation: "test.setup", command: "git", cwd: source, args });
       yield* fs.writeFileString(path.join(source, "base.txt"), "base\n");
@@ -49,6 +51,12 @@ it.effect(
         command: "git",
         cwd: root,
         args: ["clone", source, cwd],
+      });
+      yield* git.run({
+        operation: "test.setup",
+        command: "git",
+        cwd,
+        args: ["config", "core.autocrlf", "false"],
       });
       yield* fs.writeFileString(path.join(source, "feature.txt"), "pull request change\n");
       for (const args of [

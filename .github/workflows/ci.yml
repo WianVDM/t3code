@@ -17,8 +17,9 @@ jobs:
   # Skips jobs a pull request cannot affect: a web change does not run the
   # server shards, and a server change does not run the mobile tests.
   # .github/scripts/ci-changes.cjs maps changed files to workspace packages and
-  # their dependents. Pushes to main still run every job. Detection fails
-  # open: if the diff cannot be resolved, everything runs.
+  # their dependents. Pushes to main still run every job. Detection fails open
+  # and merges fail closed: if the diff cannot be resolved, every job runs and
+  # fail_open=true makes Check and the server shards reject the run.
   changes:
     name: Changes
     runs-on: ubuntu-latest
@@ -32,6 +33,9 @@ jobs:
       test_server: ${{ steps.detect.outputs.test_server }}
       rust: ${{ steps.detect.outputs.rust }}
       release_smoke: ${{ steps.detect.outputs.release_smoke }}
+      windows: ${{ steps.detect.outputs.windows }}
+      windows_packages: ${{ steps.detect.outputs.windows_packages }}
+      fail_open: ${{ steps.detect.outputs.fail_open }}
     steps:
       # Only the package manifests the script reads to build the dependency graph.
       # Depth 2 brings the base commit the change is diffed against.
@@ -443,6 +447,17 @@ jobs:
           if-no-files-found: ignore
           retention-days: 30
 
+      # The shard gates itself on its own detection, so a fetch/diff fallback
+      # ran the full shard but its result is not trustworthy: fail the shard
+      # rather than report a healthy run. Check enforces the same all-clear.
+      - name: Require healthy change detection
+        if: ${{ !cancelled() }}
+        run: |
+          if [[ "${{ steps.changes.outputs.fail_open }}" != "false" ]]; then
+            echo "Change detection failed open; this shard's result is not trustworthy." >&2
+            exit 1
+          fi
+
   # Split out of Check and Test: both paid ~7-9s to install a Rust toolchain
   # for checks that take under 3s, on the critical path of every PR.
   rust:
@@ -567,6 +582,19 @@ jobs:
             || echo "Could not fetch ${BASE_SHA}; the checker fails closed."
           node scripts/check-fork-boundaries.ts "$BASE_SHA"
 
+  # Scoped Windows verification (#48): runs only when the change can affect the
+  # desktop distribution or the release scripts that package it, over the
+  # affected packages in the desktop dependency closure plus scripts. It
+  # aggregates through Check and is not individually required, so an off
+  # Windows lane never blocks unrelated PRs.
+  windows:
+    name: Windows Tests
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.windows != 'false' }}
+    uses: ./.github/workflows/windows-tests.yml
+    with:
+      package: ${{ needs.changes.outputs.windows_packages }}
+
   # Branch protection requires this job by its name, `Check`. It fails when any
   # other job fails, is cancelled, or is skipped without a reason, so splitting
   # or resharding jobs needs no ruleset change. Add every new job to `needs`,
@@ -587,23 +615,25 @@ jobs:
         rust,
         release_smoke,
         shared_persistence_compat,
+        windows,
       ]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      # The shared fail-closed policy lives beside the detector it checks.
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          sparse-checkout: |
+            /.github/scripts/ci-changes.cjs
+          sparse-checkout-cone-mode: false
+
+      # A job may skip only when `changes` turned off every gate it represents,
+      # and `changes` itself must report a healthy detection (fail_open=false).
       - name: Require every job to pass
         env:
           RESULTS: ${{ toJSON(needs) }}
-        run: |
-          echo "$RESULTS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
-          # A job may skip only when `changes` said every gate it represents was
-          # not needed. Gates are keyed by job name, except merged Build.
-          echo "$RESULTS" | jq -e '.changes.outputs as $gates
-            | {build: ["build", "typecheck"]} as $renamed
-            | all(to_entries[];
-                .value.result == "success"
-                or (.value.result == "skipped"
-                  and (($renamed[.key] // [.key]) | all(.[]; $gates[.] == "false"))))' > /dev/null
+        run: node .github/scripts/ci-changes.cjs --check-results
 
       # thread-transfer-report.yml reads this artifact after CI, so a run whose
       # server tests ran must have produced it.

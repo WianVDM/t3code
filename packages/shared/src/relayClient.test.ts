@@ -23,6 +23,15 @@ import * as RelayClient from "./relayClient.ts";
 
 // POSIX exec-bit checks do not apply on NTFS.
 const windowsHost = HostProcess.Platform.defaultValue() === "win32";
+// Tests that complete an install must match the injected platform's managed layout.
+const installPlatform: NodeJS.Platform = windowsHost ? "win32" : "linux";
+const managedLockPath = (baseDir: string) =>
+  `${baseDir}/tools/cloudflared/${RelayClient.CLOUDFLARED_VERSION}/${installPlatform}-x64/${
+    windowsHost ? "cloudflared.exe" : "cloudflared"
+  }.lock`;
+// The runtime joins lock paths with native separators; tests assemble them with forward slashes.
+const samePath = (left: string, right: string) =>
+  left.replaceAll("\\", "/") === right.replaceAll("\\", "/");
 
 const layerHostRuntime = (env: Record<string, string> = {}, platform: NodeJS.Platform = "linux") =>
   Layer.mergeAll(
@@ -168,7 +177,16 @@ describe("RelayClient", () => {
               .rename(from, to)
               .pipe(
                 Effect.tapError(() =>
-                  to === lockPath ? Deferred.succeed(contended, undefined) : Effect.void,
+                  samePath(to, lockPath) ? Deferred.succeed(contended, undefined) : Effect.void,
+                ),
+              ),
+          // On Windows the wx reservation, not the rename, is the contended lock publication.
+          writeFileString: (path, contents, options) =>
+            fileSystem
+              .writeFileString(path, contents, options)
+              .pipe(
+                Effect.tapError(() =>
+                  samePath(path, lockPath) ? Deferred.succeed(contended, undefined) : Effect.void,
                 ),
               ),
         }),
@@ -229,17 +247,18 @@ describe("RelayClient", () => {
         expect(yield* fileSystem.readDirectory(lockPath)).toEqual([owner]);
       } else {
         expect(yield* fileSystem.readFileString(lockPath)).toBe("");
+        expect((yield* fileSystem.stat(lockPath)).type).toBe("File");
       }
     }).pipe(Effect.scoped, Effect.provide(layerInstallRuntime("linux"))),
   );
 
-  it.effect.skipIf(windowsHost)("replaces an install lock left by an exited installer", () =>
+  it.effect("replaces an install lock left by an exited installer", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const baseDir = yield* fileSystem.makeTempDirectoryScoped({
         prefix: "t3-cloudflared-test-",
       });
-      const lockPath = `${baseDir}/tools/cloudflared/${RelayClient.CLOUDFLARED_VERSION}/linux-x64/cloudflared.lock`;
+      const lockPath = managedLockPath(baseDir);
       yield* fileSystem.makeDirectory(lockPath.slice(0, lockPath.lastIndexOf("/")), {
         recursive: true,
       });
@@ -252,16 +271,16 @@ describe("RelayClient", () => {
 
       expect(yield* manager.install).toMatchObject({ status: "available" });
       expect(yield* fileSystem.exists(lockPath)).toBe(false);
-    }).pipe(Effect.scoped, Effect.provide(layerInstallRuntime("linux"))),
+    }).pipe(Effect.scoped, Effect.provide(layerInstallRuntime(installPlatform))),
   );
 
-  it.effect.skipIf(windowsHost)("replaces an empty install lock left by an exited installer", () =>
+  it.effect("replaces a stale legacy install lock", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const baseDir = yield* fileSystem.makeTempDirectoryScoped({
         prefix: "t3-cloudflared-test-",
       });
-      const lockPath = `${baseDir}/tools/cloudflared/${RelayClient.CLOUDFLARED_VERSION}/linux-x64/cloudflared.lock`;
+      const lockPath = managedLockPath(baseDir);
       yield* fileSystem.makeDirectory(lockPath.slice(0, lockPath.lastIndexOf("/")), {
         recursive: true,
       });
@@ -277,7 +296,7 @@ describe("RelayClient", () => {
 
       expect(yield* manager.install).toMatchObject({ status: "available" });
       expect(yield* fileSystem.exists(lockPath)).toBe(false);
-    }).pipe(Effect.scoped, Effect.provide(layerInstallRuntime("linux"))),
+    }).pipe(Effect.scoped, Effect.provide(layerInstallRuntime(installPlatform))),
   );
 
   it.effect("keeps a replacement lock when a stale contender resumes cleanup", () =>
@@ -298,7 +317,7 @@ describe("RelayClient", () => {
             fileSystem.readDirectory(path).pipe(
               Effect.tap((entries) =>
                 Effect.gen(function* () {
-                  if (path !== lockPath) return;
+                  if (!samePath(path, lockPath)) return;
                   if (replaced) {
                     expect(entries).toEqual([replacement]);
                     yield* Deferred.succeed(checked, undefined);
@@ -319,6 +338,138 @@ describe("RelayClient", () => {
       expect(yield* fileSystem.readDirectory(lockPath)).toEqual([replacement]);
     }).pipe(Effect.scoped, Effect.provide(layerInstallRuntime("linux"))),
   );
+
+  it.effect.skipIf(!windowsHost)(
+    "never clobbers a late legacy lock created before publication",
+    () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const baseDir = yield* fileSystem.makeTempDirectoryScoped({
+          prefix: "t3-cloudflared-test-",
+        });
+        const lockPath = managedLockPath(baseDir);
+        const outcomes: Array<string> = [];
+        let injected = false;
+        const manager = yield* RelayClient.makeCloudflaredRelayClient({
+          baseDir,
+          releaseAsset: testReleaseAsset,
+        }).pipe(
+          Effect.provideService(FileSystem.FileSystem, {
+            ...fileSystem,
+            // A legacy installer grabs the path in the window before the first lock-publishing rename.
+            rename: (from, to) =>
+              Effect.suspend(() => {
+                if (injected || !samePath(to, lockPath)) return fileSystem.rename(from, to);
+                injected = true;
+                return fileSystem.writeFileString(lockPath, "late-legacy", { flag: "wx" }).pipe(
+                  Effect.tap(() => Effect.sync(() => void outcomes.push("late-legacy-created"))),
+                  Effect.catch(() => Effect.sync(() => void outcomes.push("late-legacy-rejected"))),
+                  Effect.andThen(
+                    fileSystem
+                      .rename(from, to)
+                      .pipe(
+                        Effect.tap(() => Effect.sync(() => void outcomes.push("rename-succeeded"))),
+                      ),
+                  ),
+                );
+              }),
+          }),
+        );
+
+        expect(yield* manager.install).toMatchObject({ status: "available" });
+        const created = outcomes.indexOf("late-legacy-created");
+        const clobbered = created >= 0 && outcomes.slice(created + 1).includes("rename-succeeded");
+        expect(clobbered).toBe(false);
+        expect(yield* fileSystem.exists(lockPath)).toBe(false);
+      }).pipe(Effect.scoped, Effect.provide(layerInstallRuntime(installPlatform))),
+  );
+
+  it.effect("serializes concurrent installs across independent managers", () => {
+    const counter = { downloads: 0 };
+    return Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const baseDir = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-cloudflared-test-",
+      });
+      const lockPath = managedLockPath(baseDir);
+      const options = { baseDir, releaseAsset: testReleaseAsset };
+      const firstManager = yield* RelayClient.makeCloudflaredRelayClient(options);
+      const secondManager = yield* RelayClient.makeCloudflaredRelayClient(options);
+      const firstDownloading = yield* Deferred.make<void>();
+      const releaseFirst = yield* Deferred.make<void>();
+      const secondWaiting = yield* Deferred.make<void>();
+      const secondStages: Array<string> = [];
+      const clock = yield* Clock.Clock;
+
+      const installingFirst = yield* firstManager
+        .installWithProgress((event) =>
+          event.type === "progress" && event.stage === "downloading"
+            ? Deferred.succeed(firstDownloading, undefined).pipe(
+                Effect.andThen(Deferred.await(releaseFirst)),
+              )
+            : Effect.void,
+        )
+        .pipe(Effect.forkChild);
+      yield* Deferred.await(firstDownloading);
+      expect(yield* fileSystem.exists(lockPath)).toBe(true);
+
+      const installingSecond = yield* secondManager
+        .installWithProgress((event) =>
+          Effect.sync(() => {
+            if (event.type === "progress") secondStages.push(event.stage);
+          }),
+        )
+        .pipe(
+          Effect.provideService(Clock.Clock, {
+            ...clock,
+            sleep: (duration) =>
+              Deferred.succeed(secondWaiting, undefined).pipe(
+                Effect.andThen(clock.sleep(duration)),
+              ),
+          }),
+          Effect.forkChild,
+        );
+      yield* Deferred.await(secondWaiting);
+      expect(secondStages).not.toContain("downloading");
+
+      yield* Deferred.succeed(releaseFirst, undefined);
+      const installedFirst = yield* Fiber.join(installingFirst);
+      yield* TestClock.adjust("100 millis");
+      const installedSecond = yield* Fiber.join(installingSecond);
+
+      expect(installedSecond).toEqual(installedFirst);
+      expect(secondStages).not.toContain("downloading");
+      expect(counter.downloads).toBe(1);
+      expect(yield* fileSystem.exists(lockPath)).toBe(false);
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(
+          NodeServices.layer,
+          NodeCrypto.layer,
+          Layer.succeed(
+            HttpClient.HttpClient,
+            HttpClient.make((request) =>
+              Effect.sync(() => {
+                counter.downloads += 1;
+              }).pipe(
+                Effect.andThen(
+                  Effect.succeed(
+                    HttpClientResponse.fromWeb(
+                      request,
+                      new Response(testBinary.buffer as ArrayBuffer),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+          layerSpawner([]),
+          layerHostRuntime({ PATH: "" }, installPlatform),
+        ),
+      ),
+    );
+  });
 
   it.effect("releases the install lock when a download is cancelled", () =>
     Effect.gen(function* () {
@@ -793,10 +944,15 @@ describe("RelayClient", () => {
     expect(RelayClient.compareCloudflaredVersions("2023.8.2", "2025.6.1")).toBeLessThan(0);
   });
 
-  it.effect.each([
-    ["linux", "EBUSY"],
-    ["win32", "EXDEV"],
-  ] as const)("fails staging at once on %s for %s", ([platform, code]) =>
+  it.effect.each(
+    // The simulated linux row needs POSIX exec bits; on a Windows host validation fails before staging.
+    windowsHost
+      ? ([["win32", "EXDEV"]] as const)
+      : ([
+          ["linux", "EBUSY"],
+          ["win32", "EXDEV"],
+        ] as const),
+  )("fails staging at once on %s for %s", ([platform, code]) =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const baseDir = yield* fileSystem.makeTempDirectoryScoped({
