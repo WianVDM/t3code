@@ -10,9 +10,9 @@ Do not open a public issue, discussion or pull request for an undisclosed vulner
 
 ## What happens next
 
-The maintainer tracks each confirmed vulnerability in a private security advisory on this repository and publishes the advisory with the fixed release. Hardening work that discloses nothing exploitable is tracked as a regular issue in this repository.
+The maintainer tracks each confirmed vulnerability in a private security advisory on this repository and publishes the advisory with the fixed release. After triage, hardening work that discloses nothing exploitable is tracked as a regular issue in this repository. If unsure, report privately.
 
-If the vulnerability is inherited from upstream T3 Code, you may also report it to upstream yourself under upstream's policy. This fork does not forward reports.
+If the vulnerability is inherited from upstream T3 Code, you may also report it privately to upstream yourself under upstream's security policy. This fork does not forward reports.
 
 ## Supported versions
 
