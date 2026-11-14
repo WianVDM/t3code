@@ -16,7 +16,11 @@ import * as Stream from "effect/Stream";
 import * as Semaphore from "effect/Semaphore";
 
 import * as ProviderHost from "./ProviderHost.ts";
-import { applyUsageLimitsUpdate, resolveUsageLimitsAfterProbe } from "./usageLimits.ts";
+import {
+  applyUsageLimitsUpdate,
+  reconcileProviderUsageSnapshot,
+  resolveUsageLimitsAfterProbe,
+} from "./usageLimits.ts";
 import type { ManagedServerProvider } from "./snapshot.ts";
 
 interface ProviderSnapshotState {
@@ -157,41 +161,10 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
         const generation = input.enrichSnapshot
           ? state.enrichmentGeneration + 1
           : state.enrichmentGeneration;
-        // Failed reads retain limits only for the same account and original workspace.
-        const previous = state.snapshot.auth;
-        const differs = (a: string | undefined, b: string | undefined) =>
-          a !== undefined && b !== undefined && a !== b;
-        const switchedAccount =
-          differs(probedSnapshot.auth.email?.toLowerCase(), previous.email?.toLowerCase()) ||
-          (probedSnapshot.auth.workspaceId !== undefined &&
-            probedSnapshot.auth.workspaceId !== previous.workspaceId);
-        const usageLimits = switchedAccount
-          ? probedSnapshot.usageLimits
-          : resolveUsageLimitsAfterProbe({
-              published: state.snapshot.usageLimits,
-              probed: probedSnapshot.usageLimits,
-            });
-        const workspaceId =
-          usageLimits === probedSnapshot.usageLimits ? undefined : state.snapshot.auth.workspaceId;
-        const probedAccountCount = probedSnapshot.usageAccounts?.length ?? 0;
-        // Drivers fold auth-file read failures into empty account lists, so empty means no
-        // fresh data; sign-out, uninstall, and account switches still drop the accounts.
-        const retainedAccounts =
-          !switchedAccount &&
-          probedSnapshot.installed &&
-          probedSnapshot.auth.status === "authenticated" &&
-          probedAccountCount === 0 &&
-          (state.snapshot.usageAccounts?.length ?? 0) > 0
-            ? state.snapshot.usageAccounts
-            : undefined;
-        const withWorkspace =
-          workspaceId && !probedSnapshot.auth.workspaceId
-            ? { ...probedSnapshot, auth: { ...probedSnapshot.auth, workspaceId } }
-            : probedSnapshot;
-        const snapshot = withUsageLimits(
-          retainedAccounts ? { ...withWorkspace, usageAccounts: retainedAccounts } : withWorkspace,
-          usageLimits,
-        );
+        const snapshot = reconcileProviderUsageSnapshot({
+          published: state.snapshot,
+          probed: probedSnapshot,
+        });
         return [
           { snapshot, generation },
           { snapshot, enrichmentGeneration: generation },
