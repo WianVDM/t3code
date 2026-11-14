@@ -767,7 +767,10 @@ test("windows-tests exposes replay inputs as all-or-none and a verification outp
   // The replay checkout is plain git without credentials (actions/checkout's
   // cleanup trips on the orphaned .repos gitlinks); a normal run keeps its prior behavior.
   assert.match(windowsWorkflow, /if: \$\{\{ inputs\.dry_run_base_sha != '' \}\}\n\s+shell: bash/);
-  assert.match(windowsWorkflow, /if: \$\{\{ inputs\.dry_run_base_sha == '' \}\}\n\s+uses: actions\/checkout@v6/);
+  assert.match(
+    windowsWorkflow,
+    /if: \$\{\{ inputs\.dry_run_base_sha == '' \}\}\n\s+uses: actions\/checkout@v6/,
+  );
   // Existing CI/manual behavior is preserved.
   assert.match(windowsWorkflow, /was called without a package/);
   assert.match(windowsWorkflow, /files is only supported by manual runs/);

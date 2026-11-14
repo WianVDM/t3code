@@ -532,7 +532,10 @@ test("the sync PR workflow is trusted-base only with minimal permissions", () =>
   assert.ok(!/uses: actions\/checkout/.test(workflow), "use plain git, not actions/checkout");
   const checkouts = (workflow.match(/^ {10}git init \.$/gm) ?? []).length;
   assert.ok(checkouts >= 2, "reconcile and report each check out");
-  assert.ok(!/(ref|CHECKOUT_REF):.*head\.(sha|ref)/.test(workflow), "no checkout may use the PR head ref or sha");
+  assert.ok(
+    !/(ref|CHECKOUT_REF):.*head\.(sha|ref)/.test(workflow),
+    "no checkout may use the PR head ref or sha",
+  );
   assert.match(workflow, /github\.event\.pull_request\.base\.sha/);
   // No secrets, no write to contents, no execution of head code.
   assert.ok(!/secrets:/.test(workflow), "the workflow must not reference secrets");
