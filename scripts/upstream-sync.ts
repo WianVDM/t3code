@@ -423,6 +423,18 @@ export function renderImpactReport(report: ImpactReport): Array<string> {
 const renderImpactSection = (impact: ImpactReport | null): Array<string> =>
   impact === null ? ["## ++ impact", "", "(not computed)"] : renderImpactReport(impact);
 
+const renderSeamRefreshSection = (problems: ReadonlyArray<string>): Array<string> =>
+  problems.length === 0
+    ? []
+    : [
+        "",
+        `## Seam registry refresh (${problems.length})`,
+        "",
+        "The registry cannot be refreshed against the merged tag; verify refuses until each is fixed.",
+        "",
+        ...summaryList(problems.map((problem) => `- ${JSON.stringify(problem)}`)),
+      ];
+
 export function renderDryRunSummary(report: DryRunReport, detail: string | null): string {
   const value = (label: string, text: string | null): string =>
     `- ${label}: ${text === null ? "(unresolved)" : `\`${text}\``}`;
@@ -458,17 +470,8 @@ export function renderDryRunSummary(report: DryRunReport, detail: string | null)
     );
   }
   lines.push("", ...renderImpactSection(report.impact));
-  if (report.seamRefreshProblems.length > 0) {
-    lines.push(
-      "",
-      `## Seam registry refresh (${report.seamRefreshProblems.length})`,
-      "",
-      "The registry cannot be refreshed against the merged tag; verify refuses until each is fixed.",
-      "",
-      ...summaryList(report.seamRefreshProblems.map((problem) => `- ${JSON.stringify(problem)}`)),
-    );
-  }
   lines.push(
+    ...renderSeamRefreshSection(report.seamRefreshProblems),
     "",
     "## Verification lanes",
     "",
@@ -1655,8 +1658,9 @@ const stageSeamRefresh = Effect.fn("upstream-sync.stageSeamRefresh")(function* (
   if (problems.length > 0) return problems;
 
   const head = (yield* git(cwd, ["rev-parse", "--verify", "HEAD^{commit}"])).trim();
-  const historyText = yield* git(cwd, ["show", `:${SYNC_HISTORY_PATH}`]).pipe(
-    Effect.orElseSucceed(() => jsonText({ version: 1, syncs: [] })),
+  const historyText = Option.getOrElse(
+    yield* readFileAt(cwd, forkTree, SYNC_HISTORY_PATH).pipe(Effect.mapError(asSyncError)),
+    () => jsonText({ version: 1, syncs: [] }),
   );
   const history = yield* parseSyncHistory(historyText).pipe(Effect.mapError(asSyncError));
   const existing = history.syncs.find((sync) => sync.upstreamRef === mergeHead);
@@ -1813,7 +1817,8 @@ const performDryRun = Effect.fn("upstream-sync.performDryRun")(function* (
     });
   }
   draft.mergeCommit = identity.commit;
-  draft.tree = identity.tree;
+  // The real sync stages the registry refresh this tree lacks, so its tree cannot be pinned.
+  draft.tree = draft.seamRefreshProblems.length > 0 ? null : identity.tree;
 
   draft.windowsPackages =
     options.windowsPackages === undefined
@@ -2055,8 +2060,13 @@ export function validateHotspotReport(report: DryRunReport, real: HotspotRealMer
       problems.push(`${field} ${jsonText(value)} is not a full object SHA`);
     }
   }
+  // A registry the real sync must still fix has no tree to pin.
+  const pinsTree = report.seamRefreshProblems.length === 0;
+  if (!pinsTree && report.tree !== null) {
+    problems.push("tree must be null while the seam registry refresh has problems");
+  }
   for (const field of STATUS_REQUIRED_NON_NULL[report.status]) {
-    if (report[field] === null) {
+    if (report[field] === null && (field !== "tree" || pinsTree)) {
       problems.push(`${field} must be set for status ${jsonText(report.status)}`);
     }
   }
@@ -2113,7 +2123,7 @@ export function validateHotspotReport(report: DryRunReport, real: HotspotRealMer
       )}`,
     );
   }
-  if (report.status === "clean" && report.tree !== real.headTree) {
+  if (report.status === "clean" && pinsTree && report.tree !== real.headTree) {
     problems.push("the clean report tree does not equal the real merged tree");
   }
   const reportIncoming = [...report.incomingPaths].sort();
@@ -2161,11 +2171,11 @@ export function renderHotspotReport(view: HotspotReportView): string {
     `- Head parents: exactly two, \`${real.baseSha}\` (current PR base) then \`${real.upstreamSha}\` (${report.tag}).`,
     "- Incoming paths and the ++ impact report were recomputed from the real merge and match the report.",
   ];
-  if (report.status === "clean") {
+  if (report.tree !== null) {
     lines.push(`- Merged tree matches the dry-run tree (${report.tree}).`);
   } else {
     lines.push(
-      `- The resolved tree may differ from the dry run (status: ${report.status}); only a clean dry run pins the tree.`,
+      `- The resolved tree may differ from the dry run (status: ${report.status}); only a clean dry run with a refreshable registry pins the tree.`,
     );
   }
   lines.push("", `- Incoming paths: ${report.incomingPaths.length}`);
@@ -2180,6 +2190,7 @@ export function renderHotspotReport(view: HotspotReportView): string {
     );
   }
   lines.push("", ...renderImpactReport(real.impact));
+  lines.push(...renderSeamRefreshSection(report.seamRefreshProblems));
   return `${lines.join("\n")}\n`;
 }
 

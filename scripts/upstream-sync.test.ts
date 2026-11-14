@@ -147,6 +147,7 @@ const makeRepositoryFixture = Effect.fn("test.makeUpstreamSyncFixture")(function
   readonly extraUpstreamFiles?: Readonly<Record<string, string>>;
   readonly upstreamRenames?: ReadonlyArray<readonly [string, string]>;
   readonly upstreamDeletions?: ReadonlyArray<string>;
+  readonly forkSyncHistoryText?: string;
 }) {
   const conflict = options.variant === "conflict";
   const fs = yield* FileSystem.FileSystem;
@@ -201,7 +202,7 @@ const makeRepositoryFixture = Effect.fn("test.makeUpstreamSyncFixture")(function
   yield* fs.writeFileString(path.join(seed, SEAM_REGISTRY_PATH), serializeRegistry(registry));
   yield* fs.writeFileString(
     path.join(seed, SYNC_HISTORY_PATH),
-    serializeSyncHistory({ version: 1, syncs: [] }),
+    options.forkSyncHistoryText ?? serializeSyncHistory({ version: 1, syncs: [] }),
   );
   yield* commitSeed("fork change");
   const forkHead = (yield* git(seed, ["rev-parse", "HEAD"])).trim();
@@ -1500,6 +1501,8 @@ it.live("dry-run records a registry refresh failure and still commits the clean 
       // Not merge_verification_failed: the Linux and Windows lanes still need to run.
       assert.equal(returned.status, "clean");
       assert.isNotNull(returned.mergeCommit);
+      // The real sync stages the refresh this merge lacks, so the tree is not pinned.
+      assert.isNull(returned.tree);
       assert.lengthOf(returned.seamRefreshProblems, 1);
       assert.match(returned.seamRefreshProblems[0] ?? "", /demo\.hook \(app\.ts\)[\s\S]*missing/);
       assert.deepEqual(yield* readReportFile(paths.reportPath), returned);
@@ -1538,6 +1541,26 @@ it.live("dry-run distinguishes a conflict-marker clean merge from a real conflic
       assert.deepEqual(report.conflicts, []);
       assert.isNull(report.mergeCommit);
       assert.equal((yield* git(["rev-parse", "HEAD"])).trim(), fixture.forkHead);
+    }),
+  ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.live("dry-run reports a seam refresh failure inside merge verification", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const fixture = yield* makeRepositoryFixture({
+        variant: "clean",
+        forkSyncHistoryText: "not json\n",
+      });
+      const spawner = yield* localFetchSpawner(fixture);
+      const path = yield* Path.Path;
+      const paths = dryRunPaths(fixture, path);
+
+      const returned = yield* withSpawner(spawner)(
+        dryRunUpstreamSync({ tag: TAG, cwd: fixture.cwd, ...paths, githubOutput: false }),
+      );
+      assert.equal(returned.status, "merge_verification_failed");
+      assert.isNull(returned.mergeCommit);
     }),
   ).pipe(Effect.provide(NodeServices.layer)),
 );
@@ -2218,6 +2241,18 @@ describe("hotspot report validation", () => {
     assert.isNotEmpty(validateHotspotReport(report({ tree: sha("0") }), real));
   });
 
+  it("accepts an unpinned tree only when the registry refresh failed", () => {
+    const problems = ["demo.hook (app.ts) is missing"];
+    assert.deepEqual(
+      validateHotspotReport(report({ tree: null, seamRefreshProblems: problems }), real),
+      [],
+    );
+    assert.isNotEmpty(
+      validateHotspotReport(report({ tree: real.headTree, seamRefreshProblems: problems }), real),
+    );
+    assert.isNotEmpty(validateHotspotReport(report({ tree: null }), real));
+  });
+
   it("enforces status-specific nullable fields", () => {
     assert.isNotEmpty(validateHotspotReport(report({ tree: null }), real));
     assert.isNotEmpty(validateHotspotReport(report({ mergeCommit: null }), real));
@@ -2349,6 +2384,21 @@ describe("hotspot report rendering", () => {
     assert.isFalse(markdown.includes("Unmapped"));
     // Paths only ever appear JSON-escaped in lists.
     assert.include(markdown, JSON.stringify('weird "path".ts'));
+  });
+
+  it("renders the seam registry refresh problems", () => {
+    const markdown = renderHotspotReport({
+      ...view,
+      report: {
+        ...view.report,
+        tree: null,
+        seamRefreshProblems: ["demo.hook (app.ts) is missing"],
+      },
+    });
+    assert.include(markdown, "## Seam registry refresh (1)");
+    assert.include(markdown, JSON.stringify("demo.hook (app.ts) is missing"));
+    assert.isFalse(markdown.includes("Merged tree matches"));
+    assert.isFalse(renderHotspotReport(view).includes("Seam registry refresh"));
   });
 
   it("caps long impact lists", () => {
