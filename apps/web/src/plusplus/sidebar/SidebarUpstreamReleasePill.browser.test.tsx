@@ -14,7 +14,7 @@ const state = vi.hoisted(() => ({
 vi.mock(import("../../state/desktopUpdate"), () => ({
   useDesktopUpdateState: () => state.update,
 }));
-vi.mock(import("../../state/upstreamRelease"), () => ({
+vi.mock(import("../state/upstreamRelease"), () => ({
   useUpstreamRelease: () => state.release,
   // Polling would hit the live atom registry and the network; the pill only needs the result.
   useUpstreamReleasePolling: () => {},

@@ -124,18 +124,18 @@ vi.mock("@t3tools/client-runtime/state/runtime", () => ({
   runAtomCommand: state.runAtomCommand,
   squashAtomCommandFailure: state.squashAtomCommandFailure,
 }));
-vi.mock("../composerDraftStore", () => ({
+vi.mock("../../composerDraftStore", () => ({
   markPromotedDraftThreadByRef: state.markPromotedDraftThreadByRef,
   restoreFailedDraftThread: state.restoreFailedDraftThread,
   useComposerDraftStore: { getState: () => state.draftStore },
 }));
-vi.mock("../components/chat/composerProviderModelSelection", () => ({
+vi.mock("../chat/composerProviderModelSelection", () => ({
   resolveComposerProviderModelSelection: state.resolveComposerProviderModelSelection,
 }));
-vi.mock("../components/chat/composerProviderState", () => ({
+vi.mock("../../components/chat/composerProviderState", () => ({
   getComposerPromptInjectionState: state.getComposerPromptInjectionState,
 }));
-vi.mock("../components/upstreamRelease.logic", () => ({
+vi.mock("../upstreamRelease.logic", () => ({
   buildUpstreamMergePrompt: state.buildUpstreamMergePrompt,
   FORK_REPOSITORY: "WianVDM/t3code",
   isUpstreamReleaseNotificationBuild: true,
@@ -147,31 +147,33 @@ vi.mock("../components/upstreamRelease.logic", () => ({
   shouldDeferUpstreamMerge: state.shouldDeferUpstreamMerge,
   UPSTREAM_POLL_INTERVAL_MS: 1_000,
 }));
-vi.mock("../components/ui/toast", () => ({
+vi.mock("../../components/ui/toast", () => ({
   stackedThreadToast: state.stackedThreadToast,
   toastManager: { add: state.toastAdd, close: state.toastClose },
 }));
-vi.mock("../hooks/useLiveRefresh", () => ({ useLiveRefresh: vi.fn() }));
-vi.mock("../hooks/useSettings", () => ({
+vi.mock("../../hooks/useLiveRefresh", () => ({ useLiveRefresh: vi.fn() }));
+vi.mock("../../hooks/useSettings", () => ({
   getClientSettings: state.getClientSettings,
   mergeEnvironmentSettings: state.mergeEnvironmentSettings,
 }));
-vi.mock("../lib/utils", () => ({
+vi.mock("../../lib/utils", () => ({
   newMessageId: state.newMessageId,
   newThreadId: state.newThreadId,
 }));
-vi.mock("../rpc/atomRegistry", () => ({ appAtomRegistry: state.appAtomRegistry }));
-vi.mock("./desktopUpdate", () => ({ readDesktopUpdateState: state.readDesktopUpdateState }));
-vi.mock("./server", () => ({
+vi.mock("../../rpc/atomRegistry", () => ({ appAtomRegistry: state.appAtomRegistry }));
+vi.mock("../../state/desktopUpdate", () => ({
+  readDesktopUpdateState: state.readDesktopUpdateState,
+}));
+vi.mock("../../state/server", () => ({
   environmentServerConfigsAtom: state.environmentServerConfigsAtom,
   providersIgnoringCheckedAtAtom: state.providersIgnoringCheckedAtAtom,
 }));
-vi.mock("./session", () => ({ readEnvironmentScope: state.readEnvironmentScope }));
-vi.mock("./entities", () => ({
+vi.mock("../../state/session", () => ({ readEnvironmentScope: state.readEnvironmentScope }));
+vi.mock("../../state/entities", () => ({
   readProject: state.readProject,
   readProjects: state.readProjects,
 }));
-vi.mock("./threads", () => ({ threadEnvironment: { startTurn: state.startTurn } }));
+vi.mock("../../state/threads", () => ({ threadEnvironment: { startTurn: state.startTurn } }));
 
 import {
   registerNewThreadRunner,

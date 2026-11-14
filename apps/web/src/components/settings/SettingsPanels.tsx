@@ -63,8 +63,8 @@ import { ThreadTitleInstructionsSettings } from "./ThreadTitleInstructionsSettin
 import { SnoozePresetsRow } from "./SnoozePresetsSettings";
 import { useDesktopUpdateState } from "../../state/desktopUpdate";
 import { managedTelemetryOffMessage, usePrimaryManagedPolicy } from "../../state/managedPolicy";
-import { runManualUpstreamCheck } from "../../state/upstreamRelease";
-import { UpstreamReleaseRow } from "./UpstreamReleaseRow";
+import { runManualUpstreamCheck } from "~/plusplus/state/upstreamRelease";
+import { UpstreamReleaseRow } from "~/plusplus/settings/UpstreamReleaseRow";
 import {
   getCustomModelOptionsByInstance,
   resolveAppModelSelectionState,

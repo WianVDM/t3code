@@ -3,7 +3,7 @@ import {
   type ProviderDriverKind,
   PROVIDER_DISPLAY_NAMES,
 } from "@t3tools/contracts";
-import type { ProviderInstanceEntry } from "../../providerInstances";
+import type { ProviderInstanceEntry } from "~/providerInstances";
 
 export type ContextBridgeFeature = "instructions" | "skills" | "hooks";
 

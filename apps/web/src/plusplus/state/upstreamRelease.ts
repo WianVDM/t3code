@@ -14,9 +14,9 @@ import {
   markPromotedDraftThreadByRef,
   restoreFailedDraftThread,
   useComposerDraftStore,
-} from "../composerDraftStore";
-import { resolveComposerProviderModelSelection } from "../components/chat/composerProviderModelSelection";
-import { getComposerPromptInjectionState } from "../components/chat/composerProviderState";
+} from "../../composerDraftStore";
+import { resolveComposerProviderModelSelection } from "../chat/composerProviderModelSelection";
+import { getComposerPromptInjectionState } from "../../components/chat/composerProviderState";
 import {
   buildUpstreamMergePrompt,
   FORK_REPOSITORY,
@@ -29,19 +29,19 @@ import {
   shouldDeferUpstreamMerge,
   UPSTREAM_POLL_INTERVAL_MS,
   type UpstreamReleaseResult,
-} from "../components/upstreamRelease.logic";
-import { stackedThreadToast, toastManager } from "../components/ui/toast";
-import type { useNewThreadHandler } from "../hooks/useHandleNewThread";
-import { useLiveRefresh } from "../hooks/useLiveRefresh";
-import { getClientSettings, mergeEnvironmentSettings } from "../hooks/useSettings";
-import { newMessageId, newThreadId } from "../lib/utils";
-import { appAtomRegistry } from "../rpc/atomRegistry";
-import { readDesktopUpdateState } from "./desktopUpdate";
-import { readProject, readProjects } from "./entities";
-import { environmentServerConfigsAtom, providersIgnoringCheckedAtAtom } from "./server";
-import { readEnvironmentScope } from "./session";
-import { threadEnvironment } from "./threads";
-import { ORCHESTRATION_OPERATE_DENIED_MESSAGE } from "./use-orchestration-command";
+} from "../upstreamRelease.logic";
+import { stackedThreadToast, toastManager } from "../../components/ui/toast";
+import type { useNewThreadHandler } from "../../hooks/useHandleNewThread";
+import { useLiveRefresh } from "../../hooks/useLiveRefresh";
+import { getClientSettings, mergeEnvironmentSettings } from "../../hooks/useSettings";
+import { newMessageId, newThreadId } from "../../lib/utils";
+import { appAtomRegistry } from "../../rpc/atomRegistry";
+import { readDesktopUpdateState } from "../../state/desktopUpdate";
+import { readProject, readProjects } from "../../state/entities";
+import { environmentServerConfigsAtom, providersIgnoringCheckedAtAtom } from "../../state/server";
+import { readEnvironmentScope } from "../../state/session";
+import { threadEnvironment } from "../../state/threads";
+import { ORCHESTRATION_OPERATE_DENIED_MESSAGE } from "../../state/use-orchestration-command";
 
 const NO_PROJECT_FOUND_MESSAGE = `No project found for github.com/${FORK_REPOSITORY}. Add the fork checkout as a project first.`;
 const START_MERGE_FAILED_MESSAGE = "Could not start upstream merge";

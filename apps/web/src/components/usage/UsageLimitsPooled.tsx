@@ -13,7 +13,6 @@ import {
   type LimitPoolWindow,
   paceRemainingPercent,
   remainingPercent,
-  readMonetaryUsage,
 } from "@t3tools/shared/usageLimits";
 import { formatUsd } from "@t3tools/shared/usageFormat";
 import type { ProviderDriverKind } from "@t3tools/contracts";
@@ -50,7 +49,9 @@ import {
   resetCreditsSummary,
   useResetCredit,
 } from "./UsageLimits";
-import { ModelVendorIcon, usesModelVendorIcon } from "./modelVendorIcon";
+import { ModelVendorIcon, usesModelVendorIcon } from "~/plusplus/usage/modelVendorIcon";
+import { MonetaryUsageAccounts } from "~/plusplus/usage/MonetaryUsage";
+import { monetaryUsageOf } from "~/plusplus/usage/monetaryUsage.logic";
 
 function accountInitials(email: string): string {
   const [local = "", domain = ""] = email.split("@");
@@ -135,27 +136,6 @@ function Row({ label, children }: { readonly label: string; readonly children: R
       <span className="min-w-0 text-foreground tabular-nums">{children}</span>
     </div>
   );
-}
-
-type MonetaryUsage = NonNullable<LimitAccount["limits"]["monetaryUsage"]>;
-
-function monetaryUsageOf(limits: LimitAccount["limits"]): MonetaryUsage | null {
-  const monetary = readMonetaryUsage(limits);
-  if (!monetary) return null;
-  const { usedUsd, remainingUsd, limitUsd } = monetary;
-  return usedUsd === undefined && remainingUsd === undefined && limitUsd === undefined
-    ? null
-    : monetary;
-}
-
-function monetaryUsageText(monetary: MonetaryUsage): string {
-  return [
-    monetary.usedUsd !== undefined ? `${formatUsd(monetary.usedUsd)} used` : null,
-    monetary.remainingUsd !== undefined ? `${formatUsd(monetary.remainingUsd)} left` : null,
-    monetary.limitUsd !== undefined ? `${formatUsd(monetary.limitUsd)} limit` : null,
-  ]
-    .filter((part) => part !== null)
-    .join(" · ");
 }
 
 function SegmentPopover({
@@ -614,35 +594,6 @@ function PoolWindowCard({
   );
 }
 
-function PoolMonetaryAccounts({
-  pool,
-  showEmptyLabel,
-}: {
-  readonly pool: LimitPool;
-  readonly showEmptyLabel: boolean;
-}) {
-  const rows = pool.accounts.flatMap((account) => {
-    const monetary = monetaryUsageOf(account.limits);
-    return monetary ? [{ account, monetary }] : [];
-  });
-  if (!showEmptyLabel && rows.length === 0) return null;
-  return (
-    <div className="flex flex-col gap-2 rounded-lg border border-border/60 p-4">
-      {showEmptyLabel ? (
-        <span className="text-xs text-muted-foreground">No rate-limit windows reported</span>
-      ) : null}
-      {rows.map(({ account, monetary }) => (
-        <span key={account.key} className="flex items-baseline justify-between gap-3 text-xs">
-          <AccountName account={account} className="min-w-0 truncate font-medium text-foreground" />
-          <span className="shrink-0 text-foreground tabular-nums">
-            {monetaryUsageText(monetary)}
-          </span>
-        </span>
-      ))}
-    </div>
-  );
-}
-
 function PoolSection({ pool, now }: { readonly pool: LimitPool; readonly now: number }) {
   const color = barColor(pool.driver);
   const label = providerClients.get(pool.driver)?.label ?? String(pool.driver);
@@ -673,7 +624,13 @@ function PoolSection({ pool, now }: { readonly pool: LimitPool; readonly now: nu
           />
         );
       })}
-      <PoolMonetaryAccounts pool={pool} showEmptyLabel={windows.length === 0} />
+      <MonetaryUsageAccounts
+        pool={pool}
+        showEmptyLabel={windows.length === 0}
+        renderAccountName={(account, className) => (
+          <AccountName account={account} className={className} />
+        )}
+      />
     </section>
   );
 }

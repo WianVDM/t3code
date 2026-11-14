@@ -120,5 +120,11 @@ describe("UsageLimitsPooled monetary sidecar", () => {
 
     await expect.element(screen.getByText("$1.25 used")).toBeVisible();
     await expect.element(screen.getByText("$2.50 used · $10.00 limit")).toBeVisible();
+    // The monetary rows live in the ++ component and name their account through the
+    // renderAccountName slot, which must keep rendering the pooled account name.
+    const row = [...document.querySelectorAll("span")]
+      .find((element) => element.textContent === "$1.25 used")
+      ?.closest("span.flex");
+    expect(row?.textContent).toContain("openrouter-sidecar-only");
   });
 });

@@ -2,7 +2,7 @@ import { useRef } from "react";
 
 import { APP_VERSION } from "../../branding";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
-import { isForkDesktopBuild } from "../upstreamRelease.logic";
+import { isForkDesktopBuild } from "~/plusplus/upstreamRelease.logic";
 import { showAnchoredCopySuccessToast } from "../ui/anchoredCopyToast";
 import { InlineButton } from "../ui/button";
 import { stackedThreadToast, toastManager } from "../ui/toast";
