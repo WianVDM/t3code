@@ -116,14 +116,28 @@ jobs:
             echo "replay=false" >> "$GITHUB_OUTPUT"
           fi
 
+      # Replay mode checks out the exact dry-run base with full history and no
+      # credentials, using plain git: actions/checkout with persist-credentials
+      # false runs submodule foreach, which fails on the orphaned gitlinks in the
+      # vendored .repos tree. The repository is public and the job never pushes.
+      - name: Checkout the dry-run base
+        if: ${{ inputs.dry_run_base_sha != '' }}
+        shell: bash
+        env:
+          CHECKOUT_REF: ${{ inputs.dry_run_base_sha }}
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git"
+          git sparse-checkout set --no-cone '/*' '!/.repos/'
+          git fetch --no-tags origin "$CHECKOUT_REF"
+          git checkout --detach FETCH_HEAD
+
       - name: Checkout
+        if: ${{ inputs.dry_run_base_sha == '' }}
         uses: actions/checkout@v6
         with:
-          # Replay mode checks out the exact dry-run base with full history and
-          # no credentials; normal runs keep the caller's default ref and depth.
-          ref: ${{ inputs.dry_run_base_sha }}
-          fetch-depth: ${{ inputs.dry_run_base_sha != '' && 0 || 1 }}
-          persist-credentials: ${{ inputs.dry_run_base_sha == '' }}
           sparse-checkout: |
             /*
             !/.repos/
