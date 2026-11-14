@@ -105,6 +105,8 @@ export interface NameStatusRecord {
 }
 
 // `git diff --name-status -M -z` output: NUL-separated, renames carry two paths.
+// Any other status letter (copy, typechange, unmerged) is rejected: skipping it
+// would misread the path tokens that follow as further statuses.
 export function parseNameStatusZ(output: string): NameStatusRecord[] {
   const tokens = output.split("\0").filter((token) => token.length > 0);
   const records: NameStatusRecord[] = [];
@@ -121,6 +123,10 @@ export function parseNameStatusZ(output: string): NameStatusRecord[] {
       const path = tokens[++index];
       if (path === undefined) break;
       records.push({ status: letter, path });
+    } else {
+      throw new Error(
+        `parseNameStatusZ: unsupported git name-status "${token}" at token ${index}; only A, D, M, and R records are supported`,
+      );
     }
   }
   return records;

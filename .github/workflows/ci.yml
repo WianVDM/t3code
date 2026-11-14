@@ -43,6 +43,7 @@ jobs:
             /pnpm-workspace.yaml
             /.github/scripts/ci-changes.cjs
             /.github/actions/ci-changes/
+            /config/fork-inventory.json
             /*/package.json
             /*/*/package.json
             !/.repos/
@@ -525,9 +526,51 @@ jobs:
       - name: Check shared-persistence compatibility
         run: node .github/scripts/check-shared-persistence-compat.cjs FETCH_HEAD
 
+  # Advisory until B12: reports ++ fork-boundary violations against the policy
+  # in the base commit, so head-authored policy grants nothing. continue-on-error
+  # and absent from `check`'s needs and from JOB_GATES, so its result can never
+  # affect Check. Every boundaryInfrastructure path already selects full CI via
+  # ci-changes.cjs.
+  fork_boundaries:
+    permissions:
+      contents: read
+    name: Fork Boundaries
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          sparse-checkout: |
+            /*
+            !/.repos/
+            !/apps/mobile/modules/t3-terminal/Vendor/**/*.a
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Vite+
+        uses: ./.github/actions/setup-ci-deps
+
+      - name: Check fork boundaries
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          zero=0000000000000000000000000000000000000000
+          if [ -z "$BASE_SHA" ] || [ "$BASE_SHA" = "$zero" ]; then
+            echo "No base sha for this event; nothing to compare."
+            exit 0
+          fi
+          # A force push can leave `before` outside the fetched history.
+          git fetch --quiet --no-tags --depth=1 origin "$BASE_SHA" \
+            || git fetch --quiet --no-tags origin "$BASE_SHA" \
+            || echo "Could not fetch ${BASE_SHA}; the checker fails closed."
+          node scripts/check-fork-boundaries.ts "$BASE_SHA"
+
   # Branch protection requires this job by its name, `Check`. It fails when any
   # other job fails, is cancelled, or is skipped without a reason, so splitting
-  # or resharding jobs needs no ruleset change. Add every new job to `needs`.
+  # or resharding jobs needs no ruleset change. Add every new job to `needs`,
+  # except deliberately advisory ones like fork_boundaries.
   # `always()` rather than `!cancelled()`: a skipped job reports success to
   # branch protection, so a cancelled run must still produce a failing check.
   check:
