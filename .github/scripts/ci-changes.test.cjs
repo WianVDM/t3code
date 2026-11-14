@@ -685,10 +685,10 @@ test("the dry-run workflow is read-only: no write token, secrets, or push", () =
   assert.ok(!/secrets:/.test(dryRunWorkflow), "dry run must not reference secrets");
   assert.ok(!/\bcontents: write\b/.test(dryRunWorkflow));
   assert.ok(!/git push|update-ref|--tags\b/.test(dryRunWorkflow));
-  // Every checkout disables credentials.
-  const checkouts = (dryRunWorkflow.match(/uses: actions\/checkout@v6/g) ?? []).length;
-  const noCreds = (dryRunWorkflow.match(/persist-credentials: false/g) ?? []).length;
-  assert.equal(checkouts, noCreds, "every checkout must set persist-credentials: false");
+  // Every checkout is plain git: actions/checkout's credential cleanup runs
+  // submodule foreach, which fails on the orphaned gitlinks under .repos.
+  assert.ok(!/uses: actions\/checkout/.test(dryRunWorkflow), "use plain git, not actions/checkout");
+  const checkouts = (dryRunWorkflow.match(/^ {10}git init \.$/gm) ?? []).length;
   assert.ok(checkouts >= 3, "merge, verify_linux, and report each check out");
 });
 
@@ -764,8 +764,13 @@ test("windows-tests exposes replay inputs as all-or-none and a verification outp
     /verification_result:\n\s+description:[^\n]*\n\s+value: \$\{\{ jobs\.test\.outputs\.verification_result \}\}/,
   );
   assert.match(windowsWorkflow, /id: verification_result\n\s+if: always\(\)/);
-  // The replay checkout drops credentials; a normal run keeps its prior behavior.
-  assert.match(windowsWorkflow, /persist-credentials: \$\{\{ inputs\.dry_run_base_sha == '' \}\}/);
+  // The replay checkout is plain git without credentials (actions/checkout's
+  // cleanup trips on the orphaned .repos gitlinks); a normal run keeps its prior behavior.
+  assert.match(windowsWorkflow, /if: \$\{\{ inputs\.dry_run_base_sha != '' \}\}\n\s+shell: bash/);
+  assert.match(
+    windowsWorkflow,
+    /if: \$\{\{ inputs\.dry_run_base_sha == '' \}\}\n\s+uses: actions\/checkout@v6/,
+  );
   // Existing CI/manual behavior is preserved.
   assert.match(windowsWorkflow, /was called without a package/);
   assert.match(windowsWorkflow, /files is only supported by manual runs/);

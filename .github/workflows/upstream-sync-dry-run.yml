@@ -61,12 +61,22 @@ jobs:
             fi
           fi
 
-      # Full history so the merge sees the real ancestry; no credentials ever.
+      # Plain git instead of actions/checkout: with persist-credentials false its
+      # credential cleanup runs submodule foreach, which fails on the orphaned
+      # gitlinks in the vendored .repos tree. The repository is public and the
+      # job never pushes, so no credentials are needed. Full history for the
+      # merge-base computation.
       - name: Checkout
-        uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-          persist-credentials: false
+        shell: bash
+        env:
+          CHECKOUT_REF: ${{ github.sha }}
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git"
+          git fetch --no-tags origin "$CHECKOUT_REF"
+          git checkout --detach FETCH_HEAD
 
       - name: Point upstream at the canonical repository
         run: |
@@ -138,12 +148,22 @@ jobs:
             fi
           done
 
+      # Plain git instead of actions/checkout: with persist-credentials false its
+      # credential cleanup runs submodule foreach, which fails on the orphaned
+      # gitlinks in the vendored .repos tree. The repository is public and the
+      # job never pushes, so no credentials are needed. Full history for the
+      # merge-base computation.
       - name: Checkout the dry-run base
-        uses: actions/checkout@v6
-        with:
-          ref: ${{ needs.merge.outputs.base_sha }}
-          fetch-depth: 0
-          persist-credentials: false
+        shell: bash
+        env:
+          CHECKOUT_REF: ${{ needs.merge.outputs.base_sha }}
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git"
+          git fetch --no-tags origin "$CHECKOUT_REF"
+          git checkout --detach FETCH_HEAD
 
       - name: Point upstream at the canonical repository
         run: |
@@ -252,14 +272,22 @@ jobs:
     outputs:
       outcome: ${{ steps.outcome.outputs.outcome }}
     steps:
+      # Plain git instead of actions/checkout: with persist-credentials false its
+      # credential cleanup runs submodule foreach, which fails on the orphaned
+      # gitlinks in the vendored .repos tree. The repository is public and the
+      # job never pushes, so no credentials are needed.
       - name: Checkout
-        uses: actions/checkout@v6
-        with:
-          persist-credentials: false
-          sparse-checkout: |
-            /*
-            !/.repos/
-          sparse-checkout-cone-mode: false
+        shell: bash
+        env:
+          CHECKOUT_REF: ${{ github.sha }}
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git"
+          git sparse-checkout set --no-cone '/*' '!/.repos/'
+          git fetch --no-tags origin "$CHECKOUT_REF"
+          git checkout --detach FETCH_HEAD
 
       - name: Setup Vite+
         uses: ./.github/actions/setup-ci-deps
