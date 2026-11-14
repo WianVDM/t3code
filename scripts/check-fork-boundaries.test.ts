@@ -10,147 +10,300 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import {
   checkForkBoundaries,
-  classifyChanges,
+  classifyPath,
   collectChanges,
+  designationFromEnv,
+  isDesignatedSyncPr,
   isViolation,
+  parseArguments,
   parseNameStatusZ,
   renderReport,
-  seamAnalysisPaths,
-  thinSeamViolation,
-  type BoundaryChange,
+  seamAnchorProblems,
+  summarizeRegistryChanges,
+  touchedPaths,
   type BoundaryFinding,
-  type BoundaryPolicy,
+  type BoundaryRun,
+  type CheckOptions,
+  type PathFacts,
 } from "./check-fork-boundaries.ts";
-import { SEAM_REGISTRY_PATH } from "./seamRegistry.ts";
+import {
+  SEAM_REGISTRY_PATH,
+  fingerprintOf,
+  locateRegion,
+  serializeRegistry,
+  type RegistryFile,
+  type Seam,
+  type SeamAnchor,
+  type SeamRegistry,
+  type Sibling,
+} from "./seamRegistry.ts";
 
-const policy: BoundaryPolicy = {
-  registry: {
-    version: 1,
-    upstreamRef: "a".repeat(40),
-    features: {},
-    files: {
-      "apps/web/src/App.tsx": { delta: [3, 0], legacy: true },
-      "meta/app.xml": { delta: [1, 1], legacy: true },
-      "scripts/old.ts": { delta: [0, 4], legacy: true },
-    },
-    siblings: [],
-  },
-  upstreamPaths: new Set([
-    "apps/server/src/main.ts",
-    "apps/web/src/App.tsx",
-    "meta/app.xml",
-    "scripts/check-changed.ts",
-    "scripts/old.ts",
-  ]),
-  // scripts/old.ts is absent: the fork already deleted it.
-  basePaths: new Set([
-    "apps/server/src/main.ts",
-    "apps/web/src/App.tsx",
-    "docs/fork.md",
-    "meta/app.xml",
-    "scripts/check-changed.ts",
-  ]),
+const WRONG_FINGERPRINT = "sha256:0000000000000000";
+const UPSTREAM_REF = "a".repeat(40);
+
+const UPSTREAM_APP = "export function App() {\n  const first = 1;\n  return first;\n}\n";
+const FORK_APP = UPSTREAM_APP.replace("const first = 1;", "const first = 1;\n  const hook = true;");
+const UPSTREAM_MAIN = "export const main = 1;\nconst shared = 1;\nconst shared2 = 2;\n";
+const MAIN_ANCHOR: SeamAnchor = { text: "export const main" };
+
+const fingerprintAt = (path: string, text: string, anchor: SeamAnchor): string => {
+  const lookup = locateRegion(path, text, anchor);
+  assert.strictEqual(lookup._tag, "Found");
+  return fingerprintOf(lookup._tag === "Found" ? lookup.text : "");
 };
 
-// A seam edit is thin when everything but imports and typed mounts matches;
-// the stub keeps classify tests independent of the AST analysis below.
-const analyze = () => undefined;
+const seam = (id: string, anchor: SeamAnchor, fingerprint: string): Seam => ({
+  id: `demo.${id}`,
+  feature: "demo",
+  mechanism: "hook",
+  anchor,
+  fingerprint,
+});
 
-const classify = (changes: ReadonlyArray<BoundaryChange>) =>
-  classifyChanges(policy, changes, analyze);
+const registryOf = (
+  files: Record<string, RegistryFile>,
+  siblings: ReadonlyArray<Sibling> = [],
+  upstreamRef = UPSTREAM_REF,
+): SeamRegistry => ({
+  version: 1,
+  upstreamRef,
+  features: { demo: { title: "Demo" } },
+  files,
+  siblings,
+});
 
-const verdicts = (findings: ReadonlyArray<BoundaryFinding>) =>
-  Object.fromEntries(findings.map((finding) => [finding.path, finding.verdict]));
+const legacy = (added: number, removed: number): RegistryFile => ({
+  delta: [added, removed],
+  legacy: true,
+});
 
-describe("classifyChanges", () => {
-  it("allows CRUD on paths absent at upstreamRef, including deletions", () => {
-    const findings = classify([
-      { status: "M", path: "docs/fork.md" },
-      { status: "D", path: "docs/fork.md" },
-      { status: "A", path: "packages/plusplus/new/file.ts" },
-    ]);
-    assert.deepStrictEqual(verdicts(findings), {
-      "docs/fork.md": "ALLOW_OWNED",
-      "packages/plusplus/new/file.ts": "ALLOW_OWNED",
-    });
-    assert.isFalse(findings.some(isViolation));
-  });
+const appEntry: RegistryFile = {
+  delta: [1, 0],
+  seams: [
+    seam("hook", { symbol: "App" }, fingerprintAt("App.tsx", UPSTREAM_APP, { symbol: "App" })),
+  ],
+};
 
-  it("flags the registry itself as POLICY_CHANGED whatever the status", () => {
-    const findings = classify([{ status: "M", path: SEAM_REGISTRY_PATH }]);
-    assert.strictEqual(findings[0]?.verdict, "POLICY_CHANGED");
-    assert.isTrue(findings.every(isViolation));
-  });
+const verdictsByPath = (findings: ReadonlyArray<BoundaryFinding>) => {
+  const grouped: Record<string, Array<string>> = {};
+  for (const finding of findings) (grouped[finding.path] ??= []).push(finding.verdict);
+  return grouped;
+};
 
-  it("allows BOUNDARY_INFRASTRUCTURE paths with any change kind", () => {
-    const findings = classify([
-      { status: "M", path: "scripts/check-changed.ts" },
-      { status: "A", path: "scripts/check-changed.ts" },
-    ]);
+const baseFacts: PathFacts = {
+  path: "apps/server/src/main.ts",
+  change: "M",
+  upstreamOwned: true,
+  entry: undefined,
+  delta: undefined,
+  anchorProblems: [],
+};
+
+describe("classifyPath", () => {
+  const rows: ReadonlyArray<readonly [string, Partial<PathFacts>, ReadonlyArray<string>]> = [
+    ["a ++-owned path is allowed", { upstreamOwned: false }, ["ALLOW_OWNED"]],
+    ["a ++-owned deletion is allowed", { upstreamOwned: false, change: "D" }, ["ALLOW_OWNED"]],
+    ["a delta with no entry is unregistered", { delta: [1, 1] }, ["UNREGISTERED"]],
+    ["an entry with no delta is stale", { entry: legacy(1, 1) }, ["STALE_ENTRY"]],
+    ["a ++-owned key is stale", { upstreamOwned: false, entry: legacy(1, 1) }, ["STALE_ENTRY"]],
+    ["a restored file with no entry is upstream-equal", {}, ["ALLOW_UPSTREAM_EQUAL"]],
+    ["added over the recorded budget", { entry: legacy(4, 1), delta: [5, 1] }, ["DELTA_EXCEEDED"]],
+    [
+      "removed over the recorded budget",
+      { entry: legacy(4, 1), delta: [4, 2] },
+      ["DELTA_EXCEEDED"],
+    ],
+    ["equal to the budget", { entry: legacy(4, 1), delta: [4, 1] }, ["ALLOW_REGISTERED"]],
+    ["below the budget", { entry: legacy(4, 1), delta: [2, 0] }, ["ALLOW_REGISTERED"]],
+    [
+      "a deleted upstream path",
+      { change: "D", entry: legacy(0, 3), delta: [0, 3] },
+      ["UPSTREAM_DELETED"],
+    ],
+    [
+      "a deleted, unregistered upstream path collects both failures",
+      { change: "D", delta: [0, 3] },
+      ["UPSTREAM_DELETED", "UNREGISTERED"],
+    ],
+    [
+      "a broken anchor on a registered path",
+      { entry: legacy(1, 1), delta: [1, 1], anchorProblems: ["demo.hook: anchor is missing"] },
+      ["ANCHOR_BROKEN"],
+    ],
+    [
+      "an exceeded delta and a broken anchor collect both",
+      { entry: legacy(1, 1), delta: [2, 1], anchorProblems: ["demo.hook: anchor is missing"] },
+      ["DELTA_EXCEEDED", "ANCHOR_BROKEN"],
+    ],
+  ];
+  it.each(rows)("%s", (_name, facts, expected) => {
+    const findings = classifyPath({ ...baseFacts, ...facts });
     assert.deepStrictEqual(
       findings.map((finding) => finding.verdict),
-      ["ALLOW_INFRASTRUCTURE", "ALLOW_INFRASTRUCTURE"],
+      expected,
     );
   });
 
-  it("routes registered TS files through the thin analysis and fails every other seam edit", () => {
-    const findings = classify([
-      { status: "M", path: "apps/web/src/App.tsx" },
-      { status: "M", path: "meta/app.xml" },
-    ]);
-    assert.deepStrictEqual(verdicts(findings), {
-      "apps/web/src/App.tsx": "ALLOW_THIN_SEAM",
-      "meta/app.xml": "SEAM_NON_TS",
-    });
-    const deleted = classify([{ status: "D", path: "apps/web/src/App.tsx" }]);
-    assert.strictEqual(deleted[0]?.verdict, "SEAM_DELETED");
+  it("shows actual against recorded for an exceeded delta", () => {
+    const [finding] = classifyPath({ ...baseFacts, entry: legacy(4, 1), delta: [5, 1] });
+    assert.include(finding?.detail, "+5 -1");
+    assert.include(finding?.detail, "+4 -1");
   });
+});
 
-  it("reports a non-thin seam edit with the analyzer's reason", () => {
-    const thick = classifyChanges(
-      policy,
-      [{ status: "M", path: "apps/web/src/App.tsx" }],
-      () => "statement 2 (FunctionDeclaration) changes code",
-    );
-    assert.strictEqual(thick[0]?.verdict, "SEAM_NOT_THIN");
-    assert.strictEqual(thick[0]?.reason, "statement 2 (FunctionDeclaration) changes code");
-  });
+describe("seamAnchorProblems", () => {
+  const fingerprint = fingerprintAt("main.ts", UPSTREAM_MAIN, MAIN_ANCHOR);
 
-  it("fails upstream deletions the fork already made and unregistered upstream edits", () => {
-    const findings = classify([
-      { status: "A", path: "scripts/old.ts" },
-      { status: "M", path: "apps/server/src/main.ts" },
-    ]);
-    assert.deepStrictEqual(verdicts(findings), {
-      "scripts/old.ts": "UPSTREAM_DELETION_TOUCHED",
-      "apps/server/src/main.ts": "UNCLASSIFIED",
-    });
-    assert.isTrue(findings.every(isViolation));
-  });
-
-  it("sorts findings by path for a deterministic report", () => {
-    const findings = classify([
-      { status: "M", path: "z/last.ts" },
-      { status: "M", path: "a/first.ts" },
-      { status: "M", path: "m/middle.ts" },
-    ]);
+  it("passes a resolved anchor with the upstream fingerprint", () => {
     assert.deepStrictEqual(
-      findings.map((finding) => finding.path),
-      ["a/first.ts", "m/middle.ts", "z/last.ts"],
+      seamAnchorProblems("main.ts", UPSTREAM_MAIN, [seam("ok", MAIN_ANCHOR, fingerprint)]),
+      [],
     );
   });
 
-  it("only sends non-deleted registered TS files to the AST analysis", () => {
+  it("reports a wrong fingerprint, a missing anchor, an ambiguous anchor, and an absent file", () => {
+    const seams = [
+      seam("stale", MAIN_ANCHOR, WRONG_FINGERPRINT),
+      seam("missing", { text: "nowhere" }, fingerprint),
+      seam("ambiguous", { text: "const shared" }, fingerprint),
+    ];
+    const problems = seamAnchorProblems("main.ts", UPSTREAM_MAIN, seams);
+    assert.strictEqual(problems.length, 3);
+    assert.include(problems[0], "does not match upstream");
+    assert.include(problems[1], "anchor is missing");
+    assert.include(problems[2], "anchor is ambiguous");
     assert.deepStrictEqual(
-      seamAnalysisPaths(policy, [
-        { status: "M", path: "apps/web/src/App.tsx" },
-        { status: "D", path: "apps/web/src/App.tsx" },
-        { status: "M", path: "meta/app.xml" },
-        { status: "M", path: "docs/fork.md" },
-        { status: "M", path: "apps/server/src/main.ts" },
-      ]),
-      ["apps/web/src/App.tsx"],
+      seamAnchorProblems("main.ts", undefined, seams).map((problem) =>
+        problem.includes("absent at the upstream ref"),
+      ),
+      [true, true, true],
     );
+  });
+});
+
+describe("summarizeRegistryChanges", () => {
+  const sibling: Sibling = {
+    feature: "demo",
+    upstream: "docs/guide.md",
+    plusplus: "docs/fork.md",
+    fingerprint: WRONG_FINGERPRINT,
+  };
+  const twoSeams: RegistryFile = {
+    delta: [2, 0],
+    seams: [
+      seam("one", MAIN_ANCHOR, WRONG_FINGERPRINT),
+      seam("two", MAIN_ANCHOR, WRONG_FINGERPRINT),
+    ],
+  };
+  const oneSeam: RegistryFile = {
+    delta: [2, 0],
+    seams: [seam("one", MAIN_ANCHOR, WRONG_FINGERPRINT)],
+  };
+
+  it("lists added entries, raises per component, new seam ids and new siblings", () => {
+    const base = registryOf({
+      "a.ts": legacy(1, 1),
+      "b.ts": legacy(1, 1),
+      "c.ts": legacy(1, 1),
+      "d.ts": oneSeam,
+    });
+    const head = registryOf(
+      {
+        "a.ts": legacy(2, 1),
+        "b.ts": legacy(1, 2),
+        "c.ts": legacy(1, 1),
+        "d.ts": twoSeams,
+        "e.ts": legacy(3, 0),
+      },
+      [sibling],
+    );
+    assert.deepStrictEqual(
+      summarizeRegistryChanges(base, head).map(({ path, kind, detail }) => [path, kind, detail]),
+      [
+        ["a.ts", "raised", "+1 -1 -> +2 -1"],
+        ["b.ts", "raised", "+1 -1 -> +1 -2"],
+        ["d.ts", "new seam", "demo.two (hook)"],
+        ["docs/guide.md", "new sibling", "docs/fork.md (demo)"],
+        ["e.ts", "added", "legacy, delta +3 -0"],
+      ],
+    );
+  });
+
+  it("lists every seam of an added entry and omits unchanged or lowered entries", () => {
+    const base = registryOf({ "a.ts": legacy(5, 5), "b.ts": legacy(2, 2) });
+    const head = registryOf({ "a.ts": legacy(1, 1), "b.ts": legacy(2, 2), "d.ts": twoSeams });
+    assert.deepStrictEqual(
+      summarizeRegistryChanges(base, head).map(({ path, kind }) => `${path} ${kind}`),
+      ["d.ts added", "d.ts new seam", "d.ts new seam"],
+    );
+  });
+});
+
+describe("touchedPaths", () => {
+  it("adds paths whose registry entry was added, removed or edited, but not untouched ones", () => {
+    const base = registryOf({ "a.ts": legacy(1, 1), "b.ts": legacy(1, 1), "c.ts": legacy(1, 1) });
+    const head = registryOf({ "a.ts": legacy(2, 1), "c.ts": legacy(1, 1), "d.ts": legacy(1, 1) });
+    const touched = touchedPaths([{ status: "M", path: "docs/x.md" }], base, head);
+    assert.deepStrictEqual(
+      [...touched.entries()],
+      [
+        ["docs/x.md", "M"],
+        ["a.ts", undefined],
+        ["b.ts", undefined],
+        ["d.ts", undefined],
+      ],
+    );
+  });
+});
+
+describe("isDesignatedSyncPr", () => {
+  const rows: ReadonlyArray<
+    readonly [string, string | undefined, string | undefined, string | undefined, boolean]
+  > = [
+    ["verified designation with a passing merge validation", "true", "false", "success", true],
+    ["an invalid designation", "true", "true", "success", false],
+    ["a failed merge validation", "true", "false", "failure", false],
+    ["a skipped merge validation", "true", "false", "skipped", false],
+    ["a cancelled merge validation", "true", "false", "cancelled", false],
+    ["no sync claim", "false", "false", "success", false],
+    ["empty strings", "", "", "", false],
+    ["unset variables", undefined, undefined, undefined, false],
+  ];
+  it.each(rows)("%s", (_name, upstreamSync, designationError, syncMerge, expected) => {
+    assert.strictEqual(isDesignatedSyncPr({ upstreamSync, designationError, syncMerge }), expected);
+  });
+
+  it("reads only the three designation variables from the environment", () => {
+    assert.deepStrictEqual(
+      designationFromEnv({
+        UPSTREAM_SYNC: "true",
+        SYNC_DESIGNATION_ERROR: "false",
+        SYNC_MERGE_RESULT: "success",
+        GITHUB_EVENT_PATH: "/event.json",
+      }),
+      { upstreamSync: "true", designationError: "false", syncMerge: "success" },
+    );
+  });
+});
+
+describe("parseArguments", () => {
+  it("defaults the base ref and reads --head and --summary", () => {
+    assert.deepStrictEqual(parseArguments([]), {
+      baseRef: "origin/main",
+      headSha: undefined,
+      summaryPath: undefined,
+    });
+    assert.deepStrictEqual(parseArguments(["abc", "--head", "def", "--summary", "out.md"]), {
+      baseRef: "abc",
+      headSha: "def",
+      summaryPath: "out.md",
+    });
+  });
+
+  it("rejects unknown flags, extra positionals and flags without a value", () => {
+    assert.throws(() => parseArguments(["--bogus"]), /unexpected argument --bogus/);
+    assert.throws(() => parseArguments(["a", "b"]), /unexpected argument b/);
+    assert.throws(() => parseArguments(["--head"]), /--head needs a value/);
   });
 });
 
@@ -191,131 +344,56 @@ describe("parseNameStatusZ", () => {
 });
 
 describe("collectChanges", () => {
-  it("flattens renames, adds untracked files, and dedupes by path", () => {
+  it("flattens renames and dedupes by path", () => {
     const changes = collectChanges(
-      ["R090\0old/name.ts\0new/name.ts", "M\0docs/fork.md", "D\0gone.ts"].join("\0"),
-      "docs/fork.md\nuntracked/dir/file.ts\n",
+      ["R090\0old/name.ts\0new/name.ts", "M\0docs/fork.md", "D\0gone.ts", "A\0docs/fork.md"].join(
+        "\0",
+      ),
     );
     assert.deepStrictEqual(changes, [
       { status: "D", path: "old/name.ts" },
       { status: "A", path: "new/name.ts" },
       { status: "M", path: "docs/fork.md" },
       { status: "D", path: "gone.ts" },
-      { status: "A", path: "untracked/dir/file.ts" },
     ]);
   });
 });
 
-const BASE_APP_TSX = `import { useState } from "react";
-
-export function App() {
-  const [count, setCount] = useState(0);
-  return (
-    <div>
-      <button onClick={() => setCount(count + 1)}>{count}</button>
-    </div>
-  );
-}
-`;
-
-const withMount = (mount: string) =>
-  `import { useState } from "react";
-import { PlusPlusPanel } from "~/plusplus/PlusPlusPanel";
-
-export function App() {
-  const [count, setCount] = useState(0);
-  return (
-    <div>
-      <button onClick={() => setCount(count + 1)}>{count}</button>
-      ${mount}
-    </div>
-  );
-}
-`;
-
-describe("thinSeamViolation", () => {
-  it("accepts added imports and mounts with literal, identifier, member, and nested-mount props", () => {
-    assert.isUndefined(thinSeamViolation("App.tsx", BASE_APP_TSX, BASE_APP_TSX));
-    assert.isUndefined(
-      thinSeamViolation(
-        "App.tsx",
-        BASE_APP_TSX,
-        withMount(
-          `<PlusPlusPanel title="Usage" count={count} vendor={cfg.vendor.name} icon={<VendorIcon name="x" />} disabled />`,
-        ),
-      ),
-    );
-    // Imports alone, including removed and side-effect-free clause imports.
-    assert.isUndefined(
-      thinSeamViolation("App.tsx", BASE_APP_TSX, `import "./setup";\n${BASE_APP_TSX}`),
-    );
-  });
-
-  it("rejects mounts whose props or placement carry logic", () => {
-    const cases: Record<string, string> = {
-      "arrow prop": withMount(`<PlusPlusPanel onClose={() => setCount(0)} />`),
-      "call prop": withMount(`<PlusPlusPanel value={compute(count)} />`),
-      "spread props": withMount(`<PlusPlusPanel {...props} />`),
-      "conditional mount": withMount(`{count > 0 && <PlusPlusPanel />}`),
-      "text child": withMount(`<PlusPlusPanel>hello</PlusPlusPanel>`),
-      "intrinsic element": withMount(`<span>hi</span>`),
-      "lowercase tag": withMount(`<plusplusPanel />`),
-    };
-    for (const [name, head] of Object.entries(cases)) {
-      assert.isDefined(
-        thinSeamViolation("App.tsx", BASE_APP_TSX, head),
-        `expected a violation for ${name}`,
-      );
-    }
-  });
-
-  it("rejects implementation changes and new statements, naming the statement", () => {
-    const logic = thinSeamViolation(
-      "App.tsx",
-      BASE_APP_TSX,
-      BASE_APP_TSX.replace("useState(0)", "useState(1)"),
-    );
-    assert.isDefined(logic);
-    assert.isTrue(logic!.includes("FunctionDeclaration"), logic);
-    const added = thinSeamViolation(
-      "App.tsx",
-      BASE_APP_TSX,
-      `${BASE_APP_TSX}\nexport const extra = 1;\n`,
-    );
-    assert.isDefined(added);
-    // A .ts seam: imports are inert, new statements are not.
-    const baseTs = `export const a = 1;\n`;
-    assert.isUndefined(thinSeamViolation("x.ts", baseTs, `import { b } from "y";\n${baseTs}`));
-    assert.isDefined(thinSeamViolation("x.ts", baseTs, `${baseTs}export const c = 2;\n`));
-  });
-
-  it("ignores formatting, comments, and CRLF line endings", () => {
-    const reflowed = BASE_APP_TSX.replace(/ {2}/g, "    ").replace(
-      "export function App()",
-      "// a note\nexport function App()",
-    );
-    assert.isUndefined(thinSeamViolation("App.tsx", BASE_APP_TSX, reflowed));
-    assert.isUndefined(
-      thinSeamViolation("App.tsx", BASE_APP_TSX, BASE_APP_TSX.replace(/\n/g, "\r\n")),
-    );
-  });
-
-  it("allows prop retunes on an existing mount", () => {
-    const before = withMount(`<PlusPlusPanel title="one" />`);
-    const after = withMount(`<PlusPlusPanel title="two" />`);
-    assert.isUndefined(thinSeamViolation("App.tsx", before, after));
-  });
-});
-
 describe("renderReport", () => {
-  it("names the base and fork point and counts violations", () => {
-    const findings = classify([{ status: "M", path: "apps/server/src/main.ts" }]);
-    const report = renderReport("a".repeat(40), "origin/main", "b".repeat(40), findings);
-    assert.isTrue(report.startsWith(`fork-boundaries: base ${"a".repeat(40)} (origin/main)`));
-    assert.isTrue(report.includes(`fork point ${"b".repeat(40)}`));
-    assert.isTrue(report.includes("UNCLASSIFIED"));
-    assert.isTrue(report.includes("apps/server/src/main.ts"));
-    assert.isTrue(report.includes("1 violation(s) across 1 changed path(s)"));
+  const run: BoundaryRun = {
+    base: "a".repeat(40),
+    head: "working tree",
+    forkPoint: "b".repeat(40),
+    upstreamRef: "c".repeat(40),
+    mode: "checked",
+    registryChanges: [{ path: "x`y.ts", kind: "raised", detail: "+1 -0 -> +2 -0" }],
+    findings: [
+      { path: "evil`|\npath.ts", verdict: "UNREGISTERED", detail: "no entry | `x`" },
+      { path: "docs/fork.md", verdict: "ALLOW_OWNED", detail: "owned" },
+    ],
+  };
+
+  it("lists header, registry changes, violations and allowed paths", () => {
+    const report = renderReport(run);
+    assert.include(report, `base \`${"a".repeat(40)}\``);
+    assert.include(report, "mode: checked");
+    assert.include(report, "### Registry entries this PR adds or raises (1)");
+    assert.include(report, "### Violations (1)");
+    assert.include(report, "### Allowed (1)");
+    assert.include(report, "<details>");
+  });
+
+  it("keeps backticks, pipes and newlines out of table cells", () => {
+    const row = renderReport(run)
+      .split("\n")
+      .find((line) => line.startsWith("| UNREGISTERED"));
+    assert.strictEqual(row, "| UNREGISTERED | `evil   path.ts` | `no entry    x ` |");
+  });
+
+  it("marks an exempt run and skips the registry summary", () => {
+    const report = renderReport({ ...run, mode: "exempt", registryChanges: [], findings: [] });
+    assert.include(report, "exempt (designated upstream-sync PR #50)");
+    assert.include(report, "(skipped for a designated sync PR)");
   });
 });
 
@@ -347,8 +425,9 @@ const env = {
   ),
 };
 
-// An upstream commit, then a fork base on top of it that deletes one upstream
-// file, adds ++ files, and carries the registry that names the upstream commit.
+// An upstream commit, then a fork base on top of it that edits one upstream file
+// (a registered seam), deletes another, adds a ++ file, and carries the registry
+// that names the upstream commit.
 function boundaryFixture(registryOverride?: string) {
   const root = NodeFS.realpathSync(
     NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-fork-boundaries-")),
@@ -366,20 +445,28 @@ function boundaryFixture(registryOverride?: string) {
     return git("rev-parse", "HEAD");
   };
   try {
-    write("apps/web/src/App.tsx", BASE_APP_TSX);
-    write("apps/server/src/main.ts", "export const main = 1;\n");
+    write("apps/web/src/App.tsx", UPSTREAM_APP);
+    write("apps/server/src/main.ts", UPSTREAM_MAIN);
     write("meta/app.xml", "<app/>\n");
-    write("scripts/check-changed.ts", "export const a = 1;\n");
     write("scripts/old.ts", "export const old = 1;\n");
+    write("docs/guide.md", "# guide\n");
     git("init");
     const upstreamRef = commitAll("upstream");
 
     git("rm", "-f", "--quiet", "scripts/old.ts");
+    write("apps/web/src/App.tsx", FORK_APP);
     write("docs/fork.md", "# fork\n");
     if (registryOverride !== "") {
       write(
         SEAM_REGISTRY_PATH,
-        registryOverride ?? JSON.stringify({ ...policy.registry, upstreamRef }, null, 2),
+        registryOverride ??
+          serializeRegistry(
+            registryOf(
+              { "apps/web/src/App.tsx": appEntry, "scripts/old.ts": legacy(0, 1) },
+              [],
+              upstreamRef,
+            ),
+          ),
       );
     }
     commitAll("fork base");
@@ -394,28 +481,51 @@ function boundaryFixture(registryOverride?: string) {
     base: git("rev-parse", "HEAD"),
     upstreamRef: git("rev-parse", "HEAD~1"),
     commit: commitAll,
+    // Rewrites the working-tree registry: `files` entries replace or add keys,
+    // a null drops one.
+    writeRegistry(
+      files: Record<string, RegistryFile | null>,
+      options: { siblings?: ReadonlyArray<Sibling>; upstreamRef?: string } = {},
+    ) {
+      const current = JSON.parse(
+        NodeFS.readFileSync(NodePath.join(root, SEAM_REGISTRY_PATH), "utf8"),
+      ) as SeamRegistry;
+      const merged = { ...current.files };
+      for (const [path, entry] of Object.entries(files)) {
+        if (entry === null) delete merged[path];
+        else merged[path] = entry;
+      }
+      write(
+        SEAM_REGISTRY_PATH,
+        serializeRegistry({
+          ...current,
+          upstreamRef: options.upstreamRef ?? current.upstreamRef,
+          files: merged,
+          siblings: options.siblings ?? current.siblings,
+        }),
+      );
+    },
     [Symbol.dispose]() {
       NodeFS.rmSync(root, { recursive: true, force: true });
     },
   };
 }
 
-const runCheck = (root: string, ref: string) =>
+const runCheck = (root: string, baseRef: string, overrides: Partial<CheckOptions> = {}) =>
   Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-    return yield* checkForkBoundaries(root, ref).pipe(
+    return yield* checkForkBoundaries(root, {
+      baseRef,
+      headSha: undefined,
+      exempt: false,
+      ...overrides,
+    }).pipe(
       Effect.provideService(
         ChildProcessSpawner.ChildProcessSpawner,
         ChildProcessSpawner.make((command) => spawner.spawn(ChildProcess.setEnv(command, env))),
       ),
     );
   }).pipe(Effect.provide(NodeServices.layer));
-
-const renderReportLines = (run: {
-  base: string;
-  forkPoint: string;
-  findings: ReadonlyArray<BoundaryFinding>;
-}) => renderReport(run.base, "ref", run.forkPoint, run.findings);
 
 // Wall-clock it.live: these run real git subprocesses. The fixture is an
 // Effect resource so it disposes even when an assertion fails.
@@ -430,34 +540,32 @@ const tempDir = (prefix: string) =>
     (dir) => Effect.sync(() => NodeFS.rmSync(dir, { recursive: true, force: true })),
   );
 
-const runOk = (root: string, ref: string) =>
+const runOk = (root: string, baseRef: string, overrides: Partial<CheckOptions> = {}) =>
   Effect.gen(function* () {
-    const result = yield* runCheck(root, ref);
-    assert.isFalse(result.findings.some(isViolation), renderReportLines(result));
+    const result = yield* runCheck(root, baseRef, overrides);
+    assert.isFalse(result.findings.some(isViolation), renderReport(result));
     return result;
   });
 
-const runFail = (root: string, ref: string) => runCheck(root, ref).pipe(Effect.flip);
+const runFail = (root: string, baseRef: string) => runCheck(root, baseRef).pipe(Effect.flip);
+
+const EDITED_MAIN = UPSTREAM_MAIN.replace("main = 1", "main = 2");
 
 describe("checkForkBoundaries", () => {
-  it.live("allows owned CRUD, infra edits, thin seams, and untracked owned files", () =>
+  it.live("allows owned CRUD, registered edits within budget and untracked owned files", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const project = yield* withFixture();
         project.write("docs/fork.md", "# fork v2\n");
-        project.write("scripts/check-changed.ts", "export const a = 2;\n");
         project.write("packages/plusplus/new.ts", "export const n = 1;\n");
-        project.write("apps/web/src/App.tsx", withMount(`<PlusPlusPanel title="x" />`));
         const checked = yield* runOk(project.root, project.base);
         assert.strictEqual(checked.base, project.base);
         assert.strictEqual(checked.forkPoint, project.base);
-        assert.deepStrictEqual(verdicts(checked.findings), {
-          "apps/web/src/App.tsx": "ALLOW_THIN_SEAM",
-          "docs/fork.md": "ALLOW_OWNED",
-          "packages/plusplus/new.ts": "ALLOW_OWNED",
-          "scripts/check-changed.ts": "ALLOW_INFRASTRUCTURE",
+        assert.strictEqual(checked.upstreamRef, project.upstreamRef);
+        assert.deepStrictEqual(verdictsByPath(checked.findings), {
+          "docs/fork.md": ["ALLOW_OWNED"],
+          "packages/plusplus/new.ts": ["ALLOW_OWNED"],
         });
-        // Deleting an owned file stays allowed.
         project.git("rm", "-f", "--quiet", "docs/fork.md");
         const deleted = yield* runOk(project.root, project.base);
         assert.strictEqual(
@@ -468,82 +576,285 @@ describe("checkForkBoundaries", () => {
     ),
   );
 
-  it.live(
-    "fails unregistered edits, seam deletions, non-TS seams, and resurrected upstream deletions",
-    () =>
-      Effect.scoped(
-        Effect.gen(function* () {
-          const project = yield* withFixture();
-          project.write("apps/server/src/main.ts", "export const main = 2;\n");
-          project.write("meta/app.xml", "<app fork/>\n");
-          project.write("scripts/old.ts", "export const old = 1;\n");
-          project.git("rm", "-f", "--quiet", "apps/web/src/App.tsx");
-          const checked = yield* runCheck(project.root, project.base);
-          assert.deepStrictEqual(verdicts(checked.findings), {
-            "apps/server/src/main.ts": "UNCLASSIFIED",
-            "apps/web/src/App.tsx": "SEAM_DELETED",
-            "meta/app.xml": "SEAM_NON_TS",
-            "scripts/old.ts": "UPSTREAM_DELETION_TOUCHED",
-          });
-          // A rename of an unregistered upstream file fails on its upstream half;
-          // the new name is not upstream-owned.
-          project.git("checkout", "HEAD", "--", "apps/web/src/App.tsx");
-          project.git("mv", "apps/server/src/main.ts", "apps/server/src/moved.ts");
-          const renamed = yield* runCheck(project.root, project.base);
-          assert.deepStrictEqual(verdicts(renamed.findings), {
-            "apps/server/src/main.ts": "UNCLASSIFIED",
-            "apps/server/src/moved.ts": "ALLOW_OWNED",
-            "meta/app.xml": "SEAM_NON_TS",
-            "scripts/old.ts": "UPSTREAM_DELETION_TOUCHED",
-          });
-        }),
-      ),
-  );
-
-  it.live("fails a seam edit that smuggles logic past the mount rules", () =>
+  it.live("check 1: an upstream edit needs a registry entry, read from the head registry", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const project = yield* withFixture();
-        project.write("apps/web/src/App.tsx", BASE_APP_TSX.replace("useState(0)", "useState(1)"));
-        const checked = yield* runCheck(project.root, project.base);
-        const seam = checked.findings.find((finding) => finding.path === "apps/web/src/App.tsx");
-        assert.strictEqual(seam?.verdict, "SEAM_NOT_THIN");
+        project.write("apps/server/src/main.ts", EDITED_MAIN);
+        const unregistered = yield* runCheck(project.root, project.base);
+        assert.deepStrictEqual(verdictsByPath(unregistered.findings), {
+          "apps/server/src/main.ts": ["UNREGISTERED"],
+        });
+
+        // The PR carries the entry in its own registry and the edit passes.
+        project.writeRegistry({ "apps/server/src/main.ts": legacy(1, 1) });
+        const registered = yield* runOk(project.root, project.base);
+        assert.deepStrictEqual(verdictsByPath(registered.findings), {
+          "apps/server/src/main.ts": ["ALLOW_REGISTERED"],
+          [SEAM_REGISTRY_PATH]: ["ALLOW_OWNED"],
+        });
+        assert.deepStrictEqual(registered.registryChanges, [
+          { path: "apps/server/src/main.ts", kind: "added", detail: "legacy, delta +1 -1" },
+        ]);
       }),
     ),
   );
 
-  it.live("treats a head-only registry edit as POLICY_CHANGED and grants it nothing", () =>
+  it.live("check 1: a restored upstream file must lose its entry", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const project = yield* withFixture();
-        const spoofed = {
-          ...policy.registry,
-          upstreamRef: project.upstreamRef,
-          files: {
-            "apps/server/src/main.ts": { delta: [1, 1], legacy: true },
-            ...policy.registry.files,
-          },
-        };
-        project.write(SEAM_REGISTRY_PATH, JSON.stringify(spoofed, null, 2));
-        project.write("apps/server/src/main.ts", "export const main = 2;\n");
-        const headSpoof = yield* runCheck(project.root, project.base);
-        // The head registry lists main.ts, but only the base registry counts and
-        // the base does not: the edit stays unclassified.
-        assert.deepStrictEqual(verdicts(headSpoof.findings), {
-          [SEAM_REGISTRY_PATH]: "POLICY_CHANGED",
-          "apps/server/src/main.ts": "UNCLASSIFIED",
+        project.write("apps/web/src/App.tsx", UPSTREAM_APP);
+        const stale = yield* runCheck(project.root, project.base);
+        assert.deepStrictEqual(verdictsByPath(stale.findings), {
+          "apps/web/src/App.tsx": ["STALE_ENTRY"],
         });
-        // Once the spoof lands in a base, that base's registry grants the path:
-        // trust follows the committed base, never the PR author.
-        const spoofBase = project.commit("spoof");
+        project.writeRegistry({ "apps/web/src/App.tsx": null });
+        const removed = yield* runOk(project.root, project.base);
+        assert.deepStrictEqual(verdictsByPath(removed.findings), {
+          "apps/web/src/App.tsx": ["ALLOW_UPSTREAM_EQUAL"],
+          [SEAM_REGISTRY_PATH]: ["ALLOW_OWNED"],
+        });
+      }),
+    ),
+  );
+
+  it.live("check 2 and 5: growth beyond the recorded delta fails until the head raises it", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const project = yield* withFixture();
         project.write(
-          "apps/server/src/main.ts",
-          `import { extra } from "./extra";\nexport const main = 2;\n`,
+          "apps/web/src/App.tsx",
+          FORK_APP.replace("return first;", "return first;\n  // x"),
         );
-        const againstSpoof = yield* runOk(project.root, spoofBase);
-        assert.deepStrictEqual(verdicts(againstSpoof.findings), {
-          "apps/server/src/main.ts": "ALLOW_THIN_SEAM",
+        const exceeded = yield* runCheck(project.root, project.base);
+        assert.deepStrictEqual(verdictsByPath(exceeded.findings), {
+          "apps/web/src/App.tsx": ["DELTA_EXCEEDED"],
         });
+        assert.include(exceeded.findings[0]?.detail, "+2 -0");
+
+        project.writeRegistry({ "apps/web/src/App.tsx": { ...appEntry, delta: [2, 0] } });
+        const raised = yield* runOk(project.root, project.base);
+        assert.deepStrictEqual(raised.registryChanges, [
+          { path: "apps/web/src/App.tsx", kind: "raised", detail: "+1 -0 -> +2 -0" },
+        ]);
+      }),
+    ),
+  );
+
+  it.live("check 3: deleting or renaming an upstream file fails, deleting a ++ file does not", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const project = yield* withFixture();
+        project.git("rm", "-f", "--quiet", "apps/server/src/main.ts", "docs/fork.md");
+        const deleted = yield* runCheck(project.root, project.base);
+        assert.deepStrictEqual(verdictsByPath(deleted.findings), {
+          "apps/server/src/main.ts": ["UPSTREAM_DELETED", "UNREGISTERED"],
+          "docs/fork.md": ["ALLOW_OWNED"],
+        });
+
+        project.git("reset", "--hard", "--quiet", "HEAD");
+        project.git("mv", "apps/server/src/main.ts", "apps/server/src/moved.ts");
+        const renamed = yield* runCheck(project.root, project.base);
+        assert.deepStrictEqual(verdictsByPath(renamed.findings), {
+          "apps/server/src/main.ts": ["UPSTREAM_DELETED", "UNREGISTERED"],
+          "apps/server/src/moved.ts": ["ALLOW_OWNED"],
+        });
+      }),
+    ),
+  );
+
+  it.live("check 4: touched entries must anchor at upstreamRef with the upstream fingerprint", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const project = yield* withFixture();
+        project.write("apps/server/src/main.ts", EDITED_MAIN);
+        project.writeRegistry({
+          "apps/server/src/main.ts": {
+            delta: [1, 1],
+            seams: [
+              seam("stale", MAIN_ANCHOR, WRONG_FINGERPRINT),
+              seam("missing", { text: "nowhere" }, WRONG_FINGERPRINT),
+              seam("ambiguous", { text: "const shared" }, WRONG_FINGERPRINT),
+            ],
+          },
+        });
+        const broken = yield* runCheck(project.root, project.base);
+        assert.deepStrictEqual(verdictsByPath(broken.findings)["apps/server/src/main.ts"], [
+          "ANCHOR_BROKEN",
+          "ANCHOR_BROKEN",
+          "ANCHOR_BROKEN",
+        ]);
+
+        const fingerprint = fingerprintAt("main.ts", UPSTREAM_MAIN, MAIN_ANCHOR);
+        project.writeRegistry({
+          "apps/server/src/main.ts": {
+            delta: [1, 1],
+            seams: [seam("stale", MAIN_ANCHOR, fingerprint)],
+          },
+        });
+        yield* runOk(project.root, project.base);
+
+        // A head-authored fingerprint that does not match upstream never passes.
+        const sibling: Sibling = {
+          feature: "demo",
+          upstream: "docs/guide.md",
+          plusplus: "docs/fork.md",
+          fingerprint: WRONG_FINGERPRINT,
+        };
+        project.writeRegistry({}, { siblings: [sibling] });
+        const badSibling = yield* runCheck(project.root, project.base);
+        assert.deepStrictEqual(verdictsByPath(badSibling.findings)["docs/guide.md"], [
+          "ANCHOR_BROKEN",
+        ]);
+        project.writeRegistry(
+          {},
+          { siblings: [{ ...sibling, fingerprint: fingerprintOf("# guide\n") }] },
+        );
+        const goodSibling = yield* runOk(project.root, project.base);
+        assert.isTrue(goodSibling.registryChanges.some(({ kind }) => kind === "new sibling"));
+      }),
+    ),
+  );
+
+  it.live("check 4: an untouched entry with a stale fingerprint is not evaluated", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const project = yield* withFixture();
+        project.writeRegistry({
+          "apps/web/src/App.tsx": {
+            ...appEntry,
+            seams: [seam("hook", { symbol: "App" }, WRONG_FINGERPRINT)],
+          },
+        });
+        const staleBase = project.commit("stale fingerprint in the base registry");
+        project.write("docs/fork.md", "# fork v2\n");
+        const checked = yield* runOk(project.root, staleBase);
+        assert.deepStrictEqual(verdictsByPath(checked.findings), {
+          "docs/fork.md": ["ALLOW_OWNED"],
+        });
+      }),
+    ),
+  );
+
+  it.live("check 0: a head registry that moves upstreamRef is rejected", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const project = yield* withFixture();
+        project.writeRegistry({}, { upstreamRef: project.base });
+        const moved = yield* runCheck(project.root, project.base);
+        assert.deepStrictEqual(verdictsByPath(moved.findings), {
+          [SEAM_REGISTRY_PATH]: ["UPSTREAM_REF_MOVED"],
+        });
+      }),
+    ),
+  );
+
+  it.live("fails closed on a missing or invalid head registry", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const project = yield* withFixture();
+        project.write(SEAM_REGISTRY_PATH, "{oops");
+        const invalid = yield* runCheck(project.root, project.base);
+        assert.deepStrictEqual(verdictsByPath(invalid.findings), {
+          [SEAM_REGISTRY_PATH]: ["REGISTRY_INVALID"],
+        });
+        project.git("rm", "-f", "--quiet", SEAM_REGISTRY_PATH);
+        const missing = yield* runCheck(project.root, project.base);
+        assert.deepStrictEqual(verdictsByPath(missing.findings), {
+          [SEAM_REGISTRY_PATH]: ["REGISTRY_INVALID"],
+        });
+      }),
+    ),
+  );
+
+  it.live("exempts only a designated sync run, which keeps the whole-registry check", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const project = yield* withFixture();
+        // A consistent registry that deletes an upstream file: check 3 would fail it.
+        project.git("rm", "-f", "--quiet", "apps/server/src/main.ts");
+        project.writeRegistry({ "apps/server/src/main.ts": legacy(0, 3) });
+        const checked = yield* runCheck(project.root, project.base);
+        assert.deepStrictEqual(verdictsByPath(checked.findings)["apps/server/src/main.ts"], [
+          "UPSTREAM_DELETED",
+        ]);
+        const exempt = yield* runCheck(project.root, project.base, { exempt: true });
+        assert.strictEqual(exempt.mode, "exempt");
+        assert.deepStrictEqual(exempt.findings, []);
+
+        // An unregistered edit fails as an inconsistent registry, not as check 1.
+        project.git("reset", "--hard", "--quiet", "HEAD");
+        project.write("apps/server/src/main.ts", EDITED_MAIN);
+        const inconsistent = yield* runCheck(project.root, project.base, { exempt: true });
+        assert.deepStrictEqual(verdictsByPath(inconsistent.findings), {
+          [SEAM_REGISTRY_PATH]: ["SYNC_REGISTRY_INCONSISTENT"],
+        });
+        assert.include(inconsistent.findings[0]?.detail, "apps/server/src/main.ts");
+      }),
+    ),
+  );
+
+  it.live("ignores an upstream-sync label, title and branch in the event payload", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const project = yield* withFixture();
+        const payload = NodePath.join(
+          project.root,
+          "..",
+          `event-${NodePath.basename(project.root)}.json`,
+        );
+        NodeFS.writeFileSync(
+          payload,
+          JSON.stringify({
+            pull_request: {
+              title: "upstream-sync",
+              labels: [{ name: "upstream-sync" }],
+              head: { ref: "sync/upstream-v9.9.9" },
+            },
+          }),
+        );
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => NodeFS.rmSync(payload, { force: true })),
+        );
+        const designation = designationFromEnv({
+          GITHUB_EVENT_PATH: payload,
+          UPSTREAM_SYNC: "true",
+          SYNC_DESIGNATION_ERROR: "true",
+        });
+        assert.isFalse(isDesignatedSyncPr(designation));
+        project.write("apps/server/src/main.ts", EDITED_MAIN);
+        const checked = yield* runCheck(project.root, project.base, {
+          exempt: isDesignatedSyncPr(designation),
+        });
+        assert.deepStrictEqual(verdictsByPath(checked.findings), {
+          "apps/server/src/main.ts": ["UNREGISTERED"],
+        });
+      }),
+    ),
+  );
+
+  it.live("with --head, judges the commit and ignores a dirty working tree", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const project = yield* withFixture();
+        project.write("docs/fork.md", "# fork v2\n");
+        const headSha = project.commit("head: owned edit");
+        project.write("apps/server/src/main.ts", EDITED_MAIN);
+        const pinned = yield* runOk(project.root, project.base, { headSha });
+        assert.strictEqual(pinned.head, headSha);
+        assert.deepStrictEqual(verdictsByPath(pinned.findings), {
+          "docs/fork.md": ["ALLOW_OWNED"],
+        });
+        const dirty = yield* runCheck(project.root, project.base);
+        assert.deepStrictEqual(verdictsByPath(dirty.findings), {
+          "apps/server/src/main.ts": ["UNREGISTERED"],
+          "docs/fork.md": ["ALLOW_OWNED"],
+        });
+        const badHead = yield* runCheck(project.root, project.base, { headSha: "abc123" }).pipe(
+          Effect.flip,
+        );
+        assert.include(badHead, "--head must be a full 40-hex commit sha");
       }),
     ),
   );
@@ -552,60 +863,62 @@ describe("checkForkBoundaries", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const project = yield* withFixture();
-        project.write("apps/server/src/main.ts", "export const main = 2;\n");
+        project.write("apps/server/src/main.ts", EDITED_MAIN);
         const middle = project.commit("middle: unregistered edit");
         project.write("docs/fork.md", "# fork v2\n");
         project.commit("head: owned edit");
         const againstMiddle = yield* runOk(project.root, middle);
         assert.strictEqual(againstMiddle.forkPoint, middle);
-        assert.deepStrictEqual(verdicts(againstMiddle.findings), {
-          "docs/fork.md": "ALLOW_OWNED",
+        assert.deepStrictEqual(verdictsByPath(againstMiddle.findings), {
+          "docs/fork.md": ["ALLOW_OWNED"],
         });
         const againstBase = yield* runCheck(project.root, project.base);
-        assert.deepStrictEqual(verdicts(againstBase.findings), {
-          "apps/server/src/main.ts": "UNCLASSIFIED",
-          "docs/fork.md": "ALLOW_OWNED",
+        assert.deepStrictEqual(verdictsByPath(againstBase.findings), {
+          "apps/server/src/main.ts": ["UNREGISTERED"],
+          "docs/fork.md": ["ALLOW_OWNED"],
         });
       }),
     ),
   );
 
-  it.live("fails closed on a missing, malformed, or invalid registry and unresolvable refs", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const missing = yield* withFixture("");
-        const missingError = yield* runFail(missing.root, missing.base);
-        assert.isTrue(missingError.includes("cannot read the trusted policy"), missingError);
+  it.live(
+    "fails closed on a missing, malformed, or invalid base registry and unresolvable refs",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const missing = yield* withFixture("");
+          const missingError = yield* runFail(missing.root, missing.base);
+          assert.isTrue(missingError.includes("cannot read the trusted policy"), missingError);
 
-        const malformed = yield* withFixture("{oops");
-        const malformedError = yield* runFail(malformed.root, malformed.base);
-        assert.isTrue(malformedError.includes("is not valid"), malformedError);
+          const malformed = yield* withFixture("{oops");
+          const malformedError = yield* runFail(malformed.root, malformed.base);
+          assert.isTrue(malformedError.includes("is not valid"), malformedError);
 
-        const unsorted = {
-          ...policy.registry,
-          files: {
-            "meta/app.xml": { delta: [1, 1], legacy: true },
-            "apps/web/src/App.tsx": { delta: [3, 0], legacy: true },
-          },
-        };
-        const invalid = yield* withFixture(JSON.stringify(unsorted));
-        const invalidError = yield* runFail(invalid.root, invalid.base);
-        assert.isTrue(invalidError.includes("files keys must be unique and sorted"), invalidError);
+          const unsorted = registryOf({
+            "meta/app.xml": legacy(1, 1),
+            "apps/web/src/App.tsx": legacy(3, 0),
+          });
+          const invalid = yield* withFixture(JSON.stringify(unsorted));
+          const invalidError = yield* runFail(invalid.root, invalid.base);
+          assert.isTrue(
+            invalidError.includes("files keys must be unique and sorted"),
+            invalidError,
+          );
 
-        const unknownUpstream = yield* withFixture(
-          JSON.stringify({ ...policy.registry, upstreamRef: "0".repeat(40) }),
-        );
-        const upstreamError = yield* runFail(unknownUpstream.root, unknownUpstream.base);
-        assert.isTrue(upstreamError.includes("cannot list the tree of"), upstreamError);
+          const unknownUpstream = yield* withFixture(
+            JSON.stringify(registryOf({}, [], "0".repeat(40))),
+          );
+          const upstreamError = yield* runFail(unknownUpstream.root, unknownUpstream.base);
+          assert.isTrue(upstreamError.includes("cannot list the tree of"), upstreamError);
 
-        const project = yield* withFixture();
-        const refError = yield* runFail(project.root, "no-such-ref");
-        assert.isTrue(refError.includes("cannot resolve base ref no-such-ref"), refError);
+          const project = yield* withFixture();
+          const refError = yield* runFail(project.root, "no-such-ref");
+          assert.isTrue(refError.includes("cannot resolve base ref no-such-ref"), refError);
 
-        const empty = yield* tempDir("t3-not-a-repo-");
-        const repoError = yield* runFail(empty, "HEAD");
-        assert.isTrue(repoError.includes("cannot resolve base ref HEAD"), repoError);
-      }),
-    ),
+          const empty = yield* tempDir("t3-not-a-repo-");
+          const repoError = yield* runFail(empty, "HEAD");
+          assert.isTrue(repoError.includes("cannot resolve base ref HEAD"), repoError);
+        }),
+      ),
   );
 });

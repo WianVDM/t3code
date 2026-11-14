@@ -42,6 +42,3 @@ export function decide(
     windows_packages: string;
   };
 };
-
-// ++ boundary infrastructure paths: a change to any of them runs every job.
-export const BOUNDARY_INFRASTRUCTURE: ReadonlySet<string>;
