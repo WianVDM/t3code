@@ -9,21 +9,50 @@ macOS arm64, and the GitHub Release is the only distribution point. Windows and 
 updates from the release feed; macOS arm64 is a manual download, and no other architecture ships
 (no macOS Intel, Linux ARM, or Windows ARM build).
 
-| Channel   | Purpose                 | Version                        | Release                   |
-| --------- | ----------------------- | ------------------------------ | ------------------------- |
-| `stable`  | what users install      | `X.Y.Z-plusplus.N`             | latest, not a prerelease  |
-| `nightly` | release candidate train | `X.Y.Z-nightly.YYYYMMDD.<run>` | prerelease                |
-| `preview` | maintainer test build   | `X.Y.Z-preview.YYYYMMDD.<run>` | prerelease with a warning |
+## Channels
+
+Stable is the public channel: it is what users install, and the only channel this fork promises fixes
+on. Nightly and preview exist because each serves a concrete audience stable cannot. Users who want
+the next upstream patch early run nightly; maintainers testing the pipeline, a packaging change, or a
+risky branch run preview. Those two audiences are the whole justification. Start from stable, and add
+a channel only when someone can name its audience, who supports it, and how a change on it reaches
+users.
+
+There is no admin channel, and this fork will not add one. A build only maintainers run is
+`channel=preview` or a local build. A fourth feed ordinary users cannot install from would publish
+artifacts with no audience, no support promise, and no promotion path, and every client would have to
+learn a channel that exists for one person.
+
+| Channel   | Audience                        | Version                        | Release                   | Support                                                         |
+| --------- | ------------------------------- | ------------------------------ | ------------------------- | --------------------------------------------------------------- |
+| `stable`  | everyone                        | `X.Y.Z-plusplus.N`             | latest, not a prerelease  | supported; a defect is fixed in the next `-plusplus.N` revision |
+| `nightly` | users who opt into early builds | `X.Y.Z-nightly.YYYYMMDD.<run>` | prerelease                | best effort on the newest nightly; no backports                 |
+| `preview` | maintainers                     | `X.Y.Z-preview.YYYYMMDD.<run>` | prerelease with a warning | none; the release and its tag are deleted when the test ends    |
+
+Support means this repo's maintainers answer for the channel. Stable receives fixes. A broken
+nightly is dropped rather than patched, and a fix reaches nightly only if a later nightly picks it
+up. Preview receives nothing: a defect found there is fixed forward on the branch or abandoned along
+with the release.
 
 `channel` defaults to `preview`, so an accidental dispatch cannot publish a stable release. The
 workflow serializes nightlies and previews in one queue and gives stable its own, so a queued stable
 dispatch is never dropped.
+
+This is policy, not a status report. It says what the fork intends and promises; it does not assert
+that any channel's artifacts currently install or upgrade. Each release verifies that separately, as
+[Verifying a release](#verifying-a-release) describes, and a channel is never advertised on the
+strength of this page alone.
 
 ## Versions
 
 Stable uses the fork's ++ scheme: tag and version `X.Y.Z-plusplus.N`, where `X.Y.Z` is the upstream
 base and `N` is the fork's revision on that base. User-facing text renders the display form
 `X.Y.Z · ++N`; tags, package versions, and artifact filenames keep the machine-readable form.
+
+Versioning is upstream-relative. The fork never picks a base of its own, so any ++ version names the
+upstream release it extends and the fork's whole divergence is one revision number. That keeps a fork
+release comparable with the upstream one, and it makes a new base arrive with an upstream sync rather
+than a fork-only version bump.
 
 - `N` is the part the fork owns. It increments with each stable release on the same upstream base and
   resets to `.1` when a new upstream base arrives.
@@ -38,6 +67,33 @@ base and `N` is the fork's revision on that base. User-facing text renders the d
   the dispatched commit instead.
 - Version changes land as ordinary PRs. Nothing in the release workflow writes to `main` or commits a
   bump back, and pushing a tag publishes nothing: the release job creates the tag.
+
+## Promotion
+
+- Stable is where anything users should run ends up, and nothing promotes into it automatically. A
+  maintainer dispatches every stable release.
+- A nightly promotes by being verified and then dispatched as stable with an empty `version`. That
+  ships `X.Y.Z-plusplus.N` of the same base as a new tag, so promotion is a second publication, not a
+  renamed nightly. The empty fallback always asks for `.1`; a second stable on one base passes the
+  revision explicitly, such as `0.1.6-plusplus.2`.
+- A nightly is a candidate, never a release. It is never marked latest and never becomes stable by
+  being published.
+- Preview never promotes. A change tested there reaches users only by landing on `main`, passing the
+  required checks on that commit, and shipping from a stable dispatch.
+- Promotion never bypasses a check. Stable requires `Check` and `Agent Context Budget` green on the
+  exact commit it builds, so an urgent fix is an ordinary dispatch of that commit, not an override.
+
+## Retention
+
+- **Stable releases are permanent.** Their assets stay attached, and a published tag and version are
+  never reused or deleted. A stable release is the only copy of that build, and a broken one is
+  superseded by the next revision rather than removed.
+- **Nightlies accumulate as prereleases.** Delete old ones by hand once the list gets long, keeping
+  the nightly a pending stable promotion will build and any nightly a stable release's notes name.
+- **Previews are deleted with their tags** when the test ends. Nothing is retained for a build end
+  users never receive.
+- **Retention covers GitHub Releases only.** Every channel publishes there, and this fork runs no
+  package registry or mirror that would hold a second copy.
 
 ## What a run does
 
@@ -141,8 +197,7 @@ and `Agent Context Budget` runs to be green on the dispatched commit.
   nightly.
 - It carries the `nightly` updater feed and blockmaps, so users who opted into nightly desktop builds
   receive it.
-- It commits nothing back to `main`. Nightlies accumulate as prereleases; delete old ones by hand
-  when the list gets long.
+- It commits nothing back to `main`. Retention for nightlies is in [Retention](#retention).
 
 ## Preview release
 
