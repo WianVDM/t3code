@@ -108,6 +108,8 @@ const state = vi.hoisted(() => {
     refreshUpstreamReleaseIfStale: vi.fn(),
     readCachedUpstreamRelease: vi.fn(),
     isUpstreamCacheEntryFresh: vi.fn(),
+    // isUpstreamReleaseNotificationBuild is read as a boolean constant, not called.
+    notificationBuild: { value: true },
   };
 });
 
@@ -141,7 +143,9 @@ vi.mock("../../components/chat/composerProviderState", () => ({
 vi.mock("../upstreamRelease.logic", () => ({
   buildUpstreamMergePrompt: state.buildUpstreamMergePrompt,
   FORK_REPOSITORY: "WianVDM/t3code",
-  isUpstreamReleaseNotificationBuild: true,
+  get isUpstreamReleaseNotificationBuild() {
+    return state.notificationBuild.value;
+  },
   isUpstreamCacheEntryFresh: state.isUpstreamCacheEntryFresh,
   pickForkProject: state.pickForkProject,
   readCachedUpstreamRelease: state.readCachedUpstreamRelease,
@@ -237,6 +241,7 @@ function setup() {
   state.refreshUpstreamReleaseIfStale.mockReset();
   state.readCachedUpstreamRelease.mockReset().mockReturnValue(null);
   state.isUpstreamCacheEntryFresh.mockReset().mockReturnValue(false);
+  state.notificationBuild.value = true;
   state.registrySet.mockReset();
 }
 
@@ -253,6 +258,14 @@ describe("useUpstreamMergeEligible", () => {
     setup();
 
     expect(useUpstreamMergeEligible()).toBe(true);
+  });
+
+  it("is false on a non-notification build even with a matching fork checkout", () => {
+    setup();
+    state.notificationBuild.value = false;
+
+    expect(useUpstreamMergeEligible()).toBe(false);
+    expect(state.pickForkProject).not.toHaveBeenCalled();
   });
 });
 
