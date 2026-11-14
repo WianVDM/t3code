@@ -9,8 +9,10 @@ body:
     attributes:
       value: |
         Use this form for broken behavior, regressions, crashes, or reliability problems.
-        Feature requests belong in [Discussions](https://github.com/pingdotgg/t3code/discussions/categories/ideas).
-        Search existing issues first and keep the report focused on one problem.
+        New capabilities belong in the feature request form, and repo tooling work in the
+        maintenance form. Search existing issues first and keep the report focused on one problem.
+        Maintainers apply the taxonomy labels (`accepted`, `plusplus`, `upstream-candidate`,
+        `upstream-sync`) during triage; authors cannot self-accept.
 
   - type: checkboxes
     id: checks
@@ -81,6 +83,18 @@ body:
     validations:
       required: true
 
+  - type: dropdown
+    id: classification
+    attributes:
+      label: Fork classification
+      description: Where the bug comes from, so triage can route it.
+      options:
+        - Introduced by a ++ fork change
+        - Present upstream too (upstream candidate)
+        - Not sure
+    validations:
+      required: true
+
   - type: input
     id: version
     attributes:
@@ -110,6 +124,13 @@ body:
     validations:
       required: false
       accept: ".png,.jpg,.jpeg,.gif,.webp,.svg,.mp4,.mov,.webm,.log,.txt,.json,.zip"
+
+  - type: textarea
+    id: verification
+    attributes:
+      label: Verification needs
+      description: How a reviewer proves the fix holds, such as checks, tests, manual passes, and devices.
+      placeholder: A failing test in the owning package, plus one web pass in test-t3-app.
 
   - type: textarea
     id: workaround
