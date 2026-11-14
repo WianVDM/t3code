@@ -1,6 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off - pathToFileURL turns the fixture's temp repos into file:// remotes.
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
+import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -564,6 +565,28 @@ it.live("verify refuses to refresh the registry past a lost anchor or an unregis
       yield* fixture.git(["checkout", fixture.upstreamHead, "--", "README.md"]);
       const verified = yield* withSpawner(spawner)(verifyUpstreamSync(options));
       assert.equal(verified.mergeHead, fixture.upstreamHead);
+    }),
+  ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.live("verify refuses to overwrite an unstaged registry edit and keeps it", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const fixture = yield* makeRepositoryFixture({ variant: "clean" });
+      const spawner = yield* localFetchSpawner(fixture);
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const options = { tag: TAG, cwd: fixture.cwd };
+      const registryFile = path.join(fixture.cwd, SEAM_REGISTRY_PATH);
+
+      yield* withSpawner(spawner)(prepareUpstreamSync(options));
+      const edited = `${yield* fs.readFileString(registryFile)}\n`;
+      yield* fs.writeFileString(registryFile, edited);
+
+      const error = yield* Effect.flip(withSpawner(spawner)(verifyUpstreamSync(options)));
+      assert.instanceOf(error, UpstreamSyncError);
+      assert.match(error.message, /would overwrite unstaged edits[\s\S]*seams\.json/);
+      assert.equal(yield* fs.readFileString(registryFile), edited);
     }),
   ).pipe(Effect.provide(NodeServices.layer)),
 );
@@ -1487,24 +1510,51 @@ it.live("dry-run records a registry refresh failure and still commits the clean 
       const path = yield* Path.Path;
       const fs = yield* FileSystem.FileSystem;
       const paths = dryRunPaths(fixture, path);
+      const githubOutputPath = path.join(fixture.root, "github-output.txt");
 
       const returned = yield* withSpawner(spawner)(
         dryRunUpstreamSync({
           tag: TAG,
           cwd: fixture.cwd,
           ...paths,
-          githubOutput: false,
+          githubOutput: true,
           windowsPackages: [],
         }),
+      ).pipe(
+        Effect.provide(
+          ConfigProvider.layer(
+            ConfigProvider.fromEnv({ env: { GITHUB_OUTPUT: githubOutputPath } }),
+          ),
+        ),
       );
 
       // Not merge_verification_failed: the Linux and Windows lanes still need to run.
       assert.equal(returned.status, "clean");
       assert.isNotNull(returned.mergeCommit);
-      // The real sync stages the refresh this merge lacks, so the tree is not pinned.
+      // The real sync stages the refresh this merge lacks, so the report pins no tree.
       assert.isNull(returned.tree);
       assert.lengthOf(returned.seamRefreshProblems, 1);
       assert.match(returned.seamRefreshProblems[0] ?? "", /demo\.hook \(app\.ts\)[\s\S]*missing/);
+
+      // The lanes still get every replay input, and the merge replays to the same tree.
+      const mergeTree = (yield* fixture.git(["rev-parse", "--verify", "HEAD^{tree}"])).trim();
+      const output = yield* fs.readFileString(githubOutputPath);
+      assert.include(output, "status=clean\n");
+      assert.include(output, `tag=${TAG}\n`);
+      assert.include(output, `base_sha=${fixture.forkHead}\n`);
+      assert.include(output, `upstream_sha=${fixture.upstreamHead}\n`);
+      assert.include(output, `merge_tree=${mergeTree}\n`);
+      yield* fixture.git(["checkout", "--detach", fixture.forkHead]);
+      const replayed = yield* withSpawner(spawner)(
+        replayDryRun({
+          tag: TAG,
+          cwd: fixture.cwd,
+          baseSha: fixture.forkHead,
+          upstreamSha: fixture.upstreamHead,
+          expectedTree: mergeTree,
+        }),
+      );
+      assert.equal(replayed.tree, mergeTree);
       assert.deepEqual(yield* readReportFile(paths.reportPath), returned);
       const summary = yield* fs.readFileString(paths.summaryPath);
       assert.include(summary, "## Seam registry refresh (1)");

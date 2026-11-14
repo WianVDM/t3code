@@ -1250,6 +1250,8 @@ interface DryRunDraft {
   upstreamSha: string | null;
   mergeCommit: string | null;
   tree: string | null;
+  // The merge commit's tree the lanes replay; unlike `tree` it is never withheld.
+  replayTree: string | null;
   status: DryRunStatus;
   incomingPaths: Array<string>;
   impact: ImpactReport | null;
@@ -1266,6 +1268,7 @@ const emptyDryRunDraft = (requestedTag: string): DryRunDraft => ({
   upstreamSha: null,
   mergeCommit: null,
   tree: null,
+  replayTree: null,
   status: "error",
   incomingPaths: [],
   impact: null,
@@ -1678,6 +1681,18 @@ const stageSeamRefresh = Effect.fn("upstream-sync.stageSeamRefresh")(function* (
   };
   const nextHistory: SyncHistory = upsertSyncEntry(history, entry);
 
+  // The refresh overwrites these files, so an unstaged or untracked copy would be lost.
+  for (const listing of [
+    ["diff", "--name-only"],
+    ["ls-files", "--others", "--exclude-standard"],
+  ]) {
+    yield* requireNoLeftoverPaths(
+      cwd,
+      [...listing, "-z", "--", SEAM_REGISTRY_PATH, SYNC_HISTORY_PATH],
+      "The seam registry refresh would overwrite unstaged edits. Stage or revert these paths",
+    );
+  }
+
   const writes = [
     [SEAM_REGISTRY_PATH, serializeRegistry(refreshed.registry)],
     [SYNC_HISTORY_PATH, serializeSyncHistory(nextHistory)],
@@ -1819,6 +1834,7 @@ const performDryRun = Effect.fn("upstream-sync.performDryRun")(function* (
   draft.mergeCommit = identity.commit;
   // The real sync stages the registry refresh this tree lacks, so its tree cannot be pinned.
   draft.tree = draft.seamRefreshProblems.length > 0 ? null : identity.tree;
+  draft.replayTree = identity.tree;
 
   draft.windowsPackages =
     options.windowsPackages === undefined
@@ -1830,7 +1846,7 @@ const performDryRun = Effect.fn("upstream-sync.performDryRun")(function* (
 const writeDryRunArtifacts = Effect.fn("upstream-sync.writeDryRunArtifacts")(function* (
   options: DryRunOptions,
   report: DryRunReport,
-  detail: string | null,
+  outcome: { readonly detail: string | null; readonly replayTree: string | null },
 ) {
   const fs = yield* FileSystem.FileSystem;
   const writeFile = (target: string, contents: string, label: string) =>
@@ -1856,7 +1872,11 @@ const writeDryRunArtifacts = Effect.fn("upstream-sync.writeDryRunArtifacts")(fun
     yield* writeFile(options.reportPath, `${json}\n`, "JSON report");
   }
   if (options.summaryPath !== undefined) {
-    yield* writeFile(options.summaryPath, renderDryRunSummary(report, detail), "Markdown summary");
+    yield* writeFile(
+      options.summaryPath,
+      renderDryRunSummary(report, outcome.detail),
+      "Markdown summary",
+    );
   }
   if (options.githubOutput) {
     const outputPath = yield* Config.NonEmptyString("GITHUB_OUTPUT").pipe(
@@ -1873,7 +1893,7 @@ const writeDryRunArtifacts = Effect.fn("upstream-sync.writeDryRunArtifacts")(fun
       ["merge_base_sha", report.mergeBaseSha ?? ""],
       ["upstream_sha", report.upstreamSha ?? ""],
       ["merge_commit", report.mergeCommit ?? ""],
-      ["merge_tree", report.tree ?? ""],
+      ["merge_tree", outcome.replayTree ?? ""],
       ["windows_packages", report.windowsPackages.join(" ")],
     ] as const;
     for (const [key, value] of entries) {
@@ -1905,7 +1925,10 @@ export const dryRunUpstreamSync = Effect.fn("upstream-sync.dryRun")(function* (
     ),
   );
   const report = draftReport(draft);
-  yield* writeDryRunArtifacts(options, report, failure.error?.message ?? null);
+  yield* writeDryRunArtifacts(options, report, {
+    detail: failure.error?.message ?? null,
+    replayTree: draft.replayTree,
+  });
   yield* Console.log(
     `Dry-run status: ${report.status}${report.tag === null ? "" : ` for ${report.tag}`}: ` +
       `${report.incomingPaths.length} incoming paths, ${report.conflicts.length} conflicts, ` +
