@@ -146,6 +146,7 @@ const makeRepositoryFixture = Effect.fn("test.makeUpstreamSyncFixture")(function
   readonly variant: "clean" | "conflict";
   readonly extraUpstreamFiles?: Readonly<Record<string, string>>;
   readonly upstreamRenames?: ReadonlyArray<readonly [string, string]>;
+  readonly upstreamDeletions?: ReadonlyArray<string>;
 }) {
   const conflict = options.variant === "conflict";
   const fs = yield* FileSystem.FileSystem;
@@ -221,6 +222,9 @@ const makeRepositoryFixture = Effect.fn("test.makeUpstreamSyncFixture")(function
     const target = path.join(seed, ...to.split("/"));
     yield* fs.makeDirectory(path.dirname(target), { recursive: true });
     yield* git(seed, ["mv", from, to]);
+  }
+  for (const deleted of options.upstreamDeletions ?? []) {
+    yield* git(seed, ["rm", "--quiet", deleted]);
   }
   yield* commitSeed("upstream change");
   const upstreamHead = (yield* git(seed, ["rev-parse", "HEAD"])).trim();
@@ -559,6 +563,29 @@ it.live("verify refuses to refresh the registry past a lost anchor or an unregis
       yield* fixture.git(["checkout", fixture.upstreamHead, "--", "README.md"]);
       const verified = yield* withSpawner(spawner)(verifyUpstreamSync(options));
       assert.equal(verified.mergeHead, fixture.upstreamHead);
+    }),
+  ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.live("verify refuses a seam whose file upstream deleted instead of dropping it", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const fixture = yield* makeRepositoryFixture({
+        variant: "clean",
+        upstreamDeletions: ["app.ts"],
+      });
+      const spawner = yield* localFetchSpawner(fixture);
+      const options = { tag: TAG, cwd: fixture.cwd };
+
+      // The fork modified app.ts, so the delete is a modify/delete conflict; keeping the file resolves it.
+      yield* Effect.flip(withSpawner(spawner)(prepareUpstreamSync(options)));
+      yield* fixture.git(["add", "app.ts"]);
+      const refused = yield* Effect.flip(withSpawner(spawner)(verifyUpstreamSync(options)));
+      assert.instanceOf(refused, UpstreamSyncError);
+      assert.match(
+        refused.message,
+        /demo\.hook \(app\.ts\)[\s\S]*file is absent at the upstream ref/,
+      );
     }),
   ).pipe(Effect.provide(NodeServices.layer)),
 );
@@ -986,6 +1013,7 @@ describe("upstream-sync dry-run helpers", () => {
       incomingPaths: ['weird "path"\t.ts', ...paths],
       impact,
       conflicts: [{ path: 'weird "path"\t.ts', stages: [1, 2, 3] }],
+      seamRefreshProblems: [],
       windowsPackages: [],
     };
     const summary = renderDryRunSummary(report, null);
@@ -1198,6 +1226,7 @@ it.live("dry-run merges on a detached ref and mutates no branch, tag, or remote"
 
       assert.equal(report.schemaVersion, 2);
       assert.equal(report.status, "clean");
+      assert.deepEqual(report.seamRefreshProblems, []);
       assert.equal(report.requestedTag, TAG);
       assert.equal(report.tag, TAG);
       assert.equal(report.baseSha, fixture.forkHead);
@@ -1440,6 +1469,42 @@ it.live("dry-run reports a real conflict with stages and commits nothing", () =>
       assert.include(summary, '"conflict.txt" (stages 1, 2, 3)');
       assert.include(summary, "Legacy files upstream touches (1)");
       assert.include(summary, '- "conflict.txt" (conflict)');
+    }),
+  ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.live("dry-run records a registry refresh failure and still commits the clean merge", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const fixture = yield* makeRepositoryFixture({
+        variant: "clean",
+        extraUpstreamFiles: {
+          "app.ts": APP_BASE.replace("function hooked", "function hookedRenamed"),
+        },
+      });
+      const spawner = yield* localFetchSpawner(fixture);
+      const path = yield* Path.Path;
+      const fs = yield* FileSystem.FileSystem;
+      const paths = dryRunPaths(fixture, path);
+
+      const returned = yield* withSpawner(spawner)(
+        dryRunUpstreamSync({
+          tag: TAG,
+          cwd: fixture.cwd,
+          ...paths,
+          githubOutput: false,
+          windowsPackages: [],
+        }),
+      );
+
+      // Not merge_verification_failed: the Linux and Windows lanes still need to run.
+      assert.equal(returned.status, "clean");
+      assert.isNotNull(returned.mergeCommit);
+      assert.lengthOf(returned.seamRefreshProblems, 1);
+      assert.match(returned.seamRefreshProblems[0] ?? "", /demo\.hook \(app\.ts\)[\s\S]*missing/);
+      assert.deepEqual(yield* readReportFile(paths.reportPath), returned);
+      const summary = yield* fs.readFileString(paths.summaryPath);
+      assert.include(summary, "## Seam registry refresh (1)");
     }),
   ).pipe(Effect.provide(NodeServices.layer)),
 );
@@ -2097,6 +2162,7 @@ describe("hotspot report validation", () => {
     incomingPaths: ["upstream.txt"],
     impact: real.impact,
     conflicts: [],
+    seamRefreshProblems: [],
     windowsPackages: ["apps/desktop"],
     ...overrides,
   });
@@ -2249,6 +2315,7 @@ describe("hotspot report rendering", () => {
       incomingPaths: ["apps/desktop/src/main.ts", "upstream.txt"],
       impact,
       conflicts: [],
+      seamRefreshProblems: [],
       windowsPackages: ["apps/desktop"],
     },
     real: {
@@ -2368,6 +2435,7 @@ const trustedReport = (overrides: Record<string, unknown>): string =>
     incomingPaths: ["upstream.txt"],
     impact: null,
     conflicts: [],
+    seamRefreshProblems: [],
     windowsPackages: [],
     ...overrides,
   });

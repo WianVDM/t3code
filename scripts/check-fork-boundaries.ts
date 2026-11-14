@@ -16,11 +16,15 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
-import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import { BOUNDARY_INFRASTRUCTURE } from "../.github/scripts/ci-changes.cjs";
-import { SEAM_REGISTRY_PATH, parseSeamRegistry, type SeamRegistry } from "./seamRegistry.ts";
+import {
+  SEAM_REGISTRY_PATH,
+  collectStreamAsString,
+  parseSeamRegistry,
+  type SeamRegistry,
+} from "./seamRegistry.ts";
 
 export const DEFAULT_BASE_REF = "origin/main";
 
@@ -56,15 +60,6 @@ export const ALLOWED_VERDICTS: ReadonlySet<BoundaryVerdict> = new Set([
 
 export const isViolation = (finding: BoundaryFinding): boolean =>
   !ALLOWED_VERDICTS.has(finding.verdict);
-
-const collectStreamAsString = <E>(stream: Stream.Stream<Uint8Array, E>): Effect.Effect<string, E> =>
-  stream.pipe(
-    Stream.decodeText(),
-    Stream.runFold(
-      () => "",
-      (accumulator, chunk) => accumulator + chunk,
-    ),
-  );
 
 const git = Effect.fn("forkBoundaries.git")(function* (cwd: string, args: ReadonlyArray<string>) {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;

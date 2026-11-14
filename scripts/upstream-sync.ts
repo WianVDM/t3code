@@ -9,7 +9,6 @@ import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
-import * as Stream from "effect/Stream";
 import { Command, Flag } from "effect/cli";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
@@ -18,6 +17,7 @@ import {
   SEAM_REGISTRY_PATH,
   SYNC_HISTORY_PATH,
   SeamMechanism,
+  collectStreamAsString,
   compareText,
   locateRegion,
   normalizeRegion,
@@ -146,6 +146,7 @@ export const DryRunReport = Schema.Struct({
   incomingPaths: Schema.Array(Schema.String),
   impact: Schema.NullOr(ImpactReport),
   conflicts: Schema.Array(DryRunConflictEntry),
+  seamRefreshProblems: Schema.Array(Schema.String),
   windowsPackages: Schema.Array(Schema.String),
 });
 export type DryRunReport = typeof DryRunReport.Type;
@@ -457,6 +458,16 @@ export function renderDryRunSummary(report: DryRunReport, detail: string | null)
     );
   }
   lines.push("", ...renderImpactSection(report.impact));
+  if (report.seamRefreshProblems.length > 0) {
+    lines.push(
+      "",
+      `## Seam registry refresh (${report.seamRefreshProblems.length})`,
+      "",
+      "The registry cannot be refreshed against the merged tag; verify refuses until each is fixed.",
+      "",
+      ...summaryList(report.seamRefreshProblems.map((problem) => `- ${JSON.stringify(problem)}`)),
+    );
+  }
   lines.push(
     "",
     "## Verification lanes",
@@ -665,15 +676,6 @@ const indentLines = (lines: ReadonlyArray<string>): string =>
 
 const upstreamReleaseRef = (tag: string): string => `${UPSTREAM_RELEASE_REF_PREFIX}${tag}`;
 
-const collectStreamAsString = <E>(stream: Stream.Stream<Uint8Array, E>): Effect.Effect<string, E> =>
-  stream.pipe(
-    Stream.decodeText(),
-    Stream.runFold(
-      () => "",
-      (acc, chunk) => acc + chunk,
-    ),
-  );
-
 const runGit = Effect.fn("upstream-sync.runGit")(function* (
   cwd: string,
   args: ReadonlyArray<string>,
@@ -881,7 +883,7 @@ const verifyMergeState = Effect.fn("upstream-sync.verifyMergeState")(function* (
     "Unmerged paths remain. Resolve and stage them before continuing",
   );
 
-  yield* stageSeamRefresh(cwd, tag, mergeHead);
+  const seamProblems = yield* stageSeamRefresh(cwd, tag, mergeHead);
 
   yield* requireNoLeftoverPaths(
     cwd,
@@ -929,7 +931,17 @@ const verifyMergeState = Effect.fn("upstream-sync.verifyMergeState")(function* (
 
   const head = (yield* git(cwd, ["rev-parse", "--verify", "HEAD^{commit}"])).trim();
   const tree = (yield* git(cwd, ["write-tree"])).trim();
-  return { head, mergeHead, tree };
+  return { head, mergeHead, tree, seamProblems };
+});
+
+const requireSeamRefresh = Effect.fn("upstream-sync.requireSeamRefresh")(function* (
+  tag: string,
+  seamProblems: ReadonlyArray<string>,
+) {
+  if (seamProblems.length === 0) return;
+  return yield* new UpstreamSyncError({
+    message: `The seam registry cannot be refreshed for ${tag}. Fix each anchor, or register each fork delta, then run verify again:\n${indentLines(seamProblems)}`,
+  });
 });
 
 export const prepareUpstreamSync = Effect.fn("upstream-sync.prepare")(function* (
@@ -1013,6 +1025,7 @@ export const verifyUpstreamSync = Effect.fn("upstream-sync.verify")(function* (
 ) {
   const { cwd, tag } = yield* resolveContext(options);
   const state = yield* verifyMergeState(cwd, tag);
+  yield* requireSeamRefresh(tag, state.seamProblems);
   yield* writeVerifiedMergeRecord(cwd, state);
   yield* Console.log(`Verified pending merge of ${tag} at ${state.mergeHead}.`);
   return { mergeHead: state.mergeHead };
@@ -1023,6 +1036,7 @@ export const finishUpstreamSync = Effect.fn("upstream-sync.finish")(function* (
 ) {
   const { cwd, tag } = yield* resolveContext(options);
   const state = yield* verifyMergeState(cwd, tag);
+  yield* requireSeamRefresh(tag, state.seamProblems);
   const record = yield* readVerifiedMergeRecord(cwd, tag);
 
   const drift: string[] = [];
@@ -1237,6 +1251,7 @@ interface DryRunDraft {
   incomingPaths: Array<string>;
   impact: ImpactReport | null;
   conflicts: Array<DryRunConflictEntry>;
+  seamRefreshProblems: Array<string>;
   windowsPackages: Array<string>;
 }
 
@@ -1252,6 +1267,7 @@ const emptyDryRunDraft = (requestedTag: string): DryRunDraft => ({
   incomingPaths: [],
   impact: null,
   conflicts: [],
+  seamRefreshProblems: [],
   windowsPackages: [],
 });
 
@@ -1268,6 +1284,7 @@ const draftReport = (draft: DryRunDraft): DryRunReport => ({
   incomingPaths: [...draft.incomingPaths],
   impact: draft.impact,
   conflicts: draft.conflicts.map((conflict) => ({ ...conflict, stages: [...conflict.stages] })),
+  seamRefreshProblems: [...draft.seamRefreshProblems],
   windowsPackages: [...draft.windowsPackages],
 });
 
@@ -1610,9 +1627,9 @@ const featuresOf = (registry: SeamRegistry, path: string): Array<string> => {
   return [...new Set(entry.seams.map((seam) => seam.feature))].sort();
 };
 
-// Registry and history refresh staged into the pending merge, so the merge
-// commit carries the new upstreamRef, fingerprints, deltas and sync record.
-// Idempotent: a second run over the staged result changes nothing.
+// Stages the registry and history refresh into the pending merge; idempotent.
+// Returns the problems that blocked it (nothing is staged then) so callers
+// decide whether to refuse or only report.
 const stageSeamRefresh = Effect.fn("upstream-sync.stageSeamRefresh")(function* (
   cwd: string,
   tag: string,
@@ -1635,11 +1652,7 @@ const stageSeamRefresh = Effect.fn("upstream-sync.stageSeamRefresh")(function* (
     ...refreshed.broken,
     ...refreshed.unregistered.map((unregistered) => `unregistered fork delta: ${unregistered}`),
   ];
-  if (problems.length > 0) {
-    return yield* new UpstreamSyncError({
-      message: `The seam registry cannot be refreshed for ${tag}. Fix each anchor, or register each fork delta, then run verify again:\n${indentLines(problems)}`,
-    });
-  }
+  if (problems.length > 0) return problems;
 
   const head = (yield* git(cwd, ["rev-parse", "--verify", "HEAD^{commit}"])).trim();
   const historyText = yield* git(cwd, ["show", `:${SYNC_HISTORY_PATH}`]).pipe(
@@ -1669,6 +1682,7 @@ const stageSeamRefresh = Effect.fn("upstream-sync.stageSeamRefresh")(function* (
     yield* fs.writeFileString(path.join(cwd, target), contents).pipe(Effect.mapError(asSyncError));
   }
   yield* git(cwd, ["add", "--", SEAM_REGISTRY_PATH, SYNC_HISTORY_PATH]);
+  return [];
 });
 
 const performDryRun = Effect.fn("upstream-sync.performDryRun")(function* (
@@ -1782,6 +1796,8 @@ const performDryRun = Effect.fn("upstream-sync.performDryRun")(function* (
       message: `The clean merge of ${tag} failed integrity verification: ${verification.error.message}`,
     });
   }
+  // A registry that cannot follow the tag is a finding, not a reason to skip the test lanes.
+  draft.seamRefreshProblems = [...verification.state.seamProblems];
 
   yield* commitDetachedMerge(cwd);
   const identity = yield* readCommitIdentity(cwd);
@@ -1798,12 +1814,12 @@ const performDryRun = Effect.fn("upstream-sync.performDryRun")(function* (
   }
   draft.mergeCommit = identity.commit;
   draft.tree = identity.tree;
-  draft.status = "clean";
 
   draft.windowsPackages =
     options.windowsPackages === undefined
       ? yield* computeFullWindowsPackages(cwd)
       : yield* validateWindowsPackageDirs(cwd, options.windowsPackages);
+  draft.status = "clean";
 });
 
 const writeDryRunArtifacts = Effect.fn("upstream-sync.writeDryRunArtifacts")(function* (

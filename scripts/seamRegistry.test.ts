@@ -4,7 +4,7 @@ import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { assert, describe, it } from "@effect/vitest";
+import { afterAll, assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
@@ -103,6 +103,7 @@ describe("locateRegion fingerprints", () => {
     // Formatting noise never moves a fingerprint.
     const noisy = SOURCE.replace(/\n/g, "  \r\n");
     assert.strictEqual(fingerprintAt(noisy, symbolAnchor), symbolBefore);
+    assert.strictEqual(fingerprintAt(noisy, lineAnchor), lineBefore);
   });
 
   it("reports a renamed symbol as Missing and a repeated text line as Ambiguous", () => {
@@ -137,6 +138,13 @@ describe("locateRegion anchors", () => {
       _tag: "Missing",
     });
     assert.strictEqual(textOf("a.ts", SOURCE, { text: "import { Schema }" }).split("\n").length, 3);
+  });
+
+  it("prefers the value of a value and type pair that share a name", () => {
+    const constAndType = "export const Seam = 1;\nexport type Seam = typeof Seam;\n";
+    assert.strictEqual(textOf("a.ts", constAndType, { symbol: "Seam" }), "export const Seam = 1;");
+    const typeFirst = "export interface Seam {}\nexport const Seam = 1;\n";
+    assert.strictEqual(textOf("a.ts", typeFirst, { symbol: "Seam" }), "export const Seam = 1;");
   });
 
   it("treats overloaded declarations as Ambiguous", () => {
@@ -198,6 +206,20 @@ describe("locateRegion anchors", () => {
       _tag: "Ambiguous",
       matches: 2,
     });
+  });
+
+  it("extends a YAML key over a block sequence written at the key's own indent", () => {
+    const matrix = (second: string) =>
+      ["strategy:", "  os:", "  - linux", `  - ${second}`, "  name: x", ""].join("\n");
+    const anchor = { key: "strategy.os" } as const;
+    assert.strictEqual(
+      textOf("ci.yml", matrix("windows"), anchor),
+      "  os:\n  - linux\n  - windows",
+    );
+    assert.notStrictEqual(
+      fingerprintOf(textOf("ci.yml", matrix("windows"), anchor)),
+      fingerprintOf(textOf("ci.yml", matrix("macos"), anchor)),
+    );
   });
 
   it("returns the whole text for a file anchor", () => {
@@ -365,11 +387,14 @@ describe("upsertSyncEntry", () => {
 // Hooks export GIT_DIR and GIT_INDEX_FILE, and user config can sign or ignore
 // fixture files. Git on Windows cannot open os.devNull as a config path, so
 // isolation uses a real empty file.
-const emptyGitConfig = NodePath.join(
-  NodeFS.realpathSync(NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-seam-env-"))),
-  "empty-git-config",
+const emptyGitConfigDir = NodeFS.realpathSync(
+  NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-seam-env-")),
 );
+const emptyGitConfig = NodePath.join(emptyGitConfigDir, "empty-git-config");
 NodeFS.writeFileSync(emptyGitConfig, "");
+afterAll(() => {
+  NodeFS.rmSync(emptyGitConfigDir, { recursive: true, force: true });
+});
 const fixtureConfig = {
   "core.excludesFile": emptyGitConfig,
   "user.name": "Fixture",
@@ -394,7 +419,7 @@ const env = {
 // files, deletes one, and adds a ++ file.
 function refreshFixture() {
   const root = NodeFS.realpathSync(NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-seam-")));
-  const write = (file: string, content: string) => {
+  const write = (file: string, content: string | Uint8Array) => {
     const target = NodePath.join(root, file);
     NodeFS.mkdirSync(NodePath.dirname(target), { recursive: true });
     NodeFS.writeFileSync(target, content);
@@ -412,10 +437,12 @@ function refreshFixture() {
     write("b.ts", "export function stays() {\n  return 1;\n}\n");
     write("docs/old.md", "one\ntwo\n");
     write("docs/gone.md", "x\ny\nz\n");
+    write("docs/blob.bin", Uint8Array.of(0, 1, 2));
     const upstreamRef = commitAll("upstream");
     write("a.ts", SOURCE.replace("const first = 1;", "const first = 1;\n  const hook = true;"));
     write("b.ts", "export function stays() {\n  return 2;\n}\n");
     write("docs/old.md", "one\ntwo\nthree\n");
+    write("docs/blob.bin", Uint8Array.of(0, 1, 2, 3));
     git("rm", "-f", "--quiet", "docs/gone.md");
     write("plusplus/seams.json", "{}\n");
     const forkTree = (commitAll("fork"), git("rev-parse", "HEAD^{tree}"));
@@ -481,7 +508,11 @@ describe("refreshRegistry", () => {
             forkTree: project.forkTree,
           }),
         );
-        assert.deepStrictEqual(refreshed.unregistered, ["docs/gone.md", "docs/old.md"]);
+        assert.deepStrictEqual(refreshed.unregistered, [
+          "docs/blob.bin",
+          "docs/gone.md",
+          "docs/old.md",
+        ]);
         assert.deepStrictEqual(refreshed.dropped, ["stale.ts"]);
         assert.strictEqual(refreshed.broken.length, 1);
         assert.include(refreshed.broken[0], "demo.hook (b.ts)");
@@ -519,6 +550,8 @@ describe("refreshRegistry", () => {
           first.unregistered.map((path) => ({ path, delta: first.deltas.get(path) ?? [0, 0] })),
         );
         assert.deepStrictEqual(completed.files["docs/gone.md"], { delta: [0, 3], legacy: true });
+        // numstat reports a binary change without line counts.
+        assert.deepStrictEqual(completed.files["docs/blob.bin"], { delta: [0, 0], legacy: true });
         assert.deepStrictEqual(completed.files["docs/old.md"], { delta: [1, 0], legacy: true });
         assert.deepStrictEqual(completed.files["b.ts"], { delta: [1, 1], legacy: true });
         assert.deepStrictEqual(validateSeamRegistry(completed), []);

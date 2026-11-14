@@ -85,17 +85,17 @@
     ".github/scripts/relay-state-output.test.cjs": {
       "delta": [0, 76],
       "legacy": true,
-      "reason": "These three preview tests assert on upstream release.yml steps that the fork's release seam does not provide; they cannot pass without out-of-scope release changes. They stay deleted until B13 reconciles the release seam. The scripts and workflows they cover are restored."
+      "reason": "These three preview tests assert on upstream release.yml steps that the fork's release seam does not provide; they cannot pass without out-of-scope release changes. They stay deleted until the release seam is reconciled (#93). The scripts and workflows they cover are restored."
     },
     ".github/scripts/stage-preview-bundle.test.py": {
       "delta": [0, 97],
       "legacy": true,
-      "reason": "These three preview tests assert on upstream release.yml steps that the fork's release seam does not provide; they cannot pass without out-of-scope release changes. They stay deleted until B13 reconciles the release seam. The scripts and workflows they cover are restored."
+      "reason": "These three preview tests assert on upstream release.yml steps that the fork's release seam does not provide; they cannot pass without out-of-scope release changes. They stay deleted until the release seam is reconciled (#93). The scripts and workflows they cover are restored."
     },
     ".github/scripts/vercel-deployment-output.test.cjs": {
       "delta": [0, 87],
       "legacy": true,
-      "reason": "These three preview tests assert on upstream release.yml steps that the fork's release seam does not provide; they cannot pass without out-of-scope release changes. They stay deleted until B13 reconciles the release seam. The scripts and workflows they cover are restored."
+      "reason": "These three preview tests assert on upstream release.yml steps that the fork's release seam does not provide; they cannot pass without out-of-scope release changes. They stay deleted until the release seam is reconciled (#93). The scripts and workflows they cover are restored."
     },
     ".github/workflows/agent-context-budget.yml": {
       "delta": [8, 2],
@@ -186,27 +186,27 @@
     ".macroscope/approvability.md": {
       "delta": [0, 7],
       "legacy": true,
-      "reason": "Upstream-internal macroscope review agent configuration was dropped from the fork; fork CI does not run macroscope. Deletions are intentional; the test-signal eval suite they referenced is restored by A2."
+      "reason": "Upstream-internal macroscope review agent configuration was dropped from the fork; fork CI does not run macroscope. Deletions are intentional."
     },
     ".macroscope/check-run-agents/effect-service-conventions.md": {
       "delta": [0, 89],
       "legacy": true,
-      "reason": "Upstream-internal macroscope review agent configuration was dropped from the fork; fork CI does not run macroscope. Deletions are intentional; the test-signal eval suite they referenced is restored by A2."
+      "reason": "Upstream-internal macroscope review agent configuration was dropped from the fork; fork CI does not run macroscope. Deletions are intentional."
     },
     ".macroscope/check-run-agents/test-signal.md": {
       "delta": [0, 27],
       "legacy": true,
-      "reason": "Upstream-internal macroscope review agent configuration was dropped from the fork; fork CI does not run macroscope. Deletions are intentional; the test-signal eval suite they referenced is restored by A2."
+      "reason": "Upstream-internal macroscope review agent configuration was dropped from the fork; fork CI does not run macroscope. Deletions are intentional."
     },
     ".macroscope/check-run-agents/ui-consistency.md": {
       "delta": [0, 59],
       "legacy": true,
-      "reason": "Upstream-internal macroscope review agent configuration was dropped from the fork; fork CI does not run macroscope. Deletions are intentional; the test-signal eval suite they referenced is restored by A2."
+      "reason": "Upstream-internal macroscope review agent configuration was dropped from the fork; fork CI does not run macroscope. Deletions are intentional."
     },
     ".macroscope/ignore.md": {
       "delta": [0, 281],
       "legacy": true,
-      "reason": "Upstream-internal macroscope review agent configuration was dropped from the fork; fork CI does not run macroscope. Deletions are intentional; the test-signal eval suite they referenced is restored by A2."
+      "reason": "Upstream-internal macroscope review agent configuration was dropped from the fork; fork CI does not run macroscope. Deletions are intentional."
     },
     "AGENTS.md": {
       "delta": [8, 5],
@@ -231,7 +231,7 @@
     "apps/desktop/resources/linux/com.t3tools.t3code.metainfo.xml": {
       "delta": [0, 32],
       "legacy": true,
-      "reason": "The Linux metainfo file is renamed to the fork's app id (com.t3tools.t3code.plusplus). A2 must not restore the upstream path; A5 and A7 must treat the fork path as the seam, not the upstream one."
+      "reason": "The Linux metainfo file is renamed to the fork's app id (com.t3tools.t3code.plusplus). The upstream path must not be restored; the fork path is the seam, not the upstream one."
     },
     "apps/desktop/scripts/electron-launcher.test.mjs": {
       "delta": [17, 12],
@@ -1031,7 +1031,7 @@
       "legacy": true
     },
     "docs/operations/release.md": {
-      "delta": [458, 673],
+      "delta": [462, 673],
       "legacy": true
     },
     "docs/user/faq.md": {
@@ -1146,7 +1146,7 @@
           "anchor": {
             "text": "export const ServerSettings = Schema.Struct({"
           },
-          "reason": "The only ++ contract data dual-written next to the typed plusplus sidecar carrier are the four released legacy seam groups: SEAM-185 contextBridge on ServerSettings and its patch, SEAM-181 startedAt on PendingBackgroundTask, SEAM-182 monetaryUsage on ServerProviderUsageLimits, and SEAM-183 usageAccounts on ServerProvider. Released clients and stored payloads read those fields directly, so writers keep emitting them while sidecar-first reads prefer the typed carrier. All future ++ data must be sidecar-only; no new direct ++ fields may be added to upstream structs.",
+          "reason": "The context bridge schemas are declared directly above ServerSettings, so an upstream edit to that struct's opening line can collide with them.",
           "fingerprint": "sha256:b1321902ef3c2298"
         },
         {
@@ -1156,7 +1156,7 @@
           "anchor": {
             "symbol": "ServerSettings.worktreesDirectory"
           },
-          "reason": "The only ++ contract data dual-written next to the typed plusplus sidecar carrier are the four released legacy seam groups: SEAM-185 contextBridge on ServerSettings and its patch, SEAM-181 startedAt on PendingBackgroundTask, SEAM-182 monetaryUsage on ServerProviderUsageLimits, and SEAM-183 usageAccounts on ServerProvider. Released clients and stored payloads read those fields directly, so writers keep emitting them while sidecar-first reads prefer the typed carrier. All future ++ data must be sidecar-only; no new direct ++ fields may be added to upstream structs.",
+          "reason": "The contextBridge field on ServerSettings sits next to worktreesDirectory.",
           "fingerprint": "sha256:8bb847a2a45d73ba"
         },
         {
@@ -1166,7 +1166,7 @@
           "anchor": {
             "symbol": "ServerSettingsPatch.worktreesDirectory"
           },
-          "reason": "The only ++ contract data dual-written next to the typed plusplus sidecar carrier are the four released legacy seam groups: SEAM-185 contextBridge on ServerSettings and its patch, SEAM-181 startedAt on PendingBackgroundTask, SEAM-182 monetaryUsage on ServerProviderUsageLimits, and SEAM-183 usageAccounts on ServerProvider. Released clients and stored payloads read those fields directly, so writers keep emitting them while sidecar-first reads prefer the typed carrier. All future ++ data must be sidecar-only; no new direct ++ fields may be added to upstream structs.",
+          "reason": "The contextBridge entry on ServerSettingsPatch sits next to worktreesDirectory.",
           "fingerprint": "sha256:77679feeb0f49e57"
         },
         {
@@ -1614,12 +1614,12 @@
     "scripts/notify-discord-release.test.ts": {
       "delta": [0, 500],
       "legacy": true,
-      "reason": "Discord release notifications post to pingdotgg's Discord webhook, which the fork does not hold. Deletions are intentional; the rest of the upstream npm/release pipeline is restored by A2 under fork ownership."
+      "reason": "Discord release notifications post to pingdotgg's Discord webhook, which the fork does not hold. Deletions are intentional."
     },
     "scripts/notify-discord-release.ts": {
       "delta": [0, 408],
       "legacy": true,
-      "reason": "Discord release notifications post to pingdotgg's Discord webhook, which the fork does not hold. Deletions are intentional; the rest of the upstream npm/release pipeline is restored by A2 under fork ownership."
+      "reason": "Discord release notifications post to pingdotgg's Discord webhook, which the fork does not hold. Deletions are intentional."
     },
     "scripts/release-smoke.ts": {
       "delta": [405, 339],

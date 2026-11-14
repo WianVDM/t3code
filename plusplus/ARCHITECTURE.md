@@ -87,6 +87,7 @@ JSON so workflow `.cjs` scripts and TS tools read it without a build. One schema
 ```
 
 - `delta` is `[added, removed]` from `git diff --numstat <upstreamRef> HEAD -- <path>`: the fork's whole footprint in that file.
+- A binary file has no line counts in numstat and records `[0, 0]`.
 - `legacy: true` entries carry only `delta`. The bootstrap writes one per upstream file the fork already changes (324 modified and 28 deleted today) and they convert to anchored seams feature by feature.
 - `swap` seams add `"target": "<++ module>"`; their anchor is `{ "file": true }`.
 
@@ -94,27 +95,27 @@ JSON so workflow `.cjs` scripts and TS tools read it without a build. One schema
 
 The fingerprint covers only the upstream region the hook depends on, so unrelated upstream edits elsewhere in the file do not flag it. It is computed from upstream's text at `upstreamRef`, never from the fork's file.
 
-| Anchor            | Region located at a given upstream commit                                                                                                                                                                                                                     |
-| :---------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `symbol`          | TS/TSX parsed with the repo's TypeScript. Dotted name (`UsageOverview`, `Foo.bar`) resolves a top-level declaration, then members. Region = the declaration's text without leading comments                                                                   |
-| `symbol` + `text` | The one line inside that symbol whose trimmed text contains `text`, plus 2 lines either side. Use this inside large functions and components                                                                                                                  |
-| `text`            | Same, searched in the whole file (Markdown, YAML, shell)                                                                                                                                                                                                      |
-| `key`             | Dotted key path in JSON or YAML (`scripts.knip:check`, `jobs.release`). Region = the serialized JSON value, or for YAML the key line plus its indented block. YAML support covers block mappings only; flow mappings, anchors and aliases locate as `missing` |
-| `file`            | Whole file (swaps, siblings, whole-file seams such as `.github/SECURITY.md`)                                                                                                                                                                                  |
+| Anchor            | Region located at a given upstream commit                                                                                                                                                                                                                                                                                                                                                                                                                |
+| :---------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `symbol`          | TS/TSX parsed with the repo's TypeScript. Dotted name (`UsageOverview`, `Foo.bar`) resolves a top-level declaration, then members. Region = the declaration's text without leading comments. When an `export const X` and an `export type X` share the name, the value declaration is the match; two values (overloads) are `ambiguous`                                                                                                                  |
+| `symbol` + `text` | The one line inside that symbol whose trimmed text contains `text`, plus 2 lines either side. Use this inside large functions and components                                                                                                                                                                                                                                                                                                             |
+| `text`            | Same, searched in the whole file (Markdown, YAML, shell)                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `key`             | Dotted key path in JSON or YAML (`scripts.knip:check`, `jobs.release`). Region = the serialized JSON value, or for YAML the key line plus its indented block and any block sequence at the key's own indent. JSON paths split on `.`, so a key that contains a dot cannot be anchored (`missing`), and a duplicated JSON key resolves to its last value. YAML support covers block mappings only; flow mappings, anchors and aliases locate as `missing` |
+| `file`            | Whole file (swaps, siblings, whole-file seams such as `.github/SECURITY.md`)                                                                                                                                                                                                                                                                                                                                                                             |
 
-Normalize (LF endings, trailing whitespace stripped, outer blank lines dropped), hash with SHA-256, store the first 16 hex chars. Not found gives `missing`; more than one match gives `ambiguous`. Both fail the guard and block the sync refresh until the anchor is fixed.
+Normalize (LF endings, trailing whitespace stripped, outer blank lines dropped), hash with SHA-256, store the first 16 hex chars. Not found gives `missing`; more than one match gives `ambiguous`. Both fail `node scripts/seamRegistry.ts check` and block the sync refresh until the anchor is fixed. The planned guard (#39) will fail them in CI too.
 
 ## Per-merge report
 
 `scripts/upstream-sync.ts` builds it for any upstream ref U: in the daily dry run (job summary and artifact) and in the sync PR hotspot comment. Grouped by ++ feature, each seam and sibling shows its state (`same`, `changed`, `missing`, `ambiguous`, `file-deleted`, comparing the region at `upstreamRef` with U), whether `git merge-tree` reports a conflict on its path, and for `changed`, upstream's diff of that region with the prompt "adapt ++ or drop the ++ change".
 
-Then: legacy files U touches (by path, with conflict flag), conflict paths and hunks outside the registry, and fork deltas with no entry (should be none). The dry run is report-only: drift is information, and it fails only when the report cannot be computed.
+Then: legacy files U touches (by path, with conflict flag), conflict paths and hunks outside the registry, and fork deltas with no entry (should be none). The dry run is report-only: drift is information, and it fails only when the report cannot be computed. A registry refresh that would fail in `verify` (a lost anchor, an unregistered fork delta) is listed under its own heading and does not stop the test lanes.
 
-After the sync PR resolves conflicts, `node scripts/upstream-sync.ts finish` sets `upstreamRef` to the merged commit, recomputes every fingerprint and delta, and appends paths, hunks and affected features to `plusplus/sync-history.json`. The `seams.json` diff in the sync PR is the record of what was adapted or dropped.
+After the sync PR resolves conflicts, `verify` stages the refresh (and refuses while an anchor or a fork delta cannot be refreshed) and `finish` re-runs it and commits the merge. The refresh sets `upstreamRef` to the merged commit, recomputes every fingerprint and delta, and appends paths, hunks and affected features to `plusplus/sync-history.json`. The `seams.json` diff in the sync PR is the record of what was adapted or dropped.
 
-## PR guard (#39)
+## PR guard (planned in #39)
 
-`scripts/check-fork-boundaries.ts`, CI job `Fork Boundaries`. For each PR except designated upstream-sync PRs (#50):
+Not enforced yet: `scripts/check-fork-boundaries.ts` (CI job `Fork Boundaries`) is advisory and only classifies changed paths against the registry. #39 adds the checks below. For each PR except designated upstream-sync PRs (#50):
 
 1. A changed upstream-owned path with no `files` entry fails.
 2. A file whose numstat delta exceeds its recorded `delta` fails, unless the PR raises the entry.

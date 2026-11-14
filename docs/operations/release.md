@@ -285,8 +285,10 @@ run's colour:
 - **already integrated** and **passed** need nothing until you choose to sync.
 - **conflict** lists the unmerged paths and stages. Recover with the real flow below.
 - **merge verification failed** means the merge was clean but broke an integrity check, such as a
-  leftover conflict marker or a seam anchor the registry can no longer resolve; treat it like a
-  conflict.
+  leftover conflict marker; treat it like a conflict.
+- A **clean** or **passed** run can still carry a **Seam registry refresh** section: an anchor no
+  longer resolves or a fork delta has no registry entry. The lanes still run. The real sync's
+  `verify` refuses until the registry is fixed.
 - **verification failed** means the merged tree failed the Linux or Windows checks.
 - **error** is an infrastructure failure, a missing report, a cancelled lane, a registry that
   cannot be read, or an unexpected state. Reporting fails closed: any of these outranks a passing
@@ -294,7 +296,9 @@ run's colour:
 
 A dry run is reconnaissance, not the sync. It changes no ref, so it cannot land upstream code. Its
 `upstream-sync-dry-run-report` artifact is also what the protected sync PR's hotspot report is
-built from, so keep the schedule running while a sync is planned.
+built from, so keep the schedule running while a sync is planned. The report carries a
+`schemaVersion` (2 today) and the hotspot check rejects any other, so after a schema change run a
+fresh dry run on `main` before opening a sync PR.
 
 ### Sync runbook
 

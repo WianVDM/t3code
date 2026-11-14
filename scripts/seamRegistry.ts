@@ -1,9 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off - hashes with node:crypto and reports CLI failures through process.exitCode.
-// The ++ seam registry (plusplus/seams.json): schemas, validation, anchor
-// location, fingerprints, and the refresh shared by bootstrap and the sync
-// flow. Rules live in plusplus/ARCHITECTURE.md. Anchors are only ever
-// evaluated against upstream commits, never the fork tree.
-// Local: `node scripts/seamRegistry.ts check` or `bootstrap [--upstream-ref <sha>]`.
+// ++ seam registry (plusplus/seams.json): schema, anchor location, fingerprints and the
+// refresh shared by bootstrap and the sync flow. Rules: plusplus/ARCHITECTURE.md.
+// CLI: `node scripts/seamRegistry.ts check | bootstrap [--upstream-ref <sha>]`.
 import * as NodeCrypto from "node:crypto";
 
 import ts from "typescript-legacy";
@@ -29,6 +27,7 @@ const STRUCTURED_KEY_EXTENSION = /\.(json|ya?ml)$/;
 const CONTEXT_LINES = 2;
 const JSON_PRINT_WIDTH = 80;
 const FINGERPRINT_HEX_LENGTH = 16;
+const BINARY_NUMSTAT = "-";
 
 const Sha = Schema.String.check(Schema.isPattern(/^[0-9a-f]{40}$/));
 const Fingerprint = Schema.String.check(Schema.isPattern(/^sha256:[0-9a-f]{16}$/));
@@ -328,9 +327,18 @@ function memberScope(member: ts.Node): ts.Node | undefined {
   return member;
 }
 
+const isTypeOnlyDeclaration = (declaration: Declaration): boolean =>
+  ts.isInterfaceDeclaration(declaration.region) || ts.isTypeAliasDeclaration(declaration.region);
+
+// `export const X` beside `export type X` is one symbol; the value is what the fork hooks.
+function preferValueDeclaration(candidates: Array<Declaration>): Array<Declaration> {
+  const values = candidates.filter((candidate) => !isTypeOnlyDeclaration(candidate));
+  return values.length === 1 ? values : candidates;
+}
+
 function resolveSymbol(source: ts.SourceFile, symbol: string): Array<Declaration> {
   const [first = "", ...rest] = symbol.split(".");
-  let candidates = topLevelDeclarations(source, first);
+  let candidates = preferValueDeclaration(topLevelDeclarations(source, first));
   for (const segment of rest) {
     candidates = candidates.flatMap((candidate) =>
       membersOf(candidate.scope)
@@ -392,6 +400,12 @@ const isYamlContent = (line: string): boolean => {
 
 const indentOf = (line: string): number => line.length - line.trimStart().length;
 
+// A block sequence may sit at the same indent as the key that owns it.
+const continuesYamlRegion = (line: string, keyIndent: number): boolean =>
+  !isYamlContent(line) ||
+  indentOf(line) > keyIndent ||
+  (indentOf(line) === keyIndent && /^-(\s|$)/.test(line.trim()));
+
 function yamlKeyOf(line: string): { indent: number; key: string } | undefined {
   const match = YAML_KEY_PATTERN.exec(line);
   if (match === null) return undefined;
@@ -417,7 +431,7 @@ function locateYamlKey(source: string, dottedKey: string): RegionLookup {
     if (hit === undefined) return MISSING;
     if (hits.length > 1) return { _tag: "Ambiguous", matches: hits.length };
     let end = hit + 1;
-    while (end < to && (!isYamlContent(lines[end]!) || indentOf(lines[end]!) > childIndent)) end++;
+    while (end < to && continuesYamlRegion(lines[end]!, childIndent)) end++;
     while (end > hit + 1 && !isYamlContent(lines[end - 1]!)) end--;
     region = lines.slice(hit, end);
     from = hit + 1;
@@ -438,7 +452,9 @@ export function locateRegion(path: string, source: string, anchor: SeamAnchor): 
   return lineWindow(source, anchor.text);
 }
 
-const collectStreamAsString = <E>(stream: Stream.Stream<Uint8Array, E>): Effect.Effect<string, E> =>
+export const collectStreamAsString = <E>(
+  stream: Stream.Stream<Uint8Array, E>,
+): Effect.Effect<string, E> =>
   stream.pipe(
     Stream.decodeText(),
     Stream.runFold(
@@ -537,11 +553,15 @@ export const forkDeltas = Effect.fn("seamRegistry.forkDeltas")(function* (
   for (const record of parseNullSeparated(output)) {
     const [added, removed, ...pathParts] = record.split("\t");
     const path = pathParts.join("\t");
+    if (added === BINARY_NUMSTAT && removed === BINARY_NUMSTAT) {
+      deltas.set(path, [0, 0]);
+      continue;
+    }
     const addedCount = Number(added);
     const removedCount = Number(removed);
     if (!Number.isInteger(addedCount) || !Number.isInteger(removedCount)) {
       return yield* new SeamRegistryError({
-        message: `${path}: binary fork delta cannot be recorded (numstat ${added}/${removed})`,
+        message: `${path}: unreadable fork delta (numstat ${added}/${removed})`,
       });
     }
     deltas.set(path, [addedCount, removedCount]);
@@ -564,20 +584,23 @@ export interface RefreshResult {
   readonly deltas: ReadonlyMap<string, Delta>;
 }
 
-const describeAnchor = (anchor: SeamAnchor): string => JSON.stringify(anchor);
+const seamLabel = (path: string, seam: Seam): string =>
+  `${seam.id} (${path}) ${JSON.stringify(seam.anchor)}`;
 
 function refreshSeam(
   path: string,
-  source: Option.Option<string>,
+  source: string,
   seam: Seam,
 ): { seam: Seam; broken: string | undefined } {
-  const label = `${seam.id} (${path}) ${describeAnchor(seam.anchor)}`;
-  if (Option.isNone(source))
-    return { seam, broken: `${label}: file is absent at the upstream ref` };
-  const lookup = locateRegion(path, source.value, seam.anchor);
-  if (lookup._tag === "Missing") return { seam, broken: `${label}: anchor is missing` };
+  const lookup = locateRegion(path, source, seam.anchor);
+  if (lookup._tag === "Missing") {
+    return { seam, broken: `${seamLabel(path, seam)}: anchor is missing` };
+  }
   if (lookup._tag === "Ambiguous") {
-    return { seam, broken: `${label}: anchor is ambiguous (${lookup.matches} matches)` };
+    return {
+      seam,
+      broken: `${seamLabel(path, seam)}: anchor is ambiguous (${lookup.matches} matches)`,
+    };
   }
   return { seam: { ...seam, fingerprint: fingerprintOf(lookup.text) }, broken: undefined };
 }
@@ -585,27 +608,17 @@ function refreshSeam(
 const sortedRecord = <T>(record: Record<string, T>): Record<string, T> =>
   Object.fromEntries(Object.entries(record).sort(([a], [b]) => compareText(a, b)));
 
-const refreshEntry = Effect.fn("seamRegistry.refreshEntry")(function* (
-  input: RefreshInput,
-  path: string,
-  entry: RegistryFile,
-  delta: Delta,
-) {
-  if ("legacy" in entry) return { entry: { ...entry, delta }, broken: [] as Array<string> };
-  const source = yield* readFileAt(input.cwd, input.upstreamRef, path);
-  const [first, ...rest] = entry.seams;
+function refreshSeams(path: string, source: string, seams: readonly [Seam, ...Array<Seam>]) {
+  const [first, ...rest] = seams;
   const head = refreshSeam(path, source, first);
   const tail = rest.map((seam) => refreshSeam(path, source, seam));
   return {
-    entry: {
-      delta,
-      seams: [head.seam, ...tail.map((result) => result.seam)] satisfies [Seam, ...Seam[]],
-    },
+    seams: [head.seam, ...tail.map((result) => result.seam)] satisfies [Seam, ...Seam[]],
     broken: [head, ...tail].flatMap((result) =>
       result.broken === undefined ? [] : [result.broken],
     ),
   };
-});
+}
 
 const refreshSibling = Effect.fn("seamRegistry.refreshSibling")(function* (
   input: RefreshInput,
@@ -630,12 +643,28 @@ export const refreshRegistry = Effect.fn("seamRegistry.refreshRegistry")(functio
   const broken: Array<string> = [];
   for (const [path, entry] of Object.entries(input.registry.files)) {
     const delta = deltas.get(path);
+    if ("legacy" in entry) {
+      if (delta === undefined) dropped.push(path);
+      else files[path] = { ...entry, delta };
+      continue;
+    }
+    // Checked before the delta: a file upstream deleted has no delta, and dropping its
+    // seams silently would hide that they lost their anchor.
+    const source = yield* readFileAt(input.cwd, input.upstreamRef, path);
+    if (Option.isNone(source)) {
+      broken.push(
+        ...entry.seams.map(
+          (seam) => `${seamLabel(path, seam)}: file is absent at the upstream ref; remove the seam`,
+        ),
+      );
+      continue;
+    }
     if (delta === undefined) {
       dropped.push(path);
       continue;
     }
-    const refreshed = yield* refreshEntry(input, path, entry, delta);
-    files[path] = refreshed.entry;
+    const refreshed = refreshSeams(path, source.value, entry.seams);
+    files[path] = { delta, seams: refreshed.seams };
     broken.push(...refreshed.broken);
   }
   const siblings: Array<Sibling> = [];
