@@ -1,0 +1,37 @@
+name: PR Ownership Labels
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, ready_for_review]
+
+permissions:
+  contents: read
+
+jobs:
+  label:
+    name: Label PR ownership hotspots
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pull-requests: write
+    concurrency:
+      group: pr-ownership-label-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    steps:
+      # This pull_request_target job holds a write token, so it checks out and
+      # executes the base branch only. The PR head is fetched by the script as
+      # passive git objects for diffing; nothing from the head tree is installed,
+      # required, or run. Never add dependency installs, builds, composite actions
+      # from the head ref, or head-controlled script paths here. Label definitions
+      # are owned by issue-labels.yml; this job only attaches and detaches labels.
+      - name: Checkout base repository
+        uses: actions/checkout@v4
+      - name: Test ownership classifier
+        run: node --test .github/scripts/pr-ownership-label.test.cjs
+      - name: Apply ownership labels
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: node .github/scripts/pr-ownership-label.cjs
