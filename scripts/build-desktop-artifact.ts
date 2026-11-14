@@ -2697,9 +2697,8 @@ export function resolveDesktopRuntimeDependencies(
 }
 
 // The fork owns update-feed resolution: fork and ++ builds always publish to the fork and never
-// read GITHUB_REPOSITORY, while an official build only inherits a valid one. Re-exported under
-// the long-standing name for existing callers.
-export { resolveForkGitHubPublishConfig as resolveGitHubPublishConfig };
+// read GITHUB_REPOSITORY, while an official build only inherits a valid one.
+export { resolveForkGitHubPublishConfig };
 
 export function resolveDesktopUpdateChannel(version: string): "latest" | "nightly" {
   return /-nightly\.\d{8}\.\d+$/.test(version) ? "nightly" : "latest";

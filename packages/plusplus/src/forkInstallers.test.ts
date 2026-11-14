@@ -111,6 +111,18 @@ describe.skipIf(process.platform !== "linux")("installer fork source guard", () 
   });
 });
 
+describe("installer source guidance", () => {
+  it("points unsupported-platform guidance at the fork releases page, never the upstream site", async () => {
+    const sh = await NodeFSP.readFile(NodePath.join(SCRIPTS_DIR, "install.sh"), "utf8");
+    const ps1 = await NodeFSP.readFile(NodePath.join(SCRIPTS_DIR, "install.ps1"), "utf8");
+    for (const source of [sh, ps1]) {
+      expect(source).not.toContain("t3.codes");
+      expect(source).not.toContain("npm install -g");
+    }
+    expect(sh).toContain("use the desktop app from https://github.com/${repo}/releases");
+  });
+});
+
 const powerShell = ["pwsh", "powershell"].find(
   (command) =>
     NodeChildProcess.spawnSync(command, ["-NoProfile", "-Command", "exit 0"]).status === 0,

@@ -93,6 +93,8 @@ function forkGitHubPublishConfig(
   };
 }
 
+// The variant union mirrors DesktopBuildVariant in scripts/lib/desktop-variant.ts, which
+// packages/plusplus cannot import (scripts is a separate package that depends on shared, not ++).
 export const resolveForkGitHubPublishConfig = Effect.fn("resolveForkGitHubPublishConfig")(
   function* (
     updateChannel: "latest" | "nightly",
