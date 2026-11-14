@@ -1,0 +1,46 @@
+name: Issue Traceability
+
+on:
+  pull_request_target:
+    types: [opened, edited, reopened, synchronize, ready_for_review]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Check PR issue traceability
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+    concurrency:
+      group: issue-traceability-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    steps:
+      # This pull_request_target job checks out and executes the base branch
+      # only, with a read-only token. Validation is metadata-only: the script
+      # reads the PR body and referenced issues through the GitHub API and
+      # never fetches, installs, or runs anything from the PR head. Never add
+      # dependency installs, builds, composite actions from the head ref, or
+      # head-controlled script paths here.
+      #
+      # The check is advisory while #43 bootstraps, so the governance stack
+      # can land without circular blocking. B12 enforcement milestone: after
+      # the validation and open-PR handling recorded in #43, set the
+      # ISSUE_TRACEABILITY_ENFORCED repository variable (Settings -> Actions
+      # -> Variables) to "true" and add "Check PR issue traceability" to the
+      # required status checks. No workflow or script change is needed; the
+      # variable is maintainer-controlled and defaults to advisory when unset.
+      - name: Checkout base repository
+        uses: actions/checkout@v4
+      - name: Test traceability check
+        run: node --test .github/scripts/check-issue-traceability.test.cjs
+      - name: Validate issue traceability
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          EVENT_ACTION: ${{ github.event.action }}
+          ENFORCE: ${{ vars.ISSUE_TRACEABILITY_ENFORCED || 'false' }}
+        run: node .github/scripts/check-issue-traceability.cjs
