@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Upstream release tag to rehearse, e.g. v1.2.3. Strict vX.Y.Z only: no branches, SHAs, prereleases, or 'latest'."
+        description: "Upstream tag to rehearse: vX.Y.Z or vX.Y.Z-nightly.YYYYMMDD.N. No branches, SHAs, other prereleases, or 'latest'."
         type: string
         required: true
   schedule:
@@ -43,7 +43,7 @@ jobs:
       merge_tree: ${{ steps.dry_run.outputs.merge_tree }}
       windows_packages: ${{ steps.dry_run.outputs.windows_packages }}
     steps:
-      - name: Require the default branch and a strict tag
+      - name: Require the default branch and a supported tag
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
@@ -53,10 +53,10 @@ jobs:
           fi
           if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
             # Env-carried, never shell-interpolated: rejects branches, SHAs,
-            # prereleases, ref syntax, whitespace, newlines, option-like values,
-            # and "latest".
-            if ! [[ "$REQUESTED_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
-              echo "::error::tag must be a strict upstream release tag vX.Y.Z." >&2
+            # other prereleases, ref syntax, whitespace, newlines, option-like
+            # values, and "latest". The CLI also validates the calendar date.
+            if ! [[ "$REQUESTED_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-nightly\.(19|20)[0-9]{2}(0[1-9]|1[0-2])(0[1-9]|[12][0-9]|3[01])\.(0|[1-9][0-9]*))?$ ]]; then
+              echo "::error::tag must be vX.Y.Z or vX.Y.Z-nightly.YYYYMMDD.N." >&2
               exit 1
             fi
           fi
@@ -127,7 +127,7 @@ jobs:
             echo "::error::a clean merge must supply tag, base SHA, upstream SHA, and merge tree." >&2
             exit 1
           fi
-          if ! [[ "$DRY_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+          if ! [[ "$DRY_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-nightly\.(19|20)[0-9]{2}(0[1-9]|1[0-2])(0[1-9]|[12][0-9]|3[01])\.(0|[1-9][0-9]*))?$ ]]; then
             echo "::error::the merge job supplied a malformed tag." >&2
             exit 1
           fi

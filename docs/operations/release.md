@@ -269,14 +269,15 @@ does the result pass our checks?" without touching anything. It runs on a schedu
 can be dispatched by hand from the default branch.
 
 - **Scheduled** runs pick the greatest strict stable upstream tag (`vX.Y.Z`) themselves.
-- **Manual** runs take one `tag`, which must be a strict `vX.Y.Z`: branches, SHAs, prereleases,
+- **Manual** runs take one `tag`: either a strict `vX.Y.Z` or a nightly
+  `vX.Y.Z-nightly.YYYYMMDD.N` with a valid calendar date. Branches, SHAs, other prereleases,
   `latest`, and anything option-like are rejected. A manual tag never falls back to the newest.
 
 The merge job fetches the fork base and the tag into a disposable `refs/upstream-sync/` ref, merges
 on a detached HEAD with hooks disabled, and runs the same integrity checks the real sync uses. It
 never creates a branch, moves a tag, pushes, opens a PR, or holds a secret or write token. A clean
 merge is then replayed from scratch and verified twice: `check:changed` against the base on Linux,
-and the full seven-package Windows distribution lane. The lanes are independent, so one failing
+and the full eight-package Windows distribution lane. The lanes are independent, so one failing
 cannot hide the other.
 
 Read the result from the run's job summary and the `upstream-sync-dry-run-final` artifact. The

@@ -25,7 +25,11 @@ const TAG_REF_PREFIX = "refs/tags/";
 // Namespaced so a same-named fork tag is never clobbered by the upstream release.
 const UPSTREAM_RELEASE_REF_PREFIX = "refs/upstream-sync/";
 const UPSTREAM_TAG_PATTERN = /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
+const NIGHTLY_TAG_PATTERN =
+  /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)-nightly\.((?:19|20)\d{2})(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])\.(0|[1-9]\d*)$/;
 const FORK_SEQUENCE_PATTERN = /^(0|[1-9]\d*)$/;
+const DEFAULT_BASE_REF = "origin/main";
+const MONTH_LENGTHS = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31] as const;
 // Only the schedule may ask for it; a dispatched tag must stay strict.
 const LATEST_TAG_KEYWORD = "latest";
 const FULL_OBJECT_SHA_PATTERN = /^[0-9a-f]{40}$/;
@@ -128,6 +132,21 @@ export interface UpstreamSyncOptions {
 
 export function parseUpstreamTag(tag: string): string | undefined {
   return UPSTREAM_TAG_PATTERN.test(tag) ? tag.slice(1) : undefined;
+}
+
+export type UpstreamTagKind = "stable" | "nightly";
+
+// Nightly tags are valid for disposable dry runs; maintainer phases stay stable-only.
+export function parseUpstreamTagKind(tag: string): UpstreamTagKind | undefined {
+  if (UPSTREAM_TAG_PATTERN.test(tag)) return "stable";
+  const match = NIGHTLY_TAG_PATTERN.exec(tag);
+  if (match === null) return undefined;
+  const year = Number(match[4]);
+  const month = Number(match[5]);
+  const day = Number(match[6]);
+  const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const daysInMonth = month === 2 && leapYear ? 29 : MONTH_LENGTHS[month - 1]!;
+  return day <= daysInMonth ? "nightly" : undefined;
 }
 
 export function parseGitHubRepository(remote: string): string | undefined {
@@ -307,7 +326,11 @@ export function renderDryRunSummary(report: DryRunReport, detail: string | null)
     "",
     "Linux and Windows lane states are appended by the report job.",
   );
-  if (report.status === "conflict" && report.tag !== null) {
+  if (
+    report.status === "conflict" &&
+    report.tag !== null &&
+    parseUpstreamTagKind(report.tag) === "stable"
+  ) {
     lines.push(
       "",
       "## Conflict recovery",
@@ -905,6 +928,7 @@ export const nextUpstreamForkTag = Effect.fn("upstream-sync.nextTag")(function* 
 export interface DryRunOptions {
   readonly tag: string;
   readonly cwd: string;
+  readonly baseRef?: string | undefined;
   readonly reportPath?: string | undefined;
   readonly summaryPath?: string | undefined;
   readonly githubOutput: boolean;
@@ -1086,9 +1110,13 @@ const performDryRun = Effect.fn("upstream-sync.performDryRun")(function* (
   draft: DryRunDraft,
 ) {
   // Validate the requested form before touching the repository.
-  if (options.tag !== LATEST_TAG_KEYWORD && parseUpstreamTag(options.tag) === undefined) {
+  const baseRef = options.baseRef ?? DEFAULT_BASE_REF;
+  if (baseRef.startsWith("-")) {
+    return yield* new UpstreamSyncError({ message: "The base ref must not start with '-'." });
+  }
+  if (options.tag !== LATEST_TAG_KEYWORD && parseUpstreamTagKind(options.tag) === undefined) {
     return yield* new UpstreamSyncError({
-      message: `Invalid upstream tag ${jsonText(options.tag)}. Expected vX.Y.Z or "${LATEST_TAG_KEYWORD}".`,
+      message: `Invalid upstream tag ${jsonText(options.tag)}. Expected vX.Y.Z, vX.Y.Z-nightly.YYYYMMDD.N, or "${LATEST_TAG_KEYWORD}".`,
     });
   }
 
@@ -1100,7 +1128,7 @@ const performDryRun = Effect.fn("upstream-sync.performDryRun")(function* (
     "origin",
     "+refs/heads/main:refs/remotes/origin/main",
   ]);
-  const baseSha = (yield* git(cwd, ["rev-parse", "--verify", "origin/main^{commit}"])).trim();
+  const baseSha = (yield* git(cwd, ["rev-parse", "--verify", `${baseRef}^{commit}`])).trim();
   draft.baseSha = baseSha;
   yield* git(cwd, ["switch", "--detach", baseSha]);
 
@@ -1167,8 +1195,12 @@ const performDryRun = Effect.fn("upstream-sync.performDryRun")(function* (
       yield* git(cwd, ["ls-files", "-u", "-s", "-z", "--"]),
     );
     draft.status = "conflict";
+    const recovery =
+      parseUpstreamTagKind(tag) === "stable"
+        ? `\nResolve through the real sync flow: node scripts/upstream-sync.ts prepare --tag ${tag}`
+        : "";
     return yield* new UpstreamSyncError({
-      message: `Merging ${tag} into the fork base conflicts:\n${indentLines(conflicts)}\nResolve through the real sync flow: node scripts/upstream-sync.ts prepare --tag ${tag}`,
+      message: `Merging ${tag} into the fork base conflicts:\n${indentLines(conflicts)}${recovery}`,
     });
   }
 
@@ -1300,9 +1332,9 @@ export const dryRunUpstreamSync = Effect.fn("upstream-sync.dryRun")(function* (
 export const replayDryRun = Effect.fn("upstream-sync.replayDryRun")(function* (
   options: ReplayDryRunOptions,
 ) {
-  if (parseUpstreamTag(options.tag) === undefined) {
+  if (parseUpstreamTagKind(options.tag) === undefined) {
     return yield* new UpstreamSyncError({
-      message: `Invalid upstream tag ${jsonText(options.tag)}. Expected vX.Y.Z.`,
+      message: `Invalid upstream tag ${jsonText(options.tag)}. Expected vX.Y.Z or vX.Y.Z-nightly.YYYYMMDD.N.`,
     });
   }
   for (const [label, value] of [
@@ -1452,7 +1484,9 @@ const resolveDryRunOutcomeCommand = Effect.fn("upstream-sync.resolveOutcome")(fu
 
 const sharedFlags = {
   tag: Flag.String("tag").pipe(
-    Flag.withDescription('Upstream release tag in vX.Y.Z form; dry-run also accepts "latest".'),
+    Flag.withDescription(
+      'Upstream tag in vX.Y.Z form; dry-run also accepts vX.Y.Z-nightly.YYYYMMDD.N or "latest".',
+    ),
     // Optional at the parser level so resolve-outcome needs no tag; every
     // tag-taking command rejects a missing value with the error below.
     Flag.optional,
@@ -1511,6 +1545,10 @@ export const dryRunCommand = Command.make("dry-run", {
     Flag.withDescription("Append the dry-run values to GITHUB_OUTPUT."),
     Flag.withDefault(false),
   ),
+  baseRef: Flag.String("base-ref").pipe(
+    Flag.withDescription("Base ref the dry run stacks on."),
+    Flag.withDefault(DEFAULT_BASE_REF),
+  ),
 }).pipe(
   Command.withDescription(
     "Merge an upstream tag into the fork base on a detached ref, read-only, and report the outcome.",
@@ -1523,6 +1561,7 @@ export const dryRunCommand = Command.make("dry-run", {
       yield* dryRunUpstreamSync({
         tag,
         cwd: shared.cwd,
+        baseRef: config.baseRef,
         reportPath: Option.getOrUndefined(config.report),
         summaryPath: Option.getOrUndefined(config.summary),
         githubOutput: config.githubOutput,

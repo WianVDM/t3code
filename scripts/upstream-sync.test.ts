@@ -20,6 +20,7 @@ import {
   nextForkTag,
   parseConflictStages,
   parseGitHubRepository,
+  parseUpstreamTagKind,
   prepareUpstreamSync,
   renderDryRunSummary,
   replayDryRun,
@@ -33,6 +34,7 @@ import { decide, readWorkspace } from "../.github/scripts/ci-changes.cjs";
 import type { DryRunOutcomeInput } from "./upstream-sync.ts";
 
 const TAG = "v1.2.3";
+const NIGHTLY_TAG = "v0.1.8-nightly.20261108.4380";
 // Must stay in sync with the private VERIFIED_MERGE_RECORD_NAME in upstream-sync.ts.
 const VERIFIED_MERGE_RECORD_NAME = "upstream-sync.verified.json";
 const ORIGIN_REMOTE = `https://github.com/${EXPECTED_REMOTES.origin}.git`;
@@ -307,6 +309,31 @@ describe("upstream-sync helpers", () => {
       `${TAG}-fork.9007199254740994`,
     );
     assert.throws(() => nextForkTag("1.2.3", []), /Invalid upstream tag/);
+  });
+
+  it("classifies stable and nightly tag grammar with valid calendar dates", () => {
+    assert.equal(parseUpstreamTagKind("v1.2.3"), "stable");
+    assert.equal(parseUpstreamTagKind(NIGHTLY_TAG), "nightly");
+    assert.equal(parseUpstreamTagKind("v10.20.30-nightly.20260101.0"), "nightly");
+    assert.equal(parseUpstreamTagKind("v1.2.3-nightly.20280229.1"), "nightly");
+    assert.equal(parseUpstreamTagKind("v1.2.3-nightly.20000229.1"), "nightly");
+    for (const tag of [
+      "1.2.3",
+      "v1.2",
+      "v1.2.3.4",
+      "v01.2.3",
+      "v1.2.3-rc.1",
+      "v1.2.3-nightly",
+      "v1.2.3-nightly.20261108",
+      "v1.2.3-nightly.2026113.1",
+      "v1.2.3-nightly.20261301.1",
+      "v1.2.3-nightly.20260229.1",
+      "v1.2.3-nightly.19000229.1",
+      "v1.2.3-nightly.20261108.04380",
+      "v1.2.3-nightly.20261108.x",
+    ]) {
+      assert.isUndefined(parseUpstreamTagKind(tag), tag);
+    }
   });
 
   it("parses supported GitHub remotes and rejects other repositories", () => {
@@ -1041,6 +1068,118 @@ it.live("dry-run merges on a detached ref and mutates no branch, tag, or remote"
   ).pipe(Effect.provide(NodeServices.layer)),
 );
 
+it.live("dry-run verifies a nightly merge on the default base without touching the caller", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const fixture = yield* makeRepositoryFixture({ variant: "clean" });
+      const spawner = yield* localFetchSpawner(fixture);
+      const path = yield* Path.Path;
+      const git = fixture.git;
+      const paths = dryRunPaths(fixture, path);
+      const seed = path.join(fixture.root, "seed");
+      yield* runGit(seed, ["tag", NIGHTLY_TAG, fixture.upstreamHead], fixture.env);
+      yield* runGit(
+        seed,
+        ["push", fixture.upstreamLocalUrl, `refs/tags/${NIGHTLY_TAG}`],
+        fixture.env,
+      );
+
+      const refsBefore = yield* localRefsSnapshot(git);
+      const originRefsBefore = yield* git(["ls-remote", fixture.originLocalUrl]);
+      const upstreamRefsBefore = yield* git(["ls-remote", fixture.upstreamLocalUrl]);
+      const report = yield* withSpawner(spawner)(
+        dryRunUpstreamSync({
+          tag: NIGHTLY_TAG,
+          cwd: fixture.cwd,
+          ...paths,
+          githubOutput: false,
+          windowsPackages: [],
+        }),
+      );
+
+      assert.equal(report.status, "clean");
+      assert.equal(report.requestedTag, NIGHTLY_TAG);
+      assert.equal(report.tag, NIGHTLY_TAG);
+      assert.equal(report.baseSha, fixture.forkHead);
+      assert.equal(report.upstreamSha, fixture.upstreamHead);
+      assert.isNotNull(report.mergeCommit);
+      assert.isNotNull(report.tree);
+      assert.deepEqual(yield* localRefsSnapshot(git), refsBefore);
+      assert.equal(yield* git(["ls-remote", fixture.originLocalUrl]), originRefsBefore);
+      assert.equal(yield* git(["ls-remote", fixture.upstreamLocalUrl]), upstreamRefsBefore);
+      assert.equal((yield* git(["tag", "--list", NIGHTLY_TAG])).trim(), "");
+      assert.equal((yield* git(["branch", "--show-current"])).trim(), "");
+      assert.deepEqual(yield* readReportFile(paths.reportPath), report);
+
+      yield* git(["checkout", "--detach", fixture.forkHead]);
+      const replayed = yield* withSpawner(spawner)(
+        replayDryRun({
+          tag: NIGHTLY_TAG,
+          cwd: fixture.cwd,
+          baseSha: fixture.forkHead,
+          upstreamSha: fixture.upstreamHead,
+          expectedTree: report.tree ?? "",
+        }),
+      );
+      assert.equal(replayed.tree, report.tree);
+    }),
+  ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.live("dry-run stacks the merge onto a custom base ref", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const fixture = yield* makeRepositoryFixture({ variant: "clean" });
+      const spawner = yield* localFetchSpawner(fixture);
+      const path = yield* Path.Path;
+      const fs = yield* FileSystem.FileSystem;
+      const git = fixture.git;
+      const paths = dryRunPaths(fixture, path);
+
+      const optionLikeBaseError = yield* Effect.flip(
+        withSpawner(spawner)(
+          dryRunUpstreamSync({
+            tag: TAG,
+            cwd: fixture.cwd,
+            baseRef: "--upload-pack=unexpected",
+            ...paths,
+            githubOutput: false,
+            windowsPackages: [],
+          }),
+        ),
+      );
+      assert.instanceOf(optionLikeBaseError, UpstreamSyncError);
+      assert.match(optionLikeBaseError.message, /base ref must not start/);
+      assert.equal((yield* git(["branch", "--show-current"])).trim(), "main");
+      assert.isNull((yield* readReportFile(paths.reportPath)).baseSha);
+
+      yield* git(["switch", "-c", "stack"]);
+      yield* fs.writeFileString(path.join(fixture.cwd, "stack.txt"), "stack\n");
+      yield* git(["add", "stack.txt"]);
+      yield* git(["commit", "-m", "stack change"]);
+      const stackHead = (yield* git(["rev-parse", "HEAD"])).trim();
+      yield* git(["switch", "main"]);
+      const refsBefore = yield* localRefsSnapshot(git);
+
+      const report = yield* withSpawner(spawner)(
+        dryRunUpstreamSync({
+          tag: TAG,
+          cwd: fixture.cwd,
+          baseRef: "stack",
+          ...paths,
+          githubOutput: false,
+          windowsPackages: [],
+        }),
+      );
+      assert.equal(report.status, "clean");
+      assert.equal(report.baseSha, stackHead);
+      assert.equal((yield* git(["rev-parse", "HEAD"])).trim(), report.mergeCommit);
+      assert.equal((yield* git(["show", "HEAD:stack.txt"])).trim(), "stack");
+      assert.deepEqual(yield* localRefsSnapshot(git), refsBefore);
+    }),
+  ).pipe(Effect.provide(NodeServices.layer)),
+);
+
 it.live("dry-run reports a real conflict with stages and commits nothing", () =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -1188,6 +1327,8 @@ it.live("dry-run rejects an invalid tag and a manual run never falls back to lat
         "1.2.3",
         "v1.2",
         "v1.2.3-rc.1",
+        "v1.2.3-nightly.20260229.1",
+        "v1.2.3-nightly.20261108.04380",
         "refs/tags/v1.2.3",
         "-v1.2.3",
         "v1.2.3\nv9.9.9",
