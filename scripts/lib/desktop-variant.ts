@@ -23,8 +23,6 @@ export const FORK_DESKTOP_BUILD = {
   appId: "com.wianvdm.t3code.fork",
   artifactName: "T3-Code-Fork-${version}-${arch}.${ext}",
   windowsIconIco: BRAND_ASSET_PATHS.forkWindowsIconIco,
-  // A fork build must never default to the official update feed.
-  updateRepository: "WianVDM/t3code",
 } as const;
 
 export function resolveDesktopBuildVariant(value: string | undefined): DesktopBuildVariant {

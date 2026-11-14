@@ -89,22 +89,25 @@ describe("releaseMetadataAtom", () => {
         [
           { tag_name: "v1.5.0-preview.20261012.9" },
           { tag_name: "v1.5.0-nightly.20261012.8" },
-          { tag_name: "v1.4.0", draft: true },
-          { tag_name: "v1.3.0" },
-          { tag_name: "v1.2.0" },
+          { tag_name: "v1.4.0-plusplus.3", draft: true },
+          { tag_name: "v1.3.0-plusplus.2" },
+          { tag_name: "v1.2.0-plusplus.1" },
         ],
       ],
-      metadata: { "1.3.0": metadataAsset("1.3.0", "stable", 12) },
+      metadata: { "1.3.0-plusplus.2": metadataAsset("1.3.0-plusplus.2", "stable", 12) },
     });
 
     const result = await settle("latest");
 
     expect(selected(result)).toEqual({
-      version: "1.3.0",
+      version: "1.3.0-plusplus.2",
       channel: "stable",
       databaseMigration: 12,
     });
-    expect(requestedUrls()).toEqual([cliReleaseIndexPageUrl(1), cliReleaseMetadataUrl("1.3.0")]);
+    expect(requestedUrls()).toEqual([
+      cliReleaseIndexPageUrl(1),
+      cliReleaseMetadataUrl("1.3.0-plusplus.2"),
+    ]);
     expect(requestedUrls().map((url) => new URL(url).hostname)).toEqual([
       "api.github.com",
       "github.com",
@@ -140,18 +143,18 @@ describe("releaseMetadataAtom", () => {
     mockGithub({
       pages: [
         [{ tag_name: "v1.5.0-nightly.20261012.8" }, { tag_name: "v1.5.0-preview.20261012.9" }],
-        [{ tag_name: "v1.3.0" }],
+        [{ tag_name: "v1.3.0-plusplus.2" }],
       ],
-      metadata: { "1.3.0": metadataAsset("1.3.0", "stable") },
+      metadata: { "1.3.0-plusplus.2": metadataAsset("1.3.0-plusplus.2", "stable") },
     });
 
     const result = await settle("latest");
 
-    expect(selected(result)).toEqual({ version: "1.3.0", channel: "stable" });
+    expect(selected(result)).toEqual({ version: "1.3.0-plusplus.2", channel: "stable" });
     expect(requestedUrls()).toEqual([
       cliReleaseIndexPageUrl(1),
       cliReleaseIndexPageUrl(2),
-      cliReleaseMetadataUrl("1.3.0"),
+      cliReleaseMetadataUrl("1.3.0-plusplus.2"),
     ]);
   });
 
@@ -176,15 +179,18 @@ describe("releaseMetadataAtom", () => {
 
   it("never selects a draft release", async () => {
     mockGithub({
-      pages: [[{ tag_name: "v9.9.9", draft: true }, { tag_name: "v1.3.0" }]],
-      metadata: { "1.3.0": metadataAsset("1.3.0", "stable") },
+      pages: [[{ tag_name: "v9.9.9-plusplus.9", draft: true }, { tag_name: "v1.3.0-plusplus.2" }]],
+      metadata: { "1.3.0-plusplus.2": metadataAsset("1.3.0-plusplus.2", "stable") },
     });
 
-    expect(selected(await settle("latest"))).toEqual({ version: "1.3.0", channel: "stable" });
-    expect(requestedUrls()).not.toContain(cliReleaseMetadataUrl("9.9.9"));
+    expect(selected(await settle("latest"))).toEqual({
+      version: "1.3.0-plusplus.2",
+      channel: "stable",
+    });
+    expect(requestedUrls()).not.toContain(cliReleaseMetadataUrl("9.9.9-plusplus.9"));
   });
 
-  it("skips tags that are not plain release versions", async () => {
+  it("skips malformed tags and bare upstream versions for stable", async () => {
     mockGithub({
       pages: [
         [
@@ -192,47 +198,53 @@ describe("releaseMetadataAtom", () => {
           { tag_name: "v1.2" },
           { tag_name: "release-1.2.3" },
           { tag_name: "1.2.3" },
-          { tag_name: "v1.2.3" },
+          { tag_name: "v1.2.4" },
+          { tag_name: "v1.2.3-rc.1" },
+          { tag_name: "v1.2.3-plusplus.4" },
         ],
       ],
-      metadata: { "1.2.3": metadataAsset("1.2.3", "stable", 4) },
+      metadata: { "1.2.3-plusplus.4": metadataAsset("1.2.3-plusplus.4", "stable", 4) },
     });
 
     expect(selected(await settle("latest"))).toEqual({
-      version: "1.2.3",
+      version: "1.2.3-plusplus.4",
       channel: "stable",
       databaseMigration: 4,
     });
+    expect(requestedUrls()).not.toContain(cliReleaseMetadataUrl("1.2.4"));
   });
 
   it("fails closed when the selected release has no metadata asset", async () => {
     mockGithub({
-      pages: [[{ tag_name: "v1.3.0" }, { tag_name: "v1.2.0" }]],
-      metadata: { "1.3.0": 404 },
+      pages: [[{ tag_name: "v1.3.0-plusplus.2" }, { tag_name: "v1.2.0-plusplus.1" }]],
+      metadata: { "1.3.0-plusplus.2": 404 },
     });
 
     const result = await settle("latest");
 
     expect(AsyncResult.isFailure(result)).toBe(true);
-    expect(requestedUrls()).toEqual([cliReleaseIndexPageUrl(1), cliReleaseMetadataUrl("1.3.0")]);
+    expect(requestedUrls()).toEqual([
+      cliReleaseIndexPageUrl(1),
+      cliReleaseMetadataUrl("1.3.0-plusplus.2"),
+    ]);
   });
 
   it("fails closed when the selected metadata is malformed", async () => {
     mockGithub({
-      pages: [[{ tag_name: "v1.3.0" }, { tag_name: "v1.2.0" }]],
-      metadata: { "1.3.0": "{ not json" },
+      pages: [[{ tag_name: "v1.3.0-plusplus.2" }, { tag_name: "v1.2.0-plusplus.1" }]],
+      metadata: { "1.3.0-plusplus.2": "{ not json" },
     });
 
     const result = await settle("latest");
 
     expect(AsyncResult.isFailure(result)).toBe(true);
-    expect(requestedUrls()).not.toContain(cliReleaseMetadataUrl("1.2.0"));
+    expect(requestedUrls()).not.toContain(cliReleaseMetadataUrl("1.2.0-plusplus.1"));
   });
 
   it("fails closed when the asset describes a different version", async () => {
     mockGithub({
-      pages: [[{ tag_name: "v1.3.0" }]],
-      metadata: { "1.3.0": metadataAsset("1.2.4", "stable", 12) },
+      pages: [[{ tag_name: "v1.3.0-plusplus.2" }]],
+      metadata: { "1.3.0-plusplus.2": metadataAsset("1.2.4-plusplus.1", "stable", 12) },
     });
 
     expect(AsyncResult.isFailure(await settle("latest"))).toBe(true);
@@ -240,8 +252,8 @@ describe("releaseMetadataAtom", () => {
 
   it("fails closed when the asset claims another channel", async () => {
     mockGithub({
-      pages: [[{ tag_name: "v1.3.0" }]],
-      metadata: { "1.3.0": metadataAsset("1.3.0", "nightly", 12) },
+      pages: [[{ tag_name: "v1.3.0-plusplus.2" }]],
+      metadata: { "1.3.0-plusplus.2": metadataAsset("1.3.0-plusplus.2", "nightly", 12) },
     });
 
     expect(AsyncResult.isFailure(await settle("latest"))).toBe(true);
@@ -249,14 +261,14 @@ describe("releaseMetadataAtom", () => {
 
   it("keeps a release whose metadata predates databaseMigration", async () => {
     mockGithub({
-      pages: [[{ tag_name: "v1.3.0" }]],
-      metadata: { "1.3.0": metadataAsset("1.3.0", "stable") },
+      pages: [[{ tag_name: "v1.3.0-plusplus.2" }]],
+      metadata: { "1.3.0-plusplus.2": metadataAsset("1.3.0-plusplus.2", "stable") },
     });
 
     const result = await settle("latest");
 
     expect(AsyncResult.isSuccess(result)).toBe(true);
-    expect(selected(result)).toEqual({ version: "1.3.0", channel: "stable" });
+    expect(selected(result)).toEqual({ version: "1.3.0-plusplus.2", channel: "stable" });
     expect(AsyncResult.getOrElse(result, () => null)?.databaseMigration).toBeUndefined();
   });
 
