@@ -9302,6 +9302,8 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             ?.providerThread.pendingBackgroundTasks?.find((task) => task.taskId === WAKE_TASK_ID);
           assert.isString(stamped?.startedAt);
           assert.isTrue(Number.isFinite(Date.parse(stamped!.startedAt!)));
+          // EXC-09 dual-write: the sidecar mirrors the released startedAt field.
+          assert.deepEqual(stamped?.plusplus, { startedAt: stamped!.startedAt });
 
           // A re-emitted task_started for the same task keeps the original start.
           yield* Queue.offer(
@@ -9359,6 +9361,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             .at(-1)
             ?.providerThread.pendingBackgroundTasks?.find((task) => task.taskId === WAKE_TASK_ID);
           assert.equal(fromSnapshot?.startedAt, stamped!.startedAt);
+          assert.deepEqual(fromSnapshot?.plusplus, { startedAt: stamped!.startedAt });
 
           yield* Queue.offer(harness.sdkMessages, turnOneResult);
           yield* harness.until(() => harness.terminalEvents().length === 1);
@@ -9516,6 +9519,97 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           resumedStartedAt,
         );
         assert.isUndefined(roster?.find((task) => task.taskId === "snapshot-only-task")?.startedAt);
+
+        yield* Queue.offer(harness.sdkMessages, turnOneResult);
+        yield* harness.until(() => harness.terminalEvents().length === 1);
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            NodeCrypto.layer,
+            layerTestProviderHost,
+          ),
+        ),
+      ),
+    ),
+  );
+
+  it.effect("keeps a sidecar-only persisted start stamp across roster reset and replay", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarness;
+        const now = yield* DateTime.now;
+        const resumedStartedAt = "2020-01-01T00:00:00.000Z";
+
+        // A new-format persisted roster can carry its start stamp in the ++ sidecar only;
+        // the reset-time snapshot and replay preservation must read it from there.
+        yield* harness.runtime.startTurn(
+          makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: {
+              ...harness.providerThread,
+              pendingBackgroundTasks: [
+                {
+                  taskId: WAKE_TASK_ID,
+                  kind: "command",
+                  description: WAKE_TASK_DESCRIPTION,
+                  plusplus: { startedAt: resumedStartedAt },
+                },
+              ],
+            },
+            now,
+            attemptId: RunAttemptId.make("attempt-claude-roster-sidecar-resume"),
+            text: "Resume and keep the background work going.",
+            attachments: [],
+          }),
+        );
+
+        // A replayed task_started for the sidecar-stamped task keeps the persisted stamp
+        // instead of inventing a fresh start.
+        yield* Queue.offer(harness.sdkMessages, wakeTaskStarted);
+        yield* harness.until(() =>
+          providerThreadRosterEvents(harness.events).some(
+            (event) => (event.providerThread.pendingBackgroundTasks?.length ?? 0) > 0,
+          ),
+        );
+        const replayed = providerThreadRosterEvents(harness.events)
+          .at(-1)
+          ?.providerThread.pendingBackgroundTasks?.find((task) => task.taskId === WAKE_TASK_ID);
+        // EXC-09 dual-write: the rebuilt task mirrors the preserved stamp into both fields.
+        assert.equal(replayed?.startedAt, resumedStartedAt);
+        assert.deepEqual(replayed?.plusplus, { startedAt: resumedStartedAt });
+
+        // A later snapshot preserves the same stamp.
+        yield* Queue.offer(
+          harness.sdkMessages,
+          claudeSdkFrame({
+            type: "system",
+            subtype: "background_tasks_changed",
+            tasks: [
+              {
+                task_id: WAKE_TASK_ID,
+                task_type: "local_bash",
+                description: "Background sleep test",
+              },
+            ],
+            uuid: "00000000-0000-4000-8000-000000000312",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        yield* harness.until(() =>
+          providerThreadRosterEvents(harness.events).some((event) =>
+            event.providerThread.pendingBackgroundTasks?.some(
+              (task) => task.startedAt === resumedStartedAt && task.plusplus !== undefined,
+            ),
+          ),
+        );
+        const fromSnapshot = providerThreadRosterEvents(harness.events)
+          .at(-1)
+          ?.providerThread.pendingBackgroundTasks?.find((task) => task.taskId === WAKE_TASK_ID);
+        assert.equal(fromSnapshot?.startedAt, resumedStartedAt);
+        assert.deepEqual(fromSnapshot?.plusplus, { startedAt: resumedStartedAt });
 
         yield* Queue.offer(harness.sdkMessages, turnOneResult);
         yield* harness.until(() => harness.terminalEvents().length === 1);
@@ -10083,6 +10177,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             kind: "monitor",
             description: "Monitor 0",
             startedAt: "1970-01-01T00:00:00.000Z",
+            plusplus: { startedAt: "1970-01-01T00:00:00.000Z" },
           },
         ]);
       }).pipe(
@@ -10775,6 +10870,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
               description: "work on A",
               kind: "command",
               startedAt: "1970-01-01T00:00:00.000Z",
+              plusplus: { startedAt: "1970-01-01T00:00:00.000Z" },
             },
           ]);
           assert.isTrue(yield* hasPendingBackgroundWork);

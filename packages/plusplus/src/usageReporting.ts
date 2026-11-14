@@ -13,6 +13,7 @@ import {
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 
+import { readUsageAccounts } from "./contracts.ts";
 import { cursorUsageWindowRank } from "./cursorUsageLimits.ts";
 import type { LimitPace } from "./usageLimits.ts";
 import {
@@ -51,7 +52,7 @@ function providersWithLimits(providers: readonly ServerProvider[]): readonly Ser
       provider.enabled &&
       provider.installed &&
       isProviderAvailable(provider) &&
-      (provider.usageLimits !== undefined || (provider.usageAccounts?.length ?? 0) > 0),
+      (provider.usageLimits !== undefined || (readUsageAccounts(provider)?.length ?? 0) > 0),
   );
 }
 
@@ -98,7 +99,7 @@ export function collectExternalUsageLinks(presentations: LimitPresentations) {
         `${name} on ${on}`,
       );
       // Upstream accounts (e.g. OpenRouter) repeat the same destination on every entry.
-      for (const account of provider.usageAccounts ?? []) {
+      for (const account of readUsageAccounts(provider) ?? []) {
         const accountName = account.email?.trim() || accountIdLabel(account.id);
         add(
           account.usageLimits.externalUsage,
@@ -247,7 +248,7 @@ export function collectLimitAccounts(presentations: LimitPresentations): readonl
   const resolveKey = accountKeyResolver(
     [...presentations.values()].flatMap((presentation) => [
       ...(presentation.serverConfig?.providers ?? []).flatMap((provider) =>
-        provider.enabled ? [nativeReport(provider), ...(provider.usageAccounts ?? [])] : [],
+        provider.enabled ? [nativeReport(provider), ...(readUsageAccounts(provider) ?? [])] : [],
       ),
       ...(presentation.serverConfig?.usageLimitSources ?? []).flatMap((source) => source.accounts),
     ]),
@@ -269,7 +270,7 @@ export function collectLimitAccounts(presentations: LimitPresentations): readonl
           limits: provider.usageLimits,
         });
       }
-      for (const account of provider.usageAccounts ?? []) {
+      for (const account of readUsageAccounts(provider) ?? []) {
         if (limitsNotice(account.usageLimits) !== null) continue;
         const key = `${environmentId}:${provider.instanceId}:${account.id}`;
         merge(resolveKey(account) ?? key, {
@@ -336,7 +337,7 @@ export function collectLimitNotices(presentations: LimitPresentations): readonly
         if (notice) notices.add(`${label(environmentLabel, name)}: ${notice}`);
       }
       // A failed upstream account is dropped from the account list, so a notice is its only report.
-      for (const account of provider.usageAccounts ?? []) {
+      for (const account of readUsageAccounts(provider) ?? []) {
         if (account.usageLimits.unavailable?.reason === "unsupported") continue;
         const notice = limitsNotice(account.usageLimits);
         if (!notice) continue;
@@ -715,7 +716,7 @@ export function collectProviderUsageLimits(
   for (const provider of providersWithLimits(providers)) {
     if (provider.driver !== selected.driver) continue;
     const providerLabel = provider.displayName?.trim() || String(provider.instanceId);
-    for (const account of provider.usageAccounts ?? []) {
+    for (const account of readUsageAccounts(provider) ?? []) {
       if (limitsNotice(account.usageLimits) !== null) continue;
       accounts.push({
         id: `${provider.instanceId}:${account.id}`,

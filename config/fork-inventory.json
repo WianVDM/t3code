@@ -104,6 +104,12 @@
       "appliesTo": ["A2", "A5", "A7"],
       "rationale": "The Linux metainfo file is renamed to the fork's app id (com.t3tools.t3code.plusplus). A2 must not restore the upstream path; A5 and A7 must treat the fork path as the seam, not the upstream one.",
       "entryIds": ["SEAM-020"]
+    },
+    {
+      "id": "EXC-09",
+      "appliesTo": ["A5"],
+      "rationale": "The only ++ contract data dual-written next to the typed plusplus sidecar carrier are the four released legacy seam groups: SEAM-185 contextBridge on ServerSettings and its patch, SEAM-181 startedAt on PendingBackgroundTask, SEAM-182 monetaryUsage on ServerProviderUsageLimits, and SEAM-183 usageAccounts on ServerProvider. Released clients and stored payloads read those fields directly, so writers keep emitting them while sidecar-first reads prefer the typed carrier. All future ++ data must be sidecar-only; no new direct ++ fields may be added to upstream structs.",
+      "entryIds": ["SEAM-181", "SEAM-182", "SEAM-183", "SEAM-185"]
     }
   ],
   "entries": [

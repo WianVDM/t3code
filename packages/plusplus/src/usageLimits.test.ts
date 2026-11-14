@@ -6,10 +6,12 @@ import {
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
+import { readUsageAccounts } from "./contracts.ts";
 import {
   applyUsageLimitsUpdate,
   elapsedShare,
   exhaustedUsageWindow,
+  limitsNotice,
   paceOf,
   paceRemainingPercent,
   reconcileProviderUsageSnapshot,
@@ -365,5 +367,70 @@ describe("reconcileProviderUsageSnapshot", () => {
     expect(
       reconcileProviderUsageSnapshot({ published, probed: switched }).usageAccounts,
     ).toBeUndefined();
+  });
+
+  it("keeps sidecar-only published accounts through an empty authenticated probe", () => {
+    const published = provider({
+      plusplus: { usageAccounts: accounts },
+      auth: { status: "authenticated", email: "a@example.com" },
+    });
+    const emptyProbe = provider({ auth: { status: "authenticated", email: "a@example.com" } });
+    const next = reconcileProviderUsageSnapshot({ published, probed: emptyProbe });
+    expect(next.usageAccounts).toEqual(accounts);
+    expect(next.plusplus).toEqual({ usageAccounts: accounts });
+  });
+
+  it("mirrors retained accounts over an authoritative-empty probed sidecar", () => {
+    const published = provider({
+      usageAccounts: accounts,
+      auth: { status: "authenticated", email: "a@example.com" },
+    });
+    const emptyProbe = provider({
+      auth: { status: "authenticated", email: "a@example.com" },
+      plusplus: { usageAccounts: [], future: 1 },
+    });
+    const next = reconcileProviderUsageSnapshot({ published, probed: emptyProbe });
+    expect(readUsageAccounts(next)).toEqual(accounts);
+    expect(next.usageAccounts).toEqual(accounts);
+    expect(next.plusplus).toEqual({ future: 1, usageAccounts: accounts });
+  });
+
+  it("never resurrects stale legacy accounts cleared by an authoritative sidecar", () => {
+    const published = provider({
+      usageAccounts: accounts,
+      plusplus: { usageAccounts: [] },
+      auth: { status: "authenticated", email: "a@example.com" },
+    });
+    const emptyProbe = provider({ auth: { status: "authenticated", email: "a@example.com" } });
+    const next = reconcileProviderUsageSnapshot({ published, probed: emptyProbe });
+    expect(next.usageAccounts).toBeUndefined();
+    expect(next.plusplus).toBeUndefined();
+  });
+});
+
+describe("limitsNotice", () => {
+  const monetary = { usedUsd: 1.5, remainingUsd: 8.5, limitUsd: 10 };
+
+  it("reports no limits when windows and monetary usage are absent", () => {
+    expect(limitsNotice({ checkedAt, windows: [] })).toBe("No limits reported.");
+  });
+
+  it("stays silent for legacy monetary usage without windows", () => {
+    expect(limitsNotice({ checkedAt, windows: [], monetaryUsage: monetary })).toBeNull();
+  });
+
+  it("stays silent for sidecar-only monetary usage without windows", () => {
+    expect(
+      limitsNotice({ checkedAt, windows: [], plusplus: { monetaryUsage: monetary } }),
+    ).toBeNull();
+  });
+
+  it("surfaces unavailable reasons", () => {
+    expect(limitsNotice({ checkedAt, windows: [], unavailable: { reason: "unsupported" } })).toBe(
+      "This account has no subscription limits.",
+    );
+    expect(limitsNotice({ checkedAt, windows: [], unavailable: { reason: "probeFailed" } })).toBe(
+      "Could not read limits.",
+    );
   });
 });

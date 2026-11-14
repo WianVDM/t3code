@@ -1632,3 +1632,144 @@ describe("ChatGPT sharing presentation", () => {
     ).toBe(false);
   });
 });
+
+describe("plusplus sidecar dual-write", () => {
+  const checkedAt = "2026-09-03T11:00:00.000Z";
+
+  it("reports a dual-written provider identically to its legacy-only twin", () => {
+    const monetary = { usedUsd: 2.5 };
+    const account = {
+      id: "openrouter",
+      driver: ProviderDriverKind.make("openrouter"),
+      usageLimits: { checkedAt, windows: [], monetaryUsage: monetary },
+    };
+    const dualAccount = {
+      ...account,
+      usageLimits: { ...account.usageLimits, plusplus: { monetaryUsage: monetary } },
+    };
+    const legacyOnly = provider({
+      usageLimits: { checkedAt, windows: [] },
+      usageAccounts: [account],
+    });
+    const dualWritten = provider({
+      usageLimits: { checkedAt, windows: [] },
+      usageAccounts: [dualAccount],
+      plusplus: { usageAccounts: [dualAccount] },
+    });
+    const env = (snapshot: ServerProvider) =>
+      new Map([
+        [
+          EnvironmentId.make("env-a"),
+          {
+            entry: { target: { label: "Laptop" } },
+            serverConfig: { providers: [snapshot] },
+          },
+        ],
+      ]);
+
+    const left = collectLimitAccounts(env(legacyOnly));
+    const right = collectLimitAccounts(env(dualWritten));
+    expect(right).toHaveLength(left.length);
+    // Reporting rides the released fields; the sidecar mirror passes through untouched.
+    expect(right[0]?.limits.plusplus).toEqual({ monetaryUsage: monetary });
+    const { plusplus: _rightCarrier, ...rightLimits } = right[0]!.limits;
+    const { plusplus: _leftCarrier, ...leftLimits } = left[0]!.limits;
+    expect(rightLimits).toEqual(leftLimits);
+  });
+});
+
+describe("plusplus sidecar account reads", () => {
+  const checkedAt = "2026-09-03T11:00:00.000Z";
+  const pi = ProviderDriverKind.make("pi");
+  const env = (snapshot: ServerProvider) =>
+    new Map([
+      [
+        EnvironmentId.make("env-a"),
+        { entry: { target: { label: "Laptop" } }, serverConfig: { providers: [snapshot] } },
+      ],
+    ]);
+
+  it("collects and reports sidecar-only usage accounts from a newer server", () => {
+    const sidecarOnly = provider({
+      driver: pi,
+      instanceId: ProviderInstanceId.make("pi"),
+      displayName: "Pi",
+      plusplus: {
+        usageAccounts: [
+          {
+            id: "upstream@example.com.json",
+            driver: pi,
+            email: "upstream@example.com",
+            usageLimits: { checkedAt, windows: [], monetaryUsage: { usedUsd: 1.25 } },
+          },
+          {
+            id: "broken@example.com.json",
+            driver: pi,
+            email: "broken@example.com",
+            usageLimits: {
+              checkedAt,
+              windows: [],
+              unavailable: { reason: "probeFailed", message: "401 unauthorized" },
+            },
+          },
+        ],
+      },
+    });
+    const presentations = env(sidecarOnly);
+    expect(collectLimitAccounts(presentations).map((account) => account.key)).toEqual([
+      "env-a:pi:upstream@example.com.json",
+    ]);
+    expect(collectLimitNotices(presentations)).toEqual([
+      "Pi · broken@example.com: 401 unauthorized",
+    ]);
+    const report = collectProviderUsageLimits(sidecarOnly.instanceId, [sidecarOnly], [], now);
+    expect(report?.accounts.map((account) => account.id)).toEqual(["pi:upstream@example.com.json"]);
+  });
+
+  it("prefers the sidecar account list over a conflicting legacy list", () => {
+    const conflicting = provider({
+      driver: pi,
+      instanceId: ProviderInstanceId.make("pi"),
+      usageAccounts: [
+        {
+          id: "stale@example.com.json",
+          driver: pi,
+          email: "stale@example.com",
+          usageLimits: { checkedAt, windows: [] },
+        },
+      ],
+      plusplus: {
+        usageAccounts: [
+          {
+            id: "fresh@example.com.json",
+            driver: pi,
+            email: "fresh@example.com",
+            usageLimits: { checkedAt, windows: [], monetaryUsage: { usedUsd: 2 } },
+          },
+        ],
+      },
+    });
+    expect(collectLimitAccounts(env(conflicting)).map((account) => account.key)).toEqual([
+      "env-a:pi:fresh@example.com.json",
+    ]);
+  });
+
+  it("treats an empty sidecar account list as authoritative over legacy accounts", () => {
+    const cleared = provider({
+      driver: pi,
+      instanceId: ProviderInstanceId.make("pi"),
+      usageAccounts: [
+        {
+          id: "released@example.com.json",
+          driver: pi,
+          email: "released@example.com",
+          usageLimits: { checkedAt, windows: [] },
+        },
+      ],
+      plusplus: { usageAccounts: [] },
+    });
+    const presentations = env(cleared);
+    expect(collectLimitAccounts(presentations)).toEqual([]);
+    expect(collectProviderUsageLimits(cleared.instanceId, [cleared], [], now)).toBeNull();
+  });
+});
