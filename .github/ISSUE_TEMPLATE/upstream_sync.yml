@@ -1,0 +1,89 @@
+name: Upstream sync
+description: Track merging an upstream T3 Code release or commit range into this fork.
+title: "[Upstream sync]: "
+labels:
+  - upstream-sync
+  - needs-triage
+body:
+  - type: markdown
+    attributes:
+      value: |
+        One sync per issue, naming one upstream tag or commit range.
+        Maintainers apply the taxonomy labels (`accepted`, `plusplus`, `upstream-candidate`,
+        `upstream-sync`) during triage; authors cannot self-accept.
+
+  - type: input
+    id: source
+    attributes:
+      label: Upstream source
+      description: The upstream tag or commit range being merged.
+      placeholder: v0.1.8, or upstream/main @ abc1234..def5678
+    validations:
+      required: true
+
+  - type: textarea
+    id: notable
+    attributes:
+      label: Notable upstream changes
+      description: What landed upstream that affects this fork. Link the release notes.
+    validations:
+      required: true
+
+  - type: textarea
+    id: conflicts
+    attributes:
+      label: Conflicts and fork touchpoints
+      description: Which fork changes collide, and the files or areas they land in.
+      placeholder: apps/server/src/orchestration-v2/Orchestrator.ts diverged in #37.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Scope
+      description: Which part of the project does this sync touch?
+      options:
+        - apps/web
+        - apps/server
+        - apps/desktop
+        - apps/mobile
+        - packages/contracts or packages/shared
+        - Build, CI, or release tooling
+        - Docs
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: What must be true when the sync is done. One observable outcome per line.
+      placeholder: |
+        - Fork behavior from #37 still passes its tests after the merge.
+        - Check and Agent context budget pass on the merge commit.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: classification
+    attributes:
+      label: Fork classification
+      description: How triage should classify the follow-up work this sync needs.
+      options:
+        - Sync only (no fork behavior change)
+        - Sync plus ++ fork adaptations
+        - Sync plus changes to propose upstream
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: verification
+    attributes:
+      label: Verification needs
+      description: Which checks, platforms, and manual passes prove the sync is safe.
+      placeholder: vp run check:changed, desktop smoke on Windows, one Replay (dev) turn.
+    validations:
+      required: true
