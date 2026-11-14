@@ -252,6 +252,7 @@ import * as SourceControlDiscovery from "./sourceControl/SourceControlDiscovery.
 import * as OtlpEndpointCheck from "./observability/OtlpEndpointCheck.ts";
 import * as SourceControlRepositoryService from "./sourceControl/SourceControlRepositoryService.ts";
 import * as SourceControlSignIn from "./sourceControl/SourceControlSignIn.ts";
+import * as UpstreamMergeAccess from "./plusplus/UpstreamMergeAccess.ts";
 import * as SourceControlBuiltInDrivers from "./sourceControl/builtInDrivers.ts";
 import * as SourceControlProviderRegistry from "./sourceControl/SourceControlProviderRegistry.ts";
 import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
@@ -1491,6 +1492,7 @@ export const layerWsRpc = (
       const sourceControlRepositories =
         yield* SourceControlRepositoryService.SourceControlRepositoryService;
       const sourceControlSignIn = yield* SourceControlSignIn.SourceControlSignIn;
+      const upstreamMergeAccess = yield* UpstreamMergeAccess.UpstreamMergeAccess;
       const withPullRequestViewer = pullRequests.withRoutingCredential;
       const bootstrapCredentials = yield* PairingGrantStore.PairingGrantStore;
       const sessions = yield* SessionStore.SessionStore;
@@ -2797,6 +2799,7 @@ export const layerWsRpc = (
         [WS_METHODS.sourceControlAppAccess]: (input) => sourceControlSignIn.access(input),
         [WS_METHODS.sourceControlStarred]: (input) => sourceControlSignIn.starred(input),
         [WS_METHODS.sourceControlStar]: (input) => sourceControlSignIn.star(input),
+        [WS_METHODS.plusplusUpstreamMergeAccess]: () => upstreamMergeAccess.check,
         [WS_METHODS.projectCloneStart]: (input) =>
           projectCloneTracker.start(input, {
             createProject: (project) =>

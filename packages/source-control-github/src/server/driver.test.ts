@@ -2,9 +2,108 @@ import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
-import { makeIsRepositoryStarred, makeStarRepository } from "./driver.ts";
+import { makeCanPushRepository, makeIsRepositoryStarred, makeStarRepository } from "./driver.ts";
 import * as GitHubRequestPolicy from "./GitHubRequestPolicy.ts";
 import * as GitHubRest from "./GitHubRest.ts";
+
+describe("push access", () => {
+  it.effect("returns true only when GitHub reports push permission", () => {
+    const inputs: Array<GitHubRest.GitHubRestInput> = [];
+    const api = Layer.mock(GitHubRest.GitHubRest)({
+      rest: (input) => {
+        inputs.push(input);
+        return Effect.succeed({
+          status: 200,
+          headers: {},
+          body: JSON.stringify({ permissions: { push: true } }),
+          truncated: false,
+          invalidUtf8: false,
+        });
+      },
+    });
+    return Effect.gen(function* () {
+      const canPush = yield* makeCanPushRepository;
+      assert.isTrue(yield* canPush("github.com", "WianVDM/t3code"));
+      assert.deepStrictEqual(inputs, [
+        {
+          host: "github.com",
+          operation: "canPushRepository",
+          path: "repos/WianVDM/t3code",
+          allowReserve: false,
+        },
+      ]);
+    }).pipe(Effect.provide(api));
+  });
+
+  it.effect("rejects invalid repository paths without calling GitHub", () => {
+    const paths: Array<string> = [];
+    const api = Layer.mock(GitHubRest.GitHubRest)({
+      rest: (input) => {
+        paths.push(input.path);
+        return Effect.die(new Error("unexpected request"));
+      },
+    });
+    return Effect.gen(function* () {
+      const canPush = yield* makeCanPushRepository;
+      assert.isFalse(yield* canPush("github.com", "../repos"));
+      assert.isFalse(yield* canPush("github.com", "WianVDM/./t3code"));
+      assert.isFalse(yield* canPush("github.com", "WianVDM/t3code/issues"));
+      assert.deepStrictEqual(paths, []);
+    }).pipe(Effect.provide(api));
+  });
+
+  it.effect.each([
+    {
+      name: "push false",
+      answer: () =>
+        Effect.succeed({
+          status: 200,
+          headers: {},
+          body: JSON.stringify({ permissions: { push: false } }),
+          truncated: false,
+          invalidUtf8: false,
+        }),
+    },
+    {
+      name: "missing permissions",
+      answer: () =>
+        Effect.succeed({
+          status: 200,
+          headers: {},
+          body: "{}",
+          truncated: false,
+          invalidUtf8: false,
+        }),
+    },
+    {
+      name: "404",
+      answer: () =>
+        Effect.fail(
+          new GitHubRequestPolicy.GitHubApiNotFoundError({
+            host: "github.com",
+            operation: "canPushRepository",
+          }),
+        ),
+    },
+    {
+      name: "credential failure",
+      answer: () =>
+        Effect.fail(
+          new GitHubRequestPolicy.GitHubApiRequestError({
+            host: "github.com",
+            operation: "canPushRepository",
+            cause: new Error("No GitHub credential"),
+          }),
+        ),
+    },
+  ])("returns false for $name", ({ answer }) => {
+    const api = Layer.mock(GitHubRest.GitHubRest)({ rest: answer });
+    return Effect.gen(function* () {
+      const canPush = yield* makeCanPushRepository;
+      assert.isFalse(yield* canPush("github.com", "WianVDM/t3code"));
+    }).pipe(Effect.provide(api));
+  });
+});
 
 describe("starred", () => {
   it.effect("checks and stars only a valid repository, true only on 204", () => {

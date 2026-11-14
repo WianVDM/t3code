@@ -7,7 +7,7 @@ import {
   type StartThreadTurnInput,
 } from "@t3tools/client-runtime/operations";
 import { runAtomCommand, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
-import { Atom } from "effect/reactivity";
+import { AsyncResult, Atom } from "effect/reactivity";
 import { useEffect } from "react";
 
 import {
@@ -37,18 +37,27 @@ import { getClientSettings, mergeEnvironmentSettings } from "../../hooks/useSett
 import { newMessageId, newThreadId } from "../../lib/utils";
 import { appAtomRegistry } from "../../rpc/atomRegistry";
 import { readDesktopUpdateState } from "../../state/desktopUpdate";
-import { readProject, readProjects } from "../../state/entities";
+import { readProject, readProjects, useProjects } from "../../state/entities";
 import { environmentServerConfigsAtom, providersIgnoringCheckedAtAtom } from "../../state/server";
 import { readEnvironmentScope } from "../../state/session";
 import { threadEnvironment } from "../../state/threads";
 import { ORCHESTRATION_OPERATE_DENIED_MESSAGE } from "../../state/use-orchestration-command";
+import {
+  noUpstreamMergeAccessAtom,
+  readUpstreamMergeAccess,
+  upstreamMergeAccess,
+} from "./upstreamMergeAccess";
 
 const NO_PROJECT_FOUND_MESSAGE = `No project found for github.com/${FORK_REPOSITORY}. Add the fork checkout as a project first.`;
 const START_MERGE_FAILED_MESSAGE = "Could not start upstream merge";
 
 export type NewThreadRunner = ReturnType<typeof useNewThreadHandler>;
+interface StartUpstreamMergeOptions {
+  readonly newThread?: NewThreadRunner;
+}
 
 let activeNewThreadRunner: NewThreadRunner | null = null;
+let upstreamMergeStartInFlight = false;
 
 export function registerNewThreadRunner(runner: NewThreadRunner): () => void {
   activeNewThreadRunner = runner;
@@ -79,23 +88,34 @@ async function refreshAndPublishIfStale(): Promise<void> {
   appAtomRegistry.set(upstreamReleaseStateAtom, result);
 }
 
+/** Only the fork checkout's environment can authorize its upstream-merge UI. */
+export function useUpstreamMergeEligible(): boolean {
+  const projects = useProjects();
+  const projectRef = isUpstreamReleaseNotificationBuild ? pickForkProject(projects) : null;
+  const access = useAtomValue(
+    projectRef === null
+      ? noUpstreamMergeAccessAtom
+      : upstreamMergeAccess({ environmentId: projectRef.environmentId, input: {} }),
+  );
+  return projectRef !== null && AsyncResult.getOrElse(access, () => false);
+}
+
 export function useUpstreamReleasePolling(): void {
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- checks GitHub for a newer upstream release once on mount
+  const eligible = useUpstreamMergeEligible();
+
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- checks GitHub once when a matching fork checkout appears
   useEffect(() => {
-    if (!isUpstreamReleaseNotificationBuild) {
+    if (!eligible) {
       return;
     }
     void refreshAndPublishIfStale();
-  }, []);
+  }, [eligible]);
 
-  useLiveRefresh(
-    isUpstreamReleaseNotificationBuild ? () => void refreshAndPublishIfStale() : null,
-    {
-      enabled: isUpstreamReleaseNotificationBuild,
-      key: "upstream-release",
-      intervalMs: UPSTREAM_POLL_INTERVAL_MS,
-    },
-  );
+  useLiveRefresh(eligible ? () => void refreshAndPublishIfStale() : null, {
+    enabled: eligible,
+    key: "upstream-release",
+    intervalMs: UPSTREAM_POLL_INTERVAL_MS,
+  });
 }
 
 export function useUpstreamRelease(): UpstreamReleaseResult | null {
@@ -104,9 +124,20 @@ export function useUpstreamRelease(): UpstreamReleaseResult | null {
 
 export async function startUpstreamMerge(
   tag: string,
-  options?: {
-    readonly newThread?: NewThreadRunner;
-  },
+  options?: StartUpstreamMergeOptions,
+): Promise<void> {
+  if (upstreamMergeStartInFlight) return;
+  upstreamMergeStartInFlight = true;
+  try {
+    await startUpstreamMergeUnchecked(tag, options);
+  } finally {
+    upstreamMergeStartInFlight = false;
+  }
+}
+
+async function startUpstreamMergeUnchecked(
+  tag: string,
+  options?: StartUpstreamMergeOptions,
 ): Promise<void> {
   if (shouldDeferUpstreamMerge(readDesktopUpdateState())) {
     toastManager.add(
@@ -127,6 +158,20 @@ export async function startUpstreamMerge(
       stackedThreadToast({
         type: "error",
         title: NO_PROJECT_FOUND_MESSAGE,
+      }),
+    );
+    return;
+  }
+
+  const pushAccess = await readUpstreamMergeAccess(projectRef.environmentId);
+  if (pushAccess !== true) {
+    toastManager.add(
+      stackedThreadToast({
+        type: "error",
+        title:
+          pushAccess === undefined
+            ? "Couldn't check push access to WianVDM/t3code"
+            : "No push access to WianVDM/t3code",
       }),
     );
     return;
@@ -301,7 +346,8 @@ export async function startUpstreamMerge(
 }
 
 export async function runManualUpstreamCheck(): Promise<void> {
-  if (!isUpstreamReleaseNotificationBuild) {
+  const projectRef = isUpstreamReleaseNotificationBuild ? pickForkProject(readProjects()) : null;
+  if (projectRef === null || !(await readUpstreamMergeAccess(projectRef.environmentId))) {
     return;
   }
 
@@ -326,10 +372,10 @@ export async function runManualUpstreamCheck(): Promise<void> {
         type: "info",
         title: `Upstream ${result.tag} is ready to merge`,
         ...(shouldDeferMerge
-          ? { description: "Update the fork first, then merge upstream." }
+          ? { description: "Update the fork first, then create a local upstream merge draft." }
           : {
               actionProps: {
-                children: "Start merge",
+                children: "Create local upstream merge draft",
                 onClick: () => {
                   toastManager.close(toastId);
                   void startUpstreamMerge(result.tag);

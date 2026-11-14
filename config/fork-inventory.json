@@ -14,7 +14,12 @@
       "renamed": 1
     }
   },
-  "plusplusOwnedRoots": ["assets/fork", "packages/plusplus", "apps/web/src/plusplus"],
+  "plusplusOwnedRoots": [
+    "assets/fork",
+    "packages/plusplus",
+    "apps/server/src/plusplus",
+    "apps/web/src/plusplus"
+  ],
   "boundaryInfrastructure": [
     "package.json",
     "scripts/forkInventory.ts",
