@@ -2,15 +2,17 @@ name: Upstream sync
 description: Track merging an upstream T3 Code release or commit range into this fork.
 title: "[Upstream sync]: "
 labels:
-  - upstream-sync
   - needs-triage
 body:
   - type: markdown
     attributes:
       value: |
         One sync per issue, naming one upstream tag or commit range.
-        Maintainers apply the taxonomy labels (`accepted`, `plusplus`, `upstream-candidate`,
-        `upstream-sync`) during triage; authors cannot self-accept.
+        This form only applies `needs-triage`: triage happens after creation, and
+        maintainers apply the taxonomy labels (`accepted`, `plusplus`, `upstream-candidate`,
+        `upstream-sync`) then. `upstream-sync` is a protected designation that forces full CI
+        and merge validation on sync PRs; authors cannot self-apply it, and an unauthorized
+        addition is removed automatically.
 
   - type: input
     id: source

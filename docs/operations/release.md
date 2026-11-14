@@ -251,16 +251,10 @@ anything a user may already have installed.
 
 ## Updating from upstream
 
-Upstream stable is this fork's base. Keep that path ordinary:
-
-1. When upstream publishes a stable release, start a sync PR that carries only the upstream changes.
-   Land local fixes separately so the next sync stays clean.
-2. Let full CI pass on the sync PR, including the shared-persistence gate that compares this
-   checkout's migrations with upstream `main`. Squash merge it.
-3. Confirm `apps/desktop/package.json` names the upstream base you intend to release. A version change
-   is an ordinary PR; the workflow never edits it.
-4. Dispatch a nightly on the new base and verify it.
-5. Dispatch stable with `version` empty. The ++ revision starts again at `.1` on the new base.
+Upstream stable is this fork's base. A sync is the one path where the fork deliberately takes a
+merge commit instead of a squash, and the only work that should ride along is the merge itself:
+land local fixes separately so the next sync stays clean. The nightly dry run below rehearses each
+release; the runbook after it performs the real sync.
 
 ### Rehearsing a sync with the dry run
 
@@ -292,19 +286,93 @@ with the same registry that labels ++ PRs, so a conflict arrives already sorted 
 - **error** is an infrastructure failure, a missing report, a cancelled lane, or an unexpected
   state. Reporting fails closed: any of these outranks a passing sibling lane.
 
-A dry run is reconnaissance, not the sync. It changes no ref, so it cannot land upstream code. When
-the dry run is green and you want the change, run the real phases that do move refs, in order:
+A dry run is reconnaissance, not the sync. It changes no ref, so it cannot land upstream code. Its
+`upstream-sync-dry-run-report` artifact is also what the protected sync PR's hotspot report is
+built from, so keep the schedule running while a sync is planned.
+
+### Sync runbook
+
+Work through the phases in order. Each phase refuses to run when the state the previous phase owes
+it is missing.
+
+#### 1. Prepare
+
+- Inspect the newest dry-run report and confirm the strict tag (`vX.Y.Z`) you intend to sync.
+- Use a dedicated worktree on a detached or throwaway checkout of `origin/main`, never the checkout
+  you develop in. The script requires a clean working tree and the exact remotes (`origin` =
+  `WianVDM/t3code`, `upstream` = `pingdotgg/t3code`) and fails otherwise.
+- Run:
+
+  ```sh
+  node scripts/upstream-sync.ts prepare --tag vX.Y.Z
+  ```
+
+  This creates `sync/upstream-vX.Y.Z` from `origin/main`, fetches the tag into the namespaced
+  `refs/upstream-sync/vX.Y.Z` ref, and stages the merge without committing. The namespace exists so
+  an upstream release can never clobber a same-named fork tag: every fetch runs `--no-tags`, and
+  upstream tags must never be fetched into `refs/tags/`.
+
+#### 2. Resolve conflicts
+
+- List unmerged paths with `git diff --name-only --diff-filter=U`, and use the dry-run report's
+  ownership split (and the sync PR's hotspot report once the PR exists) to decide who owns each
+  path: ++-owned files keep fork behavior, seams keep both sides working together, shared files
+  usually take upstream.
+- The merge commit carries conflict resolution only: no unrelated fixes, no scratch files.
+- `git rerere` is optional and local. It is uncommitted, unavailable to a fresh CI runner, can
+  replay stale resolution text onto changed content, and linked worktrees may share its cache.
+  Inspect every rerere replay as if you wrote it, then rerun the semantic checks below.
+
+#### 3. Verify and finish
 
 ```sh
-node scripts/upstream-sync.ts prepare --tag vX.Y.Z   # branch + staged merge, uncommitted
-node scripts/upstream-sync.ts verify --tag vX.Y.Z     # integrity-check the pending merge
-node scripts/upstream-sync.ts finish --tag vX.Y.Z     # commit exactly the verified tree
-node scripts/upstream-sync.ts next-tag --tag vX.Y.Z   # next fork release tag
+node scripts/upstream-sync.ts verify --tag vX.Y.Z
+vp run check:changed HEAD
+node scripts/upstream-sync.ts finish --tag vX.Y.Z
 ```
 
-Resolve a conflict the dry run predicted in the `prepare` step, then `verify` and `finish`. The dry
-run and these phases share their merge and integrity code; only the dry run refuses to keep the
-result.
+- `verify` expects exactly one `MERGE_HEAD` entry equal to the namespaced tag commit, no unmerged
+  paths, no unstaged tracked edits, no untracked files, no added conflict markers, and a clean
+  `git diff --check` against the upstream side. It records the verified state.
+- `finish` re-runs the same verification, refuses any drift from the verified record (moved HEAD,
+  changed `MERGE_HEAD`, restaged tree), commits, and then asserts the new commit has exactly two
+  parents (verified HEAD first, tag commit second) and the verified tree.
+- A clean merge, or a rerere replay, is not semantic verification. Add focused behavior tests for
+  the fork behavior the merge touches, and run the release-note, persistence, and desktop checks
+  the change affects. `check:changed HEAD` covers the fast lane; CI covers the rest.
+
+#### 4. The sync PR
+
+- Push `sync/upstream-vX.Y.Z` and open a PR to `main` referencing the accepted sync issue.
+- A maintainer applies the protected `upstream-sync` label during triage. The issue form cannot
+  self-apply it, unauthorized additions are removed automatically, and an unauthorized removal
+  restores it. An invalid claim forces full CI and fails `Check`; it can never suppress work.
+- With a verified designation, CI runs the full pipeline including the seven-package Windows lane,
+  the `Upstream Sync Merge` job re-validates the exact two-parent merge identity against the
+  payload, and the bot publishes one hotspot report comment built from the newest matching
+  trusted dry-run artifact.
+- Require the full `Check`, the Windows lane, and `Agent context budget` green, and review every
+  entry in the report's `Unmapped ++-owned files` bucket before merging.
+
+#### 5. Merge
+
+- **Create a merge commit.** Never squash or rebase a sync PR. This is the explicit exception to
+  the fork's ordinary squash rule: the two-parent ancestry is what merge validation, future merge
+  bases, and the dry run's already-integrated check all depend on.
+- After merging, confirm the upstream tag commit is an ancestor of `main`
+  (`git merge-base --is-ancestor <tag-commit> origin/main`) and that the merge commit on `main`
+  still has exactly the expected two parents.
+
+#### 6. Release
+
+- Confirm `apps/desktop/package.json` names the upstream base you intend to release; a version
+  change is an ordinary PR.
+- Confirm `Check` and `Agent context budget` are green on that exact `main` commit.
+- Dispatch a nightly on the new base and verify it, then dispatch stable with an empty `version`
+  (ships `-plusplus.1` on the new base) or an explicit `X.Y.Z-plusplus.N`. The Release workflow
+  owns tag creation.
+- The legacy `next-tag` command and its `vX.Y.Z-fork.N` tags are not the source of current
+  `X.Y.Z-plusplus.N` versions. Do not use them for releases.
 
 ## Required credentials
 

@@ -173,7 +173,10 @@ describe("check:changed", () => {
   type JobEntry = { result?: string | undefined; outputs?: Record<string, string> };
   type Needs = Record<string, JobEntry>;
   const greenNeeds = (gates: Record<string, string> = {}): Needs => ({
-    changes: { result: "success", outputs: { fail_open: "false", ...gates } },
+    changes: {
+      result: "success",
+      outputs: { fail_open: "false", sync_designation_error: "false", ...gates },
+    },
     lint: { result: "success" },
     build: { result: "success" },
     test: { result: "success" },
@@ -183,6 +186,7 @@ describe("check:changed", () => {
     release_smoke: { result: "success" },
     shared_persistence_compat: { result: "success" },
     windows: { result: "success" },
+    sync: { result: "success" },
   });
   const withJob = (needs: Needs, job: string, entry: JobEntry): Needs => ({
     ...needs,

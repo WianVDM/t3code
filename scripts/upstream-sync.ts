@@ -14,7 +14,7 @@ import { Command, Flag } from "effect/cli";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import { decide, readWorkspace } from "../.github/scripts/ci-changes.cjs";
-import { classifyPaths } from "../.github/scripts/pr-ownership-label.cjs";
+import { classifyPath, classifyPaths } from "../.github/scripts/pr-ownership-label.cjs";
 
 export const EXPECTED_REMOTES = {
   origin: "WianVDM/t3code",
@@ -912,6 +912,140 @@ export const finishUpstreamSync = Effect.fn("upstream-sync.finish")(function* (
   yield* Console.log(commitOutput.trimEnd() || `Created merge commit for ${tag}.`);
 });
 
+// Additive real-merge validation for designated sync PRs (#50). Metadata is
+// validated before any git work; the head must be the exact two-parent merge
+// of the current PR base and the namespaced upstream tag commit.
+const SYNC_BRANCH_PREFIX = "sync/upstream-";
+
+export function parseSyncBranchTag(headRef: string): string | undefined {
+  if (!headRef.startsWith(SYNC_BRANCH_PREFIX)) return undefined;
+  const tag = headRef.slice(SYNC_BRANCH_PREFIX.length);
+  return parseUpstreamTag(tag) === undefined ? undefined : tag;
+}
+
+export interface SyncPullRequestMetadata {
+  readonly prNumber: number;
+  readonly headSha: string;
+  readonly baseSha: string;
+  readonly baseRepo: string;
+  readonly baseRef: string;
+  readonly headRepo: string;
+  readonly headRef: string;
+}
+
+export function validateSyncPullRequestMetadata(metadata: SyncPullRequestMetadata): {
+  tag: string | undefined;
+  problems: Array<string>;
+} {
+  const problems: Array<string> = [];
+  if (!Number.isInteger(metadata.prNumber) || metadata.prNumber <= 0) {
+    problems.push("the PR number must be a positive integer");
+  }
+  for (const [label, value] of [
+    ["head SHA", metadata.headSha],
+    ["base SHA", metadata.baseSha],
+  ] as const) {
+    if (!FULL_OBJECT_SHA_PATTERN.test(value)) {
+      problems.push(`the ${label} ${jsonText(value)} must be a full lowercase hex object SHA`);
+    }
+  }
+  if (metadata.baseRepo.toLowerCase() !== EXPECTED_REMOTES.origin.toLowerCase()) {
+    problems.push(
+      `the base repository must be ${EXPECTED_REMOTES.origin}, got ${jsonText(metadata.baseRepo)}`,
+    );
+  }
+  if (metadata.baseRef !== "main") {
+    problems.push(`the base branch must be main, got ${jsonText(metadata.baseRef)}`);
+  }
+  if (metadata.headRepo.toLowerCase() !== metadata.baseRepo.toLowerCase()) {
+    problems.push(`a fork head (${jsonText(metadata.headRepo)}) can never be a designated sync PR`);
+  }
+  const tag = parseSyncBranchTag(metadata.headRef);
+  if (tag === undefined) {
+    problems.push(
+      `the head branch ${jsonText(metadata.headRef)} is not exactly ${SYNC_BRANCH_PREFIX}vX.Y.Z`,
+    );
+  }
+  return problems.length > 0 ? { tag: undefined, problems } : { tag, problems };
+}
+
+export interface ValidateMergeOptions extends SyncPullRequestMetadata {
+  readonly cwd: string;
+}
+
+export const validateUpstreamSyncMerge = Effect.fn("upstream-sync.validateMerge")(function* (
+  options: ValidateMergeOptions,
+) {
+  const path = yield* Path.Path;
+  const cwd = path.resolve(options.cwd);
+  const { tag, problems } = validateSyncPullRequestMetadata(options);
+  if (problems.length > 0 || tag === undefined) {
+    return yield* new UpstreamSyncError({
+      message: `The sync PR metadata is invalid:\n${indentLines(problems)}`,
+    });
+  }
+  yield* requireExpectedRemotes(cwd);
+
+  const prRef = `${UPSTREAM_RELEASE_REF_PREFIX}pr/${options.prNumber}`;
+  yield* git(cwd, [
+    "fetch",
+    "--no-recurse-submodules",
+    "--no-tags",
+    "origin",
+    `+refs/pull/${options.prNumber}/head:${prRef}`,
+  ]);
+  const identity = yield* readCommitIdentity(cwd, prRef);
+  if (identity.commit !== options.headSha) {
+    return yield* new UpstreamSyncError({
+      message: `The fetched PR head ${identity.commit} does not match the payload SHA ${options.headSha}.`,
+    });
+  }
+
+  const upstreamSha = yield* fetchUpstreamTagNamespaced(cwd, tag);
+  if (
+    identity.parents.length !== 2 ||
+    identity.parents[0] !== options.baseSha ||
+    identity.parents[1] !== upstreamSha
+  ) {
+    return yield* new UpstreamSyncError({
+      message: `The PR head ${identity.commit} has parents [${identity.parents.join(
+        ", ",
+      )}], expected exactly the current PR base ${options.baseSha} first and ${tag} (${upstreamSha}) second. Squash, single-parent, swapped, octopus, stale-base, and moved-tag merges are rejected.`,
+    });
+  }
+
+  // The same integrity checks verify runs on the pending merge, applied to
+  // both parents of the published head.
+  for (const parent of identity.parents) {
+    const patch = yield* git(cwd, [
+      "diff",
+      "--no-color",
+      "--no-ext-diff",
+      "--no-textconv",
+      "--unified=0",
+      parent,
+      identity.commit,
+      "--",
+    ]);
+    const markers = findAddedConflictMarkers(patch);
+    if (markers.length > 0) {
+      return yield* new UpstreamSyncError({
+        message: `Conflict markers were added against parent ${parent}:\n${indentLines(markers)}`,
+      });
+    }
+    const checkArgs = ["diff", "--no-color", "--check", parent, identity.commit, "--"];
+    const check = yield* runGit(cwd, checkArgs);
+    if (check.exitCode !== 0) {
+      return yield* new GitCommandError({ args: checkArgs, ...check });
+    }
+  }
+
+  yield* Console.log(
+    `Validated the sync merge ${identity.commit} of ${tag} (${upstreamSha}) onto ${options.baseSha}.`,
+  );
+  return { headSha: identity.commit, tag, upstreamSha };
+});
+
 export const nextUpstreamForkTag = Effect.fn("upstream-sync.nextTag")(function* (
   options: UpstreamSyncOptions,
 ) {
@@ -1052,10 +1186,13 @@ const commitDetachedMerge = Effect.fn("upstream-sync.commitDetachedMerge")(funct
   yield* git(cwd, ["-c", "core.hooksPath=", "commit", "--no-gpg-sign", "--no-edit"]);
 });
 
-const readCommitIdentity = Effect.fn("upstream-sync.readCommitIdentity")(function* (cwd: string) {
-  const parentsLine = (yield* git(cwd, ["rev-list", "--parents", "-n", "1", "HEAD"])).trim();
+const readCommitIdentity = Effect.fn("upstream-sync.readCommitIdentity")(function* (
+  cwd: string,
+  ref = "HEAD",
+) {
+  const parentsLine = (yield* git(cwd, ["rev-list", "--parents", "-n", "1", ref])).trim();
   const [commit, ...parents] = parentsLine.split(/\s+/);
-  const tree = (yield* git(cwd, ["rev-parse", "--verify", "HEAD^{tree}"])).trim();
+  const tree = (yield* git(cwd, ["rev-parse", "--verify", `${ref}^{tree}`])).trim();
   return { commit: commit ?? "", parents, tree };
 });
 
@@ -1412,6 +1549,390 @@ export const replayDryRun = Effect.fn("upstream-sync.replayDryRun")(function* (
   return { mergeCommit: identity.commit, tree: identity.tree };
 });
 
+// Trusted ownership/conflict report for designated sync PRs (#50). The
+// artifact is passive data: decoded through the versioned schema, then
+// validated against the real merge and an independent recomputation before
+// anything is rendered. The artifact's own Markdown is never republished.
+export const HOTSPOT_COMMENT_MARKER = "<!-- upstream-sync-hotspot-report -->";
+export const HOTSPOT_ARTIFACT_NAME = "upstream-sync-dry-run-report";
+
+export interface HotspotRealMerge {
+  readonly tag: string;
+  readonly baseSha: string;
+  readonly upstreamSha: string;
+  readonly headSha: string;
+  readonly headTree: string;
+  readonly mergeBaseSha: string;
+  readonly incomingPaths: ReadonlyArray<string>;
+}
+
+const HOTSPOT_SHA_FIELDS = [
+  "baseSha",
+  "mergeBaseSha",
+  "upstreamSha",
+  "mergeCommit",
+  "tree",
+] as const;
+type HotspotShaField = (typeof HOTSPOT_SHA_FIELDS)[number] | "tag";
+
+const STATUS_REQUIRED_NON_NULL: Readonly<Record<DryRunStatus, ReadonlyArray<HotspotShaField>>> = {
+  clean: ["tag", "baseSha", "mergeBaseSha", "upstreamSha", "mergeCommit", "tree"],
+  conflict: ["tag", "baseSha", "mergeBaseSha", "upstreamSha"],
+  merge_verification_failed: ["tag", "baseSha", "mergeBaseSha", "upstreamSha"],
+  already_integrated: ["tag", "baseSha", "upstreamSha"],
+  error: [],
+};
+const STATUS_REQUIRED_NULL: Readonly<Record<DryRunStatus, ReadonlyArray<HotspotShaField>>> = {
+  clean: [],
+  conflict: ["mergeCommit", "tree"],
+  merge_verification_failed: ["mergeCommit", "tree"],
+  already_integrated: ["mergeBaseSha", "mergeCommit", "tree"],
+  error: [],
+};
+const LEGAL_CONFLICT_STAGES = new Set([1, 2, 3]);
+
+export function validateHotspotReport(report: DryRunReport, real: HotspotRealMerge): Array<string> {
+  const problems: Array<string> = [];
+  if (report.schemaVersion !== DRY_RUN_REPORT_SCHEMA_VERSION) {
+    problems.push(`unsupported schemaVersion ${report.schemaVersion}`);
+  }
+  if (report.tag === null || parseUpstreamTag(report.tag) === undefined) {
+    problems.push(`tag ${jsonText(report.tag)} is not a strict upstream release tag`);
+  }
+  for (const field of HOTSPOT_SHA_FIELDS) {
+    const value = report[field];
+    if (value !== null && !FULL_OBJECT_SHA_PATTERN.test(value)) {
+      problems.push(`${field} ${jsonText(value)} is not a full object SHA`);
+    }
+  }
+  for (const field of STATUS_REQUIRED_NON_NULL[report.status]) {
+    if (report[field] === null) {
+      problems.push(`${field} must be set for status ${jsonText(report.status)}`);
+    }
+  }
+  for (const field of STATUS_REQUIRED_NULL[report.status]) {
+    if (report[field] !== null) {
+      problems.push(`${field} must be null for status ${jsonText(report.status)}`);
+    }
+  }
+  if (report.status === "conflict" && report.conflicts.length === 0) {
+    problems.push("a conflict status requires conflict entries");
+  }
+  if (report.status !== "conflict" && report.conflicts.length > 0) {
+    problems.push(`status ${jsonText(report.status)} must not carry conflict entries`);
+  }
+  for (const conflict of report.conflicts) {
+    if (
+      conflict.stages.length === 0 ||
+      conflict.stages.some((stage) => !LEGAL_CONFLICT_STAGES.has(stage))
+    ) {
+      problems.push(
+        `conflict ${jsonText(conflict.path)} has illegal stages [${conflict.stages.join(", ")}]`,
+      );
+    }
+  }
+  if (
+    (report.status === "clean" || report.status === "conflict") &&
+    report.incomingPaths.length === 0
+  ) {
+    problems.push(`status ${jsonText(report.status)} requires incoming paths`);
+  }
+  if (report.tag !== real.tag) {
+    problems.push(
+      `report tag ${jsonText(report.tag)} does not match the real merge tag ${jsonText(real.tag)}`,
+    );
+  }
+  if (report.baseSha !== real.baseSha) {
+    problems.push(
+      `report base ${jsonText(report.baseSha)} does not match the real merge base ${jsonText(
+        real.baseSha,
+      )}`,
+    );
+  }
+  if (report.upstreamSha !== real.upstreamSha) {
+    problems.push(
+      `report upstream ${jsonText(report.upstreamSha)} does not match the real merged upstream ${jsonText(
+        real.upstreamSha,
+      )}`,
+    );
+  }
+  if (report.mergeBaseSha !== real.mergeBaseSha) {
+    problems.push(
+      `report merge base ${jsonText(report.mergeBaseSha)} does not match the recomputed ${jsonText(
+        real.mergeBaseSha,
+      )}`,
+    );
+  }
+  if (report.status === "clean" && report.tree !== real.headTree) {
+    problems.push("the clean report tree does not equal the real merged tree");
+  }
+  const reportIncoming = [...report.incomingPaths].sort();
+  const realIncoming = [...real.incomingPaths].sort();
+  if (jsonText(reportIncoming) !== jsonText(realIncoming)) {
+    problems.push(
+      "the report incoming paths do not match the recomputed mergeBase...upstream diff",
+    );
+  }
+  const recomputed = classifyPaths(realIncoming);
+  const entryKey = (entry: { path: string; category: string; diverged: boolean }): string =>
+    jsonText([entry.path, entry.category, entry.diverged]);
+  for (const category of ["fork", "seam", "shared"] as const) {
+    const fromReport = report.classification[category].map(entryKey).sort();
+    const fromClassifier = recomputed[category].map(entryKey).sort();
+    if (jsonText(fromReport) !== jsonText(fromClassifier)) {
+      problems.push(
+        `the report classification (${category}) does not match the recomputed registry classification`,
+      );
+    }
+  }
+  return problems;
+}
+
+// Unmapped ++-owned files: shared-classified PR paths that are neither
+// incoming upstream work nor known to the validated upstream commit. These
+// are fork-invented files the registry does not claim; maintainers must
+// review them. Upstream-existing or upstream-deleted paths stay shared.
+export function findUnmappedForkPaths(
+  prDiffPaths: ReadonlyArray<string>,
+  incomingPaths: ReadonlyArray<string>,
+  upstreamTreePaths: ReadonlyArray<string>,
+): Array<string> {
+  const incoming = new Set(incomingPaths);
+  const upstreamTree = new Set(upstreamTreePaths);
+  return prDiffPaths.filter(
+    (path) =>
+      classifyPath(path).category === "shared" && !incoming.has(path) && !upstreamTree.has(path),
+  );
+}
+
+export interface HotspotReportView {
+  readonly report: DryRunReport;
+  readonly real: HotspotRealMerge;
+  readonly unmappedForkPaths: ReadonlyArray<string>;
+  readonly sourceRun: string;
+  readonly artifactName: string;
+}
+
+export function renderHotspotReport(view: HotspotReportView): string {
+  const { report, real } = view;
+  const value = (label: string, text: string | null): string =>
+    `- ${label}: ${text === null ? "(unresolved)" : `\`${text}\``}`;
+  const lines: Array<string> = [
+    HOTSPOT_COMMENT_MARKER,
+    "",
+    "## Upstream sync hotspot report",
+    "",
+    "Generated by the trusted sync-PR automation from validated dry-run data; the artifact's own Markdown is never republished.",
+    "",
+    `- Source: ${view.sourceRun} (artifact \`${view.artifactName}\`)`,
+    value("Upstream tag", report.tag),
+    value("Fork base", real.baseSha),
+    value("Upstream commit", real.upstreamSha),
+    value("PR head (real merge)", real.headSha),
+    `- Dry-run status: **${report.status}**`,
+    "",
+    "### Real merge validation",
+    "",
+    `- Head parents: exactly two, \`${real.baseSha}\` (current PR base) then \`${real.upstreamSha}\` (${report.tag}).`,
+    "- Incoming paths and ++ classification were recomputed from the real merge and match the report.",
+  ];
+  if (report.status === "clean") {
+    lines.push(`- Merged tree matches the dry-run tree (${report.tree}).`);
+  } else {
+    lines.push(
+      `- The resolved tree may differ from the dry run (status: ${report.status}); only a clean dry run pins the tree.`,
+    );
+  }
+  lines.push(
+    "",
+    `### Incoming ownership (${report.incomingPaths.length} paths)`,
+    "",
+    `#### ++-owned (${report.classification.fork.length})`,
+    "",
+    ...(report.classification.fork.length === 0
+      ? ["(none)"]
+      : summaryList(report.classification.fork.map((entry) => `- ${jsonText(entry.path)}`))),
+    "",
+    `#### Integration seams (${report.classification.seam.length})`,
+    "",
+    ...(report.classification.seam.length === 0
+      ? ["(none)"]
+      : summaryList(
+          report.classification.seam.map(
+            (entry) => `- ${jsonText(entry.path)} (${entry.diverged ? "diverged" : "fork-only"})`,
+          ),
+        )),
+    "",
+    `Other shared paths: ${report.classification.shared.length}`,
+  );
+  if (report.conflicts.length > 0) {
+    lines.push("", `### Conflicts (${report.conflicts.length})`, "");
+    lines.push(
+      ...summaryList(
+        report.conflicts.map(
+          (conflict) => `- ${jsonText(conflict.path)} (stages ${conflict.stages.join(", ")})`,
+        ),
+      ),
+    );
+  }
+  lines.push(
+    "",
+    "### Unmapped ++-owned files \u2014 maintainer review required",
+    "",
+    ...(view.unmappedForkPaths.length === 0
+      ? ["(none)"]
+      : summaryList(view.unmappedForkPaths.map((path) => `- ${jsonText(path)}`))),
+    "",
+    "Shared-classified PR paths that are neither incoming upstream work nor known to the validated upstream commit. Confirm each is intentional fork work; consider adding it to the ownership registry.",
+  );
+  return `${lines.join("\n")}\n`;
+}
+
+export interface HotspotReportOptions {
+  readonly cwd: string;
+  readonly prNumber: number;
+  readonly headSha: string;
+  readonly reportPath: string;
+  readonly sourceRun: string;
+  readonly outputPath: string;
+  readonly artifactName?: string | undefined;
+}
+
+export const generateHotspotReport = Effect.fn("upstream-sync.hotspotReport")(function* (
+  options: HotspotReportOptions,
+) {
+  if (!Number.isInteger(options.prNumber) || options.prNumber <= 0) {
+    return yield* new UpstreamSyncError({ message: "The PR number must be a positive integer." });
+  }
+  if (!FULL_OBJECT_SHA_PATTERN.test(options.headSha)) {
+    return yield* new UpstreamSyncError({
+      message: `The head SHA ${jsonText(options.headSha)} must be a full lowercase hex object SHA.`,
+    });
+  }
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const cwd = path.resolve(options.cwd);
+
+  const text = yield* fs.readFileString(options.reportPath).pipe(
+    Effect.mapError(
+      (cause) =>
+        new UpstreamSyncError({
+          message:
+            cause.reason._tag === "NotFound"
+              ? `The dry-run report JSON is missing at ${options.reportPath}.`
+              : `Failed to read the dry-run report at ${options.reportPath}: ${cause.message}`,
+        }),
+    ),
+  );
+  const report = yield* decodeDryRunReport(text).pipe(
+    Effect.mapError(
+      (cause) =>
+        new UpstreamSyncError({ message: `The dry-run report JSON is invalid: ${cause.message}` }),
+    ),
+  );
+  if (report.tag === null || parseUpstreamTag(report.tag) === undefined) {
+    return yield* new UpstreamSyncError({
+      message: `The dry-run report does not name a strict upstream tag: ${jsonText(report.tag)}.`,
+    });
+  }
+
+  yield* requireExpectedRemotes(cwd);
+  const prRef = `${UPSTREAM_RELEASE_REF_PREFIX}pr/${options.prNumber}`;
+  yield* git(cwd, [
+    "fetch",
+    "--no-recurse-submodules",
+    "--no-tags",
+    "origin",
+    `+refs/pull/${options.prNumber}/head:${prRef}`,
+  ]);
+  const identity = yield* readCommitIdentity(cwd, prRef);
+  if (identity.commit !== options.headSha) {
+    return yield* new UpstreamSyncError({
+      message: `The fetched PR head ${identity.commit} does not match the payload SHA ${options.headSha}; aborting the stale report.`,
+    });
+  }
+  if (identity.parents.length !== 2) {
+    return yield* new UpstreamSyncError({
+      message: `The PR head has ${identity.parents.length} parents; a designated sync PR must be an exact two-parent merge.`,
+    });
+  }
+  const baseSha = identity.parents[0]!;
+  const upstreamSha = identity.parents[1]!;
+
+  const upstreamTagSha = yield* fetchUpstreamTagNamespaced(cwd, report.tag);
+  if (upstreamTagSha !== upstreamSha) {
+    return yield* new UpstreamSyncError({
+      message: `Tag ${report.tag} now resolves to ${upstreamTagSha}, not the merged ${upstreamSha}. The tag moved since the dry run.`,
+    });
+  }
+
+  const mergeBaseSha = (yield* git(cwd, ["merge-base", baseSha, upstreamSha])).trim();
+  const incomingPaths = parseNullSeparated(
+    yield* git(cwd, [
+      "diff",
+      "--name-only",
+      "--no-renames",
+      "-z",
+      `${mergeBaseSha}...${upstreamSha}`,
+      "--",
+    ]),
+  );
+  const real: HotspotRealMerge = {
+    tag: report.tag,
+    baseSha,
+    upstreamSha,
+    headSha: identity.commit,
+    headTree: identity.tree,
+    mergeBaseSha,
+    incomingPaths,
+  };
+
+  // Validation completes before any rendering or output write.
+  const problems = validateHotspotReport(report, real);
+  if (problems.length > 0) {
+    return yield* new UpstreamSyncError({
+      message: `The dry-run report does not survive validation against the real merge:\n${indentLines(
+        problems,
+      )}`,
+    });
+  }
+
+  const prDiffPaths = parseNullSeparated(
+    yield* git(cwd, [
+      "diff",
+      "--name-only",
+      "--no-renames",
+      "-z",
+      `${baseSha}...${identity.commit}`,
+      "--",
+    ]),
+  );
+  const upstreamTreePaths = parseNullSeparated(
+    yield* git(cwd, ["ls-tree", "-r", "--name-only", "-z", upstreamSha]),
+  );
+  const unmappedForkPaths = findUnmappedForkPaths(prDiffPaths, incomingPaths, upstreamTreePaths);
+
+  const markdown = renderHotspotReport({
+    report,
+    real,
+    unmappedForkPaths,
+    sourceRun: options.sourceRun,
+    artifactName: options.artifactName ?? HOTSPOT_ARTIFACT_NAME,
+  });
+  yield* fs.writeFileString(options.outputPath, markdown).pipe(
+    Effect.mapError(
+      (cause) =>
+        new UpstreamSyncError({
+          message: `Failed to write the hotspot report at ${options.outputPath}: ${cause.message}`,
+        }),
+    ),
+  );
+  yield* Console.log(
+    `Hotspot report for PR #${options.prNumber} (${report.tag}): ${incomingPaths.length} incoming paths, ${report.conflicts.length} conflicts, ${unmappedForkPaths.length} unmapped ++-owned files.`,
+  );
+  return { headSha: identity.commit, tag: report.tag, unmappedForkPaths };
+});
+
 const resolveDryRunOutcomeCommand = Effect.fn("upstream-sync.resolveOutcome")(function* (
   githubOutput: boolean,
   lanesPath: string | undefined,
@@ -1618,6 +2139,81 @@ export const resolveOutcomeCommand = Command.make("resolve-outcome", {
   ),
 );
 
+export const validateMergeCommand = Command.make("validate-merge", {
+  prNumber: Flag.Int("pr-number").pipe(Flag.withDescription("The designated sync PR number.")),
+  headSha: Flag.String("head-sha").pipe(
+    Flag.withDescription("Full PR head SHA from the trusted event payload."),
+  ),
+  baseSha: Flag.String("base-sha").pipe(
+    Flag.withDescription("Full PR base SHA from the trusted event payload."),
+  ),
+  baseRepo: Flag.String("base-repo").pipe(
+    Flag.withDescription("Base repository full name from the payload."),
+  ),
+  baseRef: Flag.String("base-ref").pipe(Flag.withDescription("Base branch from the payload.")),
+  headRepo: Flag.String("head-repo").pipe(
+    Flag.withDescription("Head repository full name from the payload."),
+  ),
+  headRef: Flag.String("head-ref").pipe(Flag.withDescription("Head branch from the payload.")),
+}).pipe(
+  Command.withDescription(
+    "Validate a designated sync PR head as the exact two-parent merge of the current base and the upstream tag.",
+  ),
+  Command.withHandler((config) =>
+    Effect.gen(function* () {
+      const shared = yield* upstreamSyncRootCommand;
+      yield* validateUpstreamSyncMerge({
+        cwd: shared.cwd,
+        prNumber: config.prNumber,
+        headSha: config.headSha,
+        baseSha: config.baseSha,
+        baseRepo: config.baseRepo,
+        baseRef: config.baseRef,
+        headRepo: config.headRepo,
+        headRef: config.headRef,
+      });
+    }),
+  ),
+);
+
+export const hotspotReportCommand = Command.make("hotspot-report", {
+  prNumber: Flag.Int("pr-number").pipe(Flag.withDescription("The designated sync PR number.")),
+  headSha: Flag.String("head-sha").pipe(
+    Flag.withDescription("Full PR head SHA from the trusted event payload."),
+  ),
+  report: Flag.String("report").pipe(
+    Flag.withDescription("Path to the downloaded dry-run report JSON artifact."),
+  ),
+  sourceRun: Flag.String("source-run").pipe(
+    Flag.withDescription("URL of the dry-run workflow run the artifact came from."),
+  ),
+  output: Flag.String("output").pipe(
+    Flag.withDescription("Write the hotspot report Markdown to this path."),
+  ),
+  artifactName: Flag.String("artifact-name").pipe(
+    Flag.withDescription("Artifact name cited in the report source line."),
+    Flag.optional,
+  ),
+}).pipe(
+  Command.withDescription(
+    "Validate a trusted dry-run artifact against the real merge and render the hotspot report.",
+  ),
+  Command.withHandler((config) =>
+    Effect.gen(function* () {
+      const shared = yield* upstreamSyncRootCommand;
+      yield* generateHotspotReport({
+        cwd: shared.cwd,
+        prNumber: config.prNumber,
+        headSha: config.headSha,
+        reportPath: config.report,
+        sourceRun: config.sourceRun,
+        outputPath: config.output,
+        artifactName: Option.getOrUndefined(config.artifactName),
+      });
+    }),
+  ),
+);
+
 export const upstreamSyncCommand = upstreamSyncRootCommand.pipe(
   Command.withDescription("Synchronize an upstream release into the fork in explicit phases."),
   Command.withSubcommands([
@@ -1628,6 +2224,8 @@ export const upstreamSyncCommand = upstreamSyncRootCommand.pipe(
     dryRunCommand,
     replayDryRunCommand,
     resolveOutcomeCommand,
+    validateMergeCommand,
+    hotspotReportCommand,
   ]),
 );
 
