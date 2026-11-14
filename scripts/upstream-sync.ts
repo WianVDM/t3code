@@ -432,7 +432,7 @@ const renderSeamRefreshSection = (problems: ReadonlyArray<string>): Array<string
         "",
         "The registry cannot be refreshed against the merged tag; verify refuses until each is fixed.",
         "",
-        ...summaryList(problems.map((problem) => `- ${JSON.stringify(problem)}`)),
+        ...summaryList(problems.map((problem) => `- ${codeCell(JSON.stringify(problem))}`)),
       ];
 
 export function renderDryRunSummary(report: DryRunReport, detail: string | null): string {
@@ -2025,10 +2025,10 @@ export const replayDryRun = Effect.fn("upstream-sync.replayDryRun")(function* (
   return { mergeCommit: identity.commit, tree: identity.tree };
 });
 
-// Trusted ownership/conflict report for designated sync PRs (#50). The
-// artifact is passive data: decoded through the versioned schema, then
-// validated against the real merge and an independent recomputation before
-// anything is rendered. The artifact's own Markdown is never republished.
+// Trusted report for designated sync PRs (#50). The artifact is passive data:
+// decoded through the versioned schema and validated against the real merge or a
+// recomputation, never republished. Only seamRefreshProblems is trusted through
+// default-branch run provenance (rankDryRunArtifactRuns); it waives just the tree pin.
 export const HOTSPOT_COMMENT_MARKER = "<!-- upstream-sync-hotspot-report -->";
 export const HOTSPOT_ARTIFACT_NAME = "upstream-sync-dry-run-report";
 

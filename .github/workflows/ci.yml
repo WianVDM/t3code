@@ -560,50 +560,66 @@ jobs:
       - name: Check shared-persistence compatibility
         run: node .github/scripts/check-shared-persistence-compat.cjs FETCH_HEAD
 
-  # Advisory until B12: reports ++ fork-boundary violations against the seam
-  # registry in the base commit, so head-authored policy grants nothing. The
-  # registry check below validates the head registry against the head tree.
-  # continue-on-error and absent from `check`'s needs and from JOB_GATES, so its
-  # result can never affect Check. Every BOUNDARY_INFRASTRUCTURE path already
-  # selects full CI via ci-changes.cjs.
+  # Advisory until a designated sync PR (#50) passes it (plusplus/ARCHITECTURE.md,
+  # "PR guard"). Checker and dependencies come from the trusted base checkout; the
+  # PR head is fetched as passive objects and only its registry is decoded as JSON,
+  # so head code never runs. A PR that edits this workflow runs its own copy, but
+  # that edit raises ci.yml's registry delta and shows in review. continue-on-error
+  # and absent from `check`'s needs and JOB_GATES, so it never affects Check.
+  # BOUNDARY_INFRASTRUCTURE paths select full CI via ci-changes.cjs. Pull requests
+  # only: a sync merge moves upstreamRef, which only the exempt path may do.
   fork_boundaries:
     permissions:
       contents: read
     name: Fork Boundaries
+    if: ${{ github.event_name == 'pull_request' && !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     continue-on-error: true
+    needs: [changes, sync]
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-          sparse-checkout: |
-            /*
-            !/.repos/
-            !/apps/mobile/modules/t3-terminal/Vendor/**/*.a
-          sparse-checkout-cone-mode: false
+      # Plain git like the sync job: actions/checkout fails on the orphaned
+      # gitlinks in the vendored .repos tree.
+      - name: Checkout the trusted base
+        shell: bash
+        env:
+          CHECKOUT_REF: ${{ github.event.pull_request.base.sha }}
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git"
+          git sparse-checkout set --no-cone '/*' '!/.repos/' '!/apps/mobile/modules/t3-terminal/Vendor/**/*.a'
+          git fetch --no-tags origin "$CHECKOUT_REF"
+          git checkout --detach FETCH_HEAD
 
       - name: Setup Vite+
         uses: ./.github/actions/setup-ci-deps
 
-      - name: Check the seam registry
-        run: node scripts/seamRegistry.ts check
+      - name: Fetch the PR head
+        shell: bash
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "+refs/pull/${PR_NUMBER}/head:refs/remotes/pr/head"
+          if [ "$(git rev-parse refs/remotes/pr/head)" != "$HEAD_SHA" ]; then
+            echo "::error::The PR head moved after this run started; rerun the job."
+            exit 1
+          fi
 
       - name: Check fork boundaries
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
-        run: |
-          zero=0000000000000000000000000000000000000000
-          if [ -z "$BASE_SHA" ] || [ "$BASE_SHA" = "$zero" ]; then
-            echo "No base sha for this event; nothing to compare."
-            exit 0
-          fi
-          # A force push can leave `before` outside the fetched history.
-          git fetch --quiet --no-tags --depth=1 origin "$BASE_SHA" \
-            || git fetch --quiet --no-tags origin "$BASE_SHA" \
-            || echo "Could not fetch ${BASE_SHA}; the checker fails closed."
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          UPSTREAM_SYNC: ${{ needs.changes.outputs.upstream_sync }}
+          SYNC_DESIGNATION_ERROR: ${{ needs.changes.outputs.sync_designation_error }}
+          SYNC_MERGE_RESULT: ${{ needs.sync.result }}
+        run: >-
           node scripts/check-fork-boundaries.ts "$BASE_SHA"
+          --head "$HEAD_SHA" --summary "$GITHUB_STEP_SUMMARY"
 
   # Scoped Windows verification (#48): runs only when the change can affect the
   # desktop distribution or the release scripts that package it, over the

@@ -487,8 +487,8 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
   const compilerFiles = compilerApps.reduce((count, app) => count + app.names.length, 0);
 
   const steps: Array<Step<never>> = [
-    // Unconditional: the ++ fork-boundary checker reads its policy from this
-    // run's resolved base, and its failures propagate like any other step.
+    // Unconditional: the ++ fork-boundary checker compares this run's working tree
+    // and registry against the resolved base; its failures propagate like any step.
     {
       name: "fork boundaries",
       run: vp(["exec", "node", "scripts/check-fork-boundaries.ts", base]),

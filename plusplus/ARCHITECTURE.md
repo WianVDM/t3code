@@ -103,7 +103,7 @@ The fingerprint covers only the upstream region the hook depends on, so unrelate
 | `key`             | Dotted key path in JSON or YAML (`scripts.knip:check`, `jobs.release`). Region = the serialized JSON value, or for YAML the key line plus its indented block and any block sequence at the key's own indent. JSON paths split on `.`, so a key that contains a dot cannot be anchored (`missing`), and a duplicated JSON key resolves to its last value. YAML support covers block mappings only; flow mappings, anchors and aliases locate as `missing` |
 | `file`            | Whole file (swaps, siblings, whole-file seams such as `.github/SECURITY.md`)                                                                                                                                                                                                                                                                                                                                                                             |
 
-Normalize (LF endings, trailing whitespace stripped, outer blank lines dropped), hash with SHA-256, store the first 16 hex chars. Not found gives `missing`; more than one match gives `ambiguous`. Both fail `node scripts/seamRegistry.ts check` and block the sync refresh until the anchor is fixed. The planned guard (#39) will fail them in CI too.
+Normalize (LF endings, trailing whitespace stripped, outer blank lines dropped), hash with SHA-256, store the first 16 hex chars. Not found gives `missing`; more than one match gives `ambiguous`. Both fail `node scripts/seamRegistry.ts check` and block the sync refresh until the anchor is fixed.
 
 ## Per-merge report
 
@@ -113,25 +113,28 @@ Then: legacy files U touches (by path, with conflict flag), conflict paths and h
 
 After the sync PR resolves conflicts, `verify` stages the refresh (and refuses while an anchor or a fork delta cannot be refreshed) and `finish` re-runs it and commits the merge. The refresh sets `upstreamRef` to the merged commit, recomputes every fingerprint and delta, and appends paths, hunks and affected features to `plusplus/sync-history.json`. The `seams.json` diff in the sync PR is the record of what was adapted or dropped.
 
-## PR guard (planned in #39)
+## PR guard
 
-Not enforced yet: `scripts/check-fork-boundaries.ts` (CI job `Fork Boundaries`) is advisory and only classifies changed paths against the registry. #39 adds the checks below. For each PR except designated upstream-sync PRs (#50):
+`scripts/check-fork-boundaries.ts` (CI job `Fork Boundaries`) compares the PR head's registry and tree with the base. Policy and the checker itself come from the base; the head's registry is only decoded as JSON, so head code never runs. The job is advisory (`continue-on-error`, outside `Check`) until the first designated sync PR passes it; then it becomes required. A PR that edits `ci.yml` runs its own copy of the job, so the guard catches honest mistakes and makes registry growth reviewable, but is not a gate against that edit. For each PR except designated upstream-sync PRs (#50):
 
-1. A changed upstream-owned path with no `files` entry fails.
+0. The head registry's `upstreamRef` must equal the base's. Only a sync merge moves it.
+1. A changed upstream-owned path with no `files` entry fails, and so does an entry whose file no longer differs from upstream.
 2. A file whose numstat delta exceeds its recorded `delta` fails, unless the PR raises the entry.
 3. A deleted or renamed upstream-owned path fails.
-4. Anchors of touched entries must resolve at `upstreamRef` with matching fingerprints.
+4. Anchors of touched entries and siblings must resolve at `upstreamRef` with matching fingerprints. Untouched entries are not re-checked.
 5. The check summary lists every entry the PR adds or raises, so each new seam is a visible maintainer decision.
+
+A designated sync PR skips checks 0-5 and instead runs the whole-registry check of `node scripts/seamRegistry.ts check` on its head. The exemption comes from the `changes` job's `upstream_sync` and `sync_designation_error` outputs plus the `sync` job's result, never from labels, title or branch. `vp run check:changed` runs the same checker on the working tree, without the exemption.
 
 ## Existing machinery
 
-| Thing                                                                                    | Fate                                                                                                                                                                                          |
-| :--------------------------------------------------------------------------------------- | :-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| The retired path inventory and its validator (+test)                                     | Gone. `conflictHistory` moved to `plusplus/sync-history.json`; `exceptions` became `reason` text on legacy entries. Path categories are replaced by the git ownership rule                    |
-| `scripts/check-fork-boundaries.ts`                                                       | Keep the file, CI job name, git plumbing and fail-closed handling. Replace the "imports and JSX only" thin-seam verdicts with the registry checks above. Its TS parsing is reused for anchors |
-| `scripts/upstream-sync.ts`, dry-run and sync-PR workflows                                | Keep. Report section replaces `classifyPath` from `pr-ownership-label.cjs`; `finish` gains the refresh                                                                                        |
-| `.github/scripts/pr-ownership-label.cjs`                                                 | Keep the labels; derive "touches upstream" from the git rule and features from the registry; delete its 33-entry seam list                                                                    |
-| `packages/plusplus`, `apps/web/src/plusplus`, #80 sidecar, #82 mounts, `forkIdentity.ts` | Keep. They are the ++ side of the seams                                                                                                                                                       |
+| Thing                                                                                    | Fate                                                                                                                                                                       |
+| :--------------------------------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The retired path inventory and its validator (+test)                                     | Gone. `conflictHistory` moved to `plusplus/sync-history.json`; `exceptions` became `reason` text on legacy entries. Path categories are replaced by the git ownership rule |
+| `scripts/check-fork-boundaries.ts`                                                       | Enforces the PR guard above. Anchors come from `seamRegistry.ts`, so it parses no TypeScript itself                                                                        |
+| `scripts/upstream-sync.ts`, dry-run and sync-PR workflows                                | Keep. Report section replaces `classifyPath` from `pr-ownership-label.cjs`; `finish` gains the refresh                                                                     |
+| `.github/scripts/pr-ownership-label.cjs`                                                 | Keep the labels; derive "touches upstream" from the git rule and features from the registry; delete its 33-entry seam list                                                 |
+| `packages/plusplus`, `apps/web/src/plusplus`, #80 sidecar, #82 mounts, `forkIdentity.ts` | Keep. They are the ++ side of the seams                                                                                                                                    |
 
 ## Current conflict classes (benchmark ade473018d)
 
