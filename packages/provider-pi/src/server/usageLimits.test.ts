@@ -10,159 +10,18 @@ import * as HttpClientResponse from "effect/http/HttpClientResponse";
 
 import { kimiUsageResponseToLimits, readKimiCodeAccount } from "./usageLimits.ts";
 
-const checkedAt = "2026-10-22T12:00:00.000Z";
-
 const runNode = <A, E>(
   effect: Effect.Effect<A, E, FileSystem.FileSystem | Path.Path | Scope.Scope>,
 ) => effect.pipe(Effect.scoped, Effect.provide(NodeServices.layer), Effect.runPromise);
 
-describe("Kimi Code usage limits mapping", () => {
-  it("maps the full real payload to session and weekly windows", () => {
-    const payload = {
-      usage: {
-        limit: "100",
-        used: "90",
-        remaining: "10",
-        resetTime: "2026-10-27T06:09:31.207136Z",
-      },
-      limits: [
-        {
-          window: { duration: 300, timeUnit: "TIME_UNIT_MINUTE" },
-          detail: {
-            limit: "100",
-            used: "8",
-            remaining: "92",
-            resetTime: "2026-10-22T14:09:31.207136Z",
-          },
-        },
-      ],
-      usages: {
-        limit_5h: { used_ratio: 0.08, reset_time: "2026-10-22T14:09:30Z" },
-        limit_7d: { used_ratio: 0.8989, reset_time: "2026-10-27T06:09:30Z" },
-      },
-    };
+describe("kimiUsageResponseToLimits facade", () => {
+  const checkedAt = "2026-10-22T12:00:00.000Z";
 
-    const limits = kimiUsageResponseToLimits(payload, checkedAt);
-    expect(limits.unavailable).toBeUndefined();
-    expect(limits.checkedAt).toBe(checkedAt);
-    expect(limits.windows).toEqual([
-      {
-        id: "kimi-5h",
-        kind: "session",
-        label: "Kimi Code 5-hour",
-        usedPercent: 8,
-        resetsAt: "2026-10-22T14:09:30Z",
-        windowDurationMins: 300,
-      },
-      {
-        id: "kimi-7d",
-        kind: "weekly",
-        label: "Kimi Code Weekly",
-        usedPercent: 89.89,
-        resetsAt: "2026-10-27T06:09:30Z",
-        windowDurationMins: 10080,
-      },
-    ]);
-  });
-
-  it("parses string-formatted numbers tolerantly", () => {
-    const payload = {
-      usages: {
-        limit_5h: { used_ratio: "0.08", reset_time: "2026-10-22T14:09:30Z" },
-        limit_7d: { used_ratio: "0.8989", reset_time: "2026-10-27T06:09:30Z" },
-      },
-    };
-
-    const limits = kimiUsageResponseToLimits(payload, checkedAt);
-    expect(limits.windows).toEqual([
-      {
-        id: "kimi-5h",
-        kind: "session",
-        label: "Kimi Code 5-hour",
-        usedPercent: 8,
-        resetsAt: "2026-10-22T14:09:30Z",
-        windowDurationMins: 300,
-      },
-      {
-        id: "kimi-7d",
-        kind: "weekly",
-        label: "Kimi Code Weekly",
-        usedPercent: 89.89,
-        resetsAt: "2026-10-27T06:09:30Z",
-        windowDurationMins: 10080,
-      },
-    ]);
-  });
-
-  it("falls back to usage and limits[] when usages key is absent", () => {
-    const fallbackPayload = {
-      usage: {
-        limit: "100",
-        used: "90",
-        remaining: "10",
-        resetTime: "2026-10-27T06:09:31.207136Z",
-      },
-      limits: [
-        {
-          window: { duration: 300, timeUnit: "TIME_UNIT_MINUTE" },
-          detail: {
-            limit: "100",
-            used: "8",
-            remaining: "92",
-            resetTime: "2026-10-22T14:09:31.207136Z",
-          },
-        },
-      ],
-    };
-
-    const limits = kimiUsageResponseToLimits(fallbackPayload, checkedAt);
-    expect(limits.unavailable).toBeUndefined();
-    expect(limits.windows).toEqual([
-      {
-        id: "kimi-limit-0",
-        kind: "session",
-        label: "Kimi Code 5-hour",
-        usedPercent: 8,
-        resetsAt: "2026-10-22T14:09:31.207136Z",
-        windowDurationMins: 300,
-      },
-      {
-        id: "kimi-7d",
-        kind: "weekly",
-        label: "Kimi Code Weekly",
-        usedPercent: 90,
-        resetsAt: "2026-10-27T06:09:31.207136Z",
-        windowDurationMins: 10080,
-      },
-    ]);
-  });
-
-  it("treats an unparseable or empty payload as probe failure", () => {
-    for (const invalid of [
-      {},
-      null,
-      undefined,
-      "not an object",
-      { usages: {} },
-      { usages: { limit_5h: { used_ratio: "invalid-number" } } },
-      { usage: { limit: "0", used: "0" } },
-    ]) {
-      const limits = kimiUsageResponseToLimits(invalid, checkedAt);
-      expect(limits.unavailable).toEqual({
-        reason: "probeFailed",
-        message: "Kimi Code usage limits could not be read.",
-      });
-      expect(limits.windows).toEqual([]);
-    }
-  });
-
-  it("handles additional limit_* keys under usages as other kind", () => {
-    const payload = {
-      usages: {
-        limit_30d: { used_ratio: 0.5, reset_time: "2026-11-20T00:00:00Z" },
-      },
-    };
-    const limits = kimiUsageResponseToLimits(payload, checkedAt);
+  it("keeps raw limit_* window ids for the Pi-native reader", () => {
+    const limits = kimiUsageResponseToLimits(
+      { usages: { limit_30d: { used_ratio: 0.5, reset_time: "2026-11-20T00:00:00Z" } } },
+      checkedAt,
+    );
     expect(limits.windows).toEqual([
       {
         id: "limit_30d",

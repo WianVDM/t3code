@@ -1,4 +1,3 @@
-import type { ServerProviderUsageWindow } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -9,11 +8,23 @@ import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientRequest from "effect/http/HttpClientRequest";
 import * as HttpClientResponse from "effect/http/HttpClientResponse";
 import {
-  clampPercent,
-  makeUnavailableUsageLimits,
-  makeUsageLimits,
-} from "@t3tools/provider-core/server/usageLimits";
+  GROK_PRIVACY_MODE_MESSAGE,
+  GROK_PROBE_FAILED_MESSAGE,
+  GrokErrorResponse,
+  GrokUsageResponse,
+  grokUsageResponseToLimits,
+  isGrokPrivacyModeRefusal,
+} from "@t3tools/plusplus/grokUsageLimits";
+import { makeUnavailableUsageLimits } from "@t3tools/plusplus/usageLimits";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+
+/**
+ * Grok usage facade: billing-response interpretation lives in
+ * `@t3tools/plusplus/grokUsageLimits`; this module owns credential discovery,
+ * deployment-scope guards, and the HTTP probe.
+ */
+
+export { grokUsageResponseToLimits };
 
 const GrokCredentials = Schema.Record(
   Schema.String,
@@ -24,73 +35,6 @@ const GrokCredentials = Schema.Record(
   }),
 );
 const decodeCredentials = Schema.decodeEffect(Schema.fromJsonString(GrokCredentials));
-const GrokUsageResponse = Schema.Struct({
-  config: Schema.optional(
-    Schema.Struct({
-      creditUsagePercent: Schema.optional(Schema.Number),
-      currentPeriod: Schema.optional(
-        Schema.Struct({
-          type: Schema.optional(Schema.String),
-          start: Schema.optional(Schema.Unknown),
-          end: Schema.optional(Schema.String),
-        }),
-      ),
-    }),
-  ),
-});
-const GrokErrorResponse = Schema.Struct({ error: Schema.String });
-
-function parsePeriodBoundary(value: string | undefined) {
-  if (
-    !value ||
-    value !== value.trim() ||
-    !/^(?:\d{4}|[+-]\d{6})-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?|24:00(?::00(?:\.0+)?)?)(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/.test(
-      value,
-    )
-  ) {
-    return Number.NaN;
-  }
-  // Date parsing can normalize impossible calendar dates instead of rejecting them.
-  const datePart = value.slice(0, value.indexOf("T"));
-  const date = DateTime.make(`${datePart}T00:00:00.000Z`);
-  if (Option.isNone(date)) return Number.NaN;
-  const parts = DateTime.toPartsUtc(date.value);
-  if (parts.month !== Number(datePart.slice(-5, -3)) || parts.day !== Number(datePart.slice(-2))) {
-    return Number.NaN;
-  }
-  return Date.parse(value);
-}
-
-export function grokUsageResponseToLimits(
-  response: typeof GrokUsageResponse.Type,
-  checkedAt: string,
-) {
-  const period = response.config?.currentPeriod;
-  const periodType = period?.type?.replace(/^USAGE_PERIOD_TYPE_/, "");
-  const kind = periodType === "WEEKLY" ? "weekly" : periodType === "MONTHLY" ? "monthly" : "other";
-  let usedPercent = response.config?.creditUsagePercent;
-  if (
-    usedPercent === undefined &&
-    (kind === "weekly" || kind === "monthly") &&
-    typeof period?.start === "string" &&
-    parsePeriodBoundary(period?.start) < parsePeriodBoundary(period?.end)
-  ) {
-    // Grok omits a zero percentage while retaining the complete subscription period.
-    usedPercent = 0;
-  }
-  if (usedPercent === undefined || !Number.isFinite(usedPercent)) {
-    return makeUsageLimits({ checkedAt, windows: [] });
-  }
-  const reset = period?.end ? DateTime.make(period.end) : Option.none();
-  const window: ServerProviderUsageWindow = {
-    id: "subscription",
-    kind,
-    label: kind === "weekly" ? "Weekly" : kind === "monthly" ? "Monthly" : "Subscription",
-    usedPercent: clampPercent(usedPercent),
-    ...(Option.isSome(reset) ? { resetsAt: DateTime.formatIso(reset.value) } : {}),
-  };
-  return makeUsageLimits({ checkedAt, windows: [window] });
-}
 
 const readGrokCredential = Effect.fn("readGrokCredential")(function* (
   environment: NodeJS.ProcessEnv,
@@ -165,7 +109,7 @@ export const readGrokAccount = Effect.fn("readGrokAccount")(function* (
   const probeFailed = makeUnavailableUsageLimits({
     checkedAt,
     reason: "probeFailed",
-    message: "Grok could not read usage limits.",
+    message: GROK_PROBE_FAILED_MESSAGE,
   });
   const credential = yield* Effect.option(
     readGrokCredential(environment).pipe(Effect.timeout("10 seconds")),
@@ -185,12 +129,11 @@ export const readGrokAccount = Effect.fn("readGrokAccount")(function* (
     );
     if (response.status === 403) {
       const { error } = yield* HttpClientResponse.schemaBodyJson(GrokErrorResponse)(response);
-      // xAI refuses Grok Build while the account's privacy setting is a legacy mode.
-      if (error.includes("WKE=privacy-mode:")) {
+      if (isGrokPrivacyModeRefusal(error)) {
         return makeUnavailableUsageLimits({
           checkedAt,
           reason: "probeFailed",
-          message: "Switch your xAI account to Privacy Mode to show Grok usage limits.",
+          message: GROK_PRIVACY_MODE_MESSAGE,
         });
       }
     }

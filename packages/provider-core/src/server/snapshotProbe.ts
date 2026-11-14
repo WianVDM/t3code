@@ -21,6 +21,7 @@ import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import { readCustomModelEntries } from "@t3tools/shared/model";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { usageAccountsFields } from "@t3tools/plusplus/contracts";
 import { createProviderVersionAdvisory } from "./maintenanceResolver.ts";
 import { collectUint8StreamText } from "./collectStreamText.ts";
 
@@ -272,7 +273,7 @@ export function buildServerProvider(input: {
     slashCommands: [...(input.slashCommands ?? [])],
     skills: [...(input.skills ?? [])],
     ...(input.probe.usageLimits ? { usageLimits: input.probe.usageLimits } : {}),
-    ...(input.probe.usageAccounts ? { usageAccounts: input.probe.usageAccounts } : {}),
+    ...usageAccountsFields(input.probe.usageAccounts),
     ...(versionAdvisory ? { versionAdvisory } : {}),
   };
 }

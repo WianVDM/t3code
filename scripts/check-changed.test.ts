@@ -299,15 +299,21 @@ describe("check:changed", () => {
 });
 
 // Hooks export GIT_DIR and GIT_INDEX_FILE, and user config or the default
-// ~/.config/git/ignore can ignore or sign fixture files.
+// ~/.config/git/ignore can ignore or sign fixture files. Git on Windows cannot
+// open os.devNull as a config path, so isolation uses a real empty file.
+const emptyGitConfig = NodePath.join(
+  NodeFS.realpathSync(NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-check-changed-env-"))),
+  "empty-git-config",
+);
+NodeFS.writeFileSync(emptyGitConfig, "");
 const fixtureConfig = {
-  "core.excludesFile": NodeOS.devNull,
+  "core.excludesFile": emptyGitConfig,
   "user.name": "Fixture",
   "user.email": "fixture@example.invalid",
 };
 const env = {
   ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("GIT_"))),
-  GIT_CONFIG_GLOBAL: NodeOS.devNull,
+  GIT_CONFIG_GLOBAL: emptyGitConfig,
   GIT_CONFIG_NOSYSTEM: "1",
   GIT_CONFIG_COUNT: String(Object.keys(fixtureConfig).length),
   ...Object.fromEntries(
@@ -422,7 +428,7 @@ function launcherFixture() {
     fs.writeFileSync(path.join(process.env.RECORDS, process.pid + '.json'), JSON.stringify({ args, cwd: process.cwd() }));
     console.log('fixture stdout: ' + args[0]);
     console.error('fixture stderr: ' + args[0]);
-    process.exit(args[0] === process.env.FAIL_STEP ? 23 : 0);
+    process.exit(args.includes(process.env.FAIL_STEP) ? 23 : 0);
   `,
   );
   // Select the Windows launcher without changing the Effect runtime's host platform.
@@ -512,6 +518,35 @@ it("lints an Astro component and runs knip when only it changed", () => {
     page,
   ]);
   expect(calls.some(({ args }) => args[0] === "exec" && args[1] === "knip")).toBe(true);
+});
+
+it("forwards the resolved base to the fork boundaries step", () => {
+  using project = launcherFixture();
+  project.write(project.source, "export const value = 2;\n");
+  const result = project.run();
+  expect(result.status, result.stdout + result.stderr).toBe(0);
+  const head = NodeChildProcess.execFileSync("git", ["rev-parse", "HEAD"], {
+    cwd: project.root,
+    encoding: "utf8",
+    env,
+  }).trim();
+  expect(
+    project
+      .calls()
+      .find(({ args }) => args[1] === "node" && args[2] === "scripts/check-fork-boundaries.ts")
+      ?.args,
+  ).toEqual(["exec", "node", "scripts/check-fork-boundaries.ts", head]);
+});
+
+it("propagates a failing fork boundaries step", () => {
+  using project = launcherFixture();
+  project.write(project.source, "export const value = 2;\n");
+  const result = project.run("scripts/check-fork-boundaries.ts");
+  expect(result.status, result.stdout + result.stderr).toBe(1);
+  expect(result.stdout).toContain("FAIL  fork boundaries");
+  expect(
+    NodeFS.existsSync(NodePath.join(project.root, "node_modules/.cache/check-changed.json")),
+  ).toBe(false);
 });
 
 it.each(["install", "lint"])("reports a failing %s step with its output", (step) => {

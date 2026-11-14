@@ -40,7 +40,7 @@ import {
 import { Button } from "../ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { UsageLimitsPooled } from "./UsageLimitsPooled";
-import { ModelVendorIcon, usesModelVendorIcon } from "./modelVendorIcon";
+import { ModelVendorIcon, usesModelVendorIcon } from "~/plusplus/usage/modelVendorIcon";
 import { PROVIDER_PRESENTATION } from "./usageProviders";
 
 const PACE: Record<LimitPace, { readonly label: string; readonly icon: typeof GaugeIcon }> = {

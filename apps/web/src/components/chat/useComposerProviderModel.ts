@@ -3,7 +3,7 @@ import { type ScopedThreadRef } from "@t3tools/contracts";
 import {
   type ComposerProviderModelSelectionInput,
   resolveComposerProviderModelSelection,
-} from "./composerProviderModelSelection";
+} from "~/plusplus/chat/composerProviderModelSelection";
 
 /**
  * The provider instances the composer offers, the selected one, and the model and options the

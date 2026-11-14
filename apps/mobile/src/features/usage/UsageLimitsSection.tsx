@@ -17,6 +17,7 @@ import {
   limitsNotice,
   paceOf,
   paceRemainingPercent,
+  readMonetaryUsage,
   remainingPercent,
 } from "@t3tools/shared/usageLimits";
 import { formatUsd } from "@t3tools/shared/usageFormat";
@@ -191,7 +192,7 @@ export function AccountLimits(props: {
   if (!limits) return null;
   const notice = limitsNotice(limits);
   const externalUsage = limits.externalUsage;
-  const monetaryText = monetaryUsageText(limits.monetaryUsage);
+  const monetaryText = monetaryUsageText(readMonetaryUsage(limits));
   const padding = dense ? "px-4 py-3" : "p-4";
   return (
     <View

@@ -68,7 +68,7 @@ import { ProviderAccentColorPicker } from "./ProviderAccentColorPicker";
 import { RedactedSensitiveText } from "./RedactedSensitiveText";
 import { SettingResetButton, SettingsRow, SettingsSection } from "./settingsLayout";
 import { AcpSessionManagementSection } from "./AcpSessionManagementSection";
-import { ProviderContextBridgeSection } from "./ContextBridgeSettings";
+import { ProviderContextBridgeSection } from "~/plusplus/settings/ContextBridgeSettings";
 import { FoldedSettingsSection } from "./FoldedSettingsSection";
 import { readCodexSetupMode } from "./CodexSetupSection.logic";
 import {

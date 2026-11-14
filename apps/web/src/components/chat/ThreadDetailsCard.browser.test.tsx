@@ -45,6 +45,7 @@ function Card({
   rows = 1,
   automationRows = 0,
   serverOverflowRows = 0,
+  processRows = 0,
 }: {
   threadRef: ScopedThreadRef;
   inline: boolean;
@@ -55,6 +56,8 @@ function Card({
   automationRows?: number;
   /** Rows of 100px that expanded server lists add, which density ignores. */
   serverOverflowRows?: number;
+  /** Rows of 100px in a list only the additional density selector excludes. */
+  processRows?: number;
 }) {
   return (
     // The web root renders in StrictMode, which re-runs ref callbacks on every mount.
@@ -77,6 +80,7 @@ function Card({
           anchor={fixture.anchor}
           handle={fixture.handle}
           contentKey={String(rows)}
+          additionalScrollableContentSelector="[data-thread-processes-panel]"
         >
           {(density) => (
             <>
@@ -91,6 +95,9 @@ function Card({
                   data-thread-details-server-overflow
                   style={{ height: serverOverflowRows * 100 }}
                 />
+              ) : null}
+              {density === "full" && processRows > 0 ? (
+                <section data-thread-processes-panel style={{ height: processRows * 100 }} />
               ) : null}
             </>
           )}
@@ -192,6 +199,17 @@ it("stays full while expanded server rows overflow", async () => {
   await using _screen = await render(
     <Card threadRef={threadB} inline fixture={fixture} rows={2} serverOverflowRows={4} />,
   );
+  await expect
+    .element(page.getByRole("region", { name: "Thread details" }))
+    .toHaveAttribute("data-density", "full");
+});
+
+it("keeps full density when a list named by the additional selector grows tall", async () => {
+  using fixture = setup();
+  await using _screen = await render(
+    <Card threadRef={threadB} inline fixture={fixture} rows={2} processRows={6} />,
+  );
+  await expect.element(page.getByText("Details for thread-b")).toBeVisible();
   await expect
     .element(page.getByRole("region", { name: "Thread details" }))
     .toHaveAttribute("data-density", "full");

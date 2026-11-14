@@ -251,7 +251,6 @@ import {
   useThreadUpdatedAt,
   useThreadLastVisitedAt,
   useQuietThreadVisibleTurnItems,
-  useThreadVisibleTurnItems,
   useThreadStatus,
   useThreadHistory,
   useQuietThreadShell,
@@ -265,10 +264,10 @@ import {
   BranchRestoreConfirmHost,
   DeviceSetupDialogHost,
   openBranchRestoreConfirm,
-  ProcessDetailsDialogHost,
   PullRequestThreadDialogHost,
   RevertConfirmHost,
 } from "./chat/ChatOverlayHosts";
+import { ProcessDetailsDialogHost } from "~/plusplus/chat/ProcessDetailsDialogHost";
 import type { AssistantCitationRequest } from "./chat/AssistantCitationSource";
 import { useCitedHistory } from "./chat/citationProcedure";
 import type { MessagesTimelineHistoryControls } from "./chat/MessagesTimeline";
@@ -531,7 +530,6 @@ export default function ChatView(props: ChatViewProps) {
     activeProviderThread,
   );
   const serverVisibleTurnItems = useQuietThreadVisibleTurnItems(routeThreadDetailRef);
-  const fullServerVisibleTurnItems = useThreadVisibleTurnItems(routeThreadDetailRef);
   const serverThreadHistory = useThreadHistory(routeThreadDetailRef);
   const threadHistoryControls = (() => {
     if (routeThreadDetailRef === null || !shouldShowLoadEarlierControl(serverThreadHistory)) {
@@ -3927,8 +3925,7 @@ export default function ChatView(props: ChatViewProps) {
 
                 <ProcessDetailsDialogHost
                   threadKey={activeThreadKey}
-                  environmentId={activeThread.environmentId}
-                  visibleTurnItems={fullServerVisibleTurnItems}
+                  threadRef={routeThreadDetailRef}
                   cwd={gitCwd ?? undefined}
                   workspaceRoot={activeProject?.workspaceRoot}
                   onOpenToolDiff={onOpenToolDiffStable}

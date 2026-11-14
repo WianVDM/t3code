@@ -49,6 +49,10 @@ it.effect(
           },
         });
         expect(account.usageLimits.windows).toEqual([expect.objectContaining({ usedPercent: 25 })]);
+        // EXC-09 dual-write: the sidecar mirrors the released monetaryUsage field.
+        expect(account.usageLimits.plusplus).toEqual({
+          monetaryUsage: { usedUsd: 25, remainingUsd: 75, limitUsd: 100 },
+        });
       }),
     ),
 );
@@ -63,6 +67,7 @@ it.effect("maps a null limit to pay-as-you-go monetary usage with no invented wi
     ),
     Effect.map((account) => {
       expect(account.usageLimits.monetaryUsage).toEqual({ usedUsd: 12.5 });
+      expect(account.usageLimits.plusplus).toEqual({ monetaryUsage: { usedUsd: 12.5 } });
       expect(account.usageLimits.windows).toEqual([]);
       expect(account.usageLimits.unavailable).toBeUndefined();
     }),
@@ -89,6 +94,7 @@ it.effect("reports probeFailed on an unparseable response body instead of fabric
       unavailable: { reason: "probeFailed" },
     });
     expect(account.usageLimits.monetaryUsage).toBeUndefined();
+    expect(account.usageLimits.plusplus).toBeUndefined();
   }),
 );
 

@@ -41,6 +41,7 @@ describe("derivePendingBackgroundWork", () => {
         kind: "command",
         description: "npm test",
         startedAt: "2026-04-20T00:00:01.000Z",
+        plusplus: { startedAt: "2026-04-20T00:00:01.000Z" },
       },
       { taskId: "untimed-item", kind: "command", description: "npm build" },
     ]);
@@ -458,6 +459,7 @@ describe("derivePendingBackgroundWork kinds", () => {
           description: "Watching pull request #1",
           kind: "monitor",
           startedAt: "2026-10-05T00:00:00.000Z",
+          plusplus: { startedAt: "2026-10-05T00:00:00.000Z" },
           awaited: true,
         },
         {
@@ -465,6 +467,7 @@ describe("derivePendingBackgroundWork kinds", () => {
           description: "Watching pull request #5",
           kind: "monitor",
           startedAt: "2026-10-05T00:00:00.000Z",
+          plusplus: { startedAt: "2026-10-05T00:00:00.000Z" },
           awaited: true,
         },
       ]);
@@ -594,6 +597,7 @@ describe("deriveOngoingThreadBackgroundWork", () => {
         description: "old watcher",
         kind: "command",
         startedAt: "2026-04-20T00:00:03.000Z",
+        plusplus: { startedAt: "2026-04-20T00:00:03.000Z" },
       },
     ]);
   });
@@ -678,6 +682,7 @@ describe("deriveOngoingThreadBackgroundWork", () => {
         description: "Watching pull request #1",
         kind: "monitor",
         startedAt: "2026-10-05T00:00:00.000Z",
+        plusplus: { startedAt: "2026-10-05T00:00:00.000Z" },
         awaited: true,
       },
     ]);
@@ -776,6 +781,7 @@ describe("deriveOngoingThreadBackgroundWork", () => {
         description: "Watching pull request #1",
         kind: "monitor",
         startedAt: "2026-10-05T00:00:00.000Z",
+        plusplus: { startedAt: "2026-10-05T00:00:00.000Z" },
         awaited: true,
       },
     ]);
