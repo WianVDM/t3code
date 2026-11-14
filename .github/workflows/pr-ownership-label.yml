@@ -26,6 +26,10 @@ jobs:
       # are owned by issue-labels.yml; this job only attaches and detaches labels.
       - name: Checkout base repository
         uses: actions/checkout@v4
+        with:
+          # The three-dot diff needs the merge base, which a depth-1 clone lacks when
+          # the PR branched from an older main.
+          fetch-depth: 0
       - name: Test ownership classifier
         run: node --test .github/scripts/pr-ownership-label.test.cjs
       - name: Apply ownership labels
