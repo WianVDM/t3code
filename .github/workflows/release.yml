@@ -481,10 +481,16 @@ jobs:
     if: ${{ !failure() && !cancelled() && needs.preflight.result == 'success' && needs.desktop_linux_x64.result == 'success' && needs.desktop_win_x64.result == 'success' && needs.desktop_mac_arm64.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    # Stable and nightly wait for maintainer approval here, right before
+    # publishing. Previews come from unmerged branches, which the protected
+    # environment's main-only branch policy would reject.
+    environment: ${{ needs.preflight.outputs.release_channel == 'preview' && 'preview' || 'release' }}
     permissions:
       contents: write
       # GitHub's generated release notes read PR titles and authors.
       pull-requests: read
+      id-token: write
+      attestations: write
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -550,6 +556,17 @@ jobs:
           fi
           sha256sum "${archives[@]}" > SHA256SUMS
           cat SHA256SUMS
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: |
+            release-assets/*.exe
+            release-assets/*.AppImage
+            release-assets/*.deb
+            release-assets/*.dmg
+            release-assets/t3-*.tar.gz
+            release-assets/t3-*.zip
 
       # Shared consumers fetch this at releases/download/v<version>/release-metadata.json,
       # so every channel ships it. It is release information, not updater metadata:

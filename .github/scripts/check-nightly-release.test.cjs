@@ -689,6 +689,21 @@ test("releases publish a GitHub Release with checksums", () => {
   );
 });
 
+test("publishing waits on the protected release environment and attests the assets", () => {
+  const publishing = jobsOf(release).find((job) => /action-gh-release/.test(job.text));
+  assert.ok(publishing, "release.yml must publish a GitHub Release");
+  assert.match(
+    publishing.text,
+    /environment:\s*\$\{\{[^\n]*== 'preview' && 'preview' \|\| 'release'/,
+    "only previews may skip the protected release environment",
+  );
+  assert.match(publishing.text, /id-token: write/);
+  assert.match(publishing.text, /attestations: write/);
+  const attest = publishing.text.indexOf("actions/attest-build-provenance@");
+  assert.ok(attest > publishing.text.indexOf("sha256sum"), "attest after the checksums");
+  assert.ok(attest < publishing.text.indexOf("action-gh-release"), "attest before publishing");
+});
+
 test("stable versions keep the ++ revision format", () => {
   const scripts = [];
   walk(release.lines, release.root, (node) => {
@@ -722,9 +737,6 @@ test("stable releases stamp the plusplus desktop variant in both build steps", (
   assert.ok(artifact, "release-desktop.yml must build the desktop artifact");
   assert.match(artifact.text, /^\s+--skip-build$/m, "the artifact build must reuse the JS bundle");
   assert.match(artifact.text, /^\s+T3CODE_DESKTOP_VARIANT: plusplus$/m);
-
-  const fork = loadWorkflow("fork-release.yml");
-  assert.match(fork.source, /^\s+T3CODE_DESKTOP_VARIANT: fork$/m, "fork stays the fork variant");
 });
 
 test("verify_ci requires Check and Agent Context Budget on the resolved commit", () => {

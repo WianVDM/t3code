@@ -1,0 +1,84 @@
+name: Maintenance
+description: Repo hygiene, dependency bumps, CI and release tooling, docs, and other non-feature work.
+title: "[Maintenance]: "
+labels:
+  - needs-triage
+body:
+  - type: markdown
+    attributes:
+      value: |
+        One maintenance task per issue. Broken behavior belongs in the bug report form.
+        Maintainers apply the taxonomy labels (`accepted`, `plusplus`, `upstream-candidate`,
+        `upstream-sync`) during triage; authors cannot self-accept.
+
+  - type: textarea
+    id: task
+    attributes:
+      label: Task
+      description: What needs doing, concretely.
+      placeholder: Bump effect to 3.x across apps/server and packages/contracts.
+    validations:
+      required: true
+
+  - type: textarea
+    id: trigger
+    attributes:
+      label: Why now
+      description: What rots, breaks, or blocks if this is skipped. Link failing runs or advisories.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Scope
+      description: Which part of the project does this touch?
+      options:
+        - apps/web
+        - apps/server
+        - apps/desktop
+        - apps/mobile
+        - packages/contracts or packages/shared
+        - Build, CI, or release tooling
+        - Docs
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: What must be true when this is done. One observable outcome per line.
+      placeholder: |
+        - No dependency in the lockfile resolves to effect 2.x.
+        - Check and Agent context budget pass on the bump commit.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: classification
+    attributes:
+      label: Fork classification
+      description: How triage should classify this work in the ++ fork.
+      options:
+        - ++ fork work (plusplus)
+        - Upstream candidate (propose upstream first)
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: verification
+    attributes:
+      label: Verification needs
+      description: How a reviewer proves it works, such as checks, tests, manual passes, and devices.
+      placeholder: vp run check:changed plus one web pass in test-t3-app.
+    validations:
+      required: true
+
+  - type: input
+    id: related
+    attributes:
+      label: Related links
+      description: CI runs, advisories, upstream issues, or docs that track this work.

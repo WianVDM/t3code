@@ -1,0 +1,85 @@
+name: Feature request
+description: Request a new capability or an improvement to existing behavior.
+title: "[Feature]: "
+labels:
+  - enhancement
+  - needs-triage
+body:
+  - type: markdown
+    attributes:
+      value: |
+        One capability per issue. Search existing issues first.
+        Maintainers apply the taxonomy labels (`accepted`, `plusplus`, `upstream-candidate`,
+        `upstream-sync`) during triage; authors cannot self-accept.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What you are trying to do and where current behavior falls short.
+      placeholder: Sending one prompt to three providers means three threads and no shared transcript.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: The smallest change that solves the problem.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Scope
+      description: Which part of the project does this touch?
+      options:
+        - apps/web
+        - apps/server
+        - apps/desktop
+        - apps/mobile
+        - packages/contracts or packages/shared
+        - Build, CI, or release tooling
+        - Docs
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: What must be true when this is done. One observable outcome per line.
+      placeholder: |
+        - One thread fans a prompt out to up to three providers.
+        - The transcript groups replies by provider without losing order.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: classification
+    attributes:
+      label: Fork classification
+      description: How triage should classify this work in the ++ fork.
+      options:
+        - ++ fork work (plusplus)
+        - Upstream candidate (propose upstream first)
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: verification
+    attributes:
+      label: Verification needs
+      description: How a reviewer proves it works, such as checks, tests, manual passes, devices, and providers.
+      placeholder: Browser test in apps/web, one Replay (dev) turn, iOS simulator pass.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other approaches and why they are worse.
