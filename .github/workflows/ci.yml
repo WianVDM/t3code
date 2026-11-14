@@ -636,17 +636,21 @@ jobs:
           echo "::error::The upstream-sync label claim is invalid or unproven. Full CI ran, but this PR cannot merge until an authorized user applies the label."
           exit 1
 
+      # Plain git: actions/checkout with persist-credentials false runs submodule
+      # foreach, which fails on the orphaned gitlinks in the vendored .repos tree.
+      # The repository is public and the job never pushes.
       - name: Checkout the trusted base
-        uses: actions/checkout@v6
-        with:
-          ref: ${{ github.event.pull_request.base.sha }}
-          fetch-depth: 0
-          persist-credentials: false
-          sparse-checkout: |
-            /*
-            !/.repos/
-            !/apps/mobile/modules/t3-terminal/Vendor/**/*.a
-          sparse-checkout-cone-mode: false
+        shell: bash
+        env:
+          CHECKOUT_REF: ${{ github.event.pull_request.base.sha }}
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git"
+          git sparse-checkout set --no-cone '/*' '!/.repos/' '!/apps/mobile/modules/t3-terminal/Vendor/**/*.a'
+          git fetch --no-tags origin "$CHECKOUT_REF"
+          git checkout --detach FETCH_HEAD
 
       - name: Setup Vite+
         uses: ./.github/actions/setup-ci-deps

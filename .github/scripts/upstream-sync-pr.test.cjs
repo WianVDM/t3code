@@ -526,13 +526,13 @@ const workflow = fs.readFileSync(
 );
 
 test("the sync PR workflow is trusted-base only with minimal permissions", () => {
-  // Every checkout drops credentials and pins a trusted ref: the base SHA for
-  // PR events, the triggering default-branch SHA for issues. Never the head.
-  const checkouts = (workflow.match(/uses: actions\/checkout@v6/g) ?? []).length;
-  const noCreds = (workflow.match(/persist-credentials: false/g) ?? []).length;
-  assert.equal(checkouts, noCreds, "every checkout must set persist-credentials: false");
+  // Every checkout is plain git (actions/checkout's credential cleanup fails on
+  // the orphaned .repos gitlinks) and pins a trusted ref: the base SHA for PR
+  // events, the triggering default-branch SHA for issues. Never the head.
+  assert.ok(!/uses: actions\/checkout/.test(workflow), "use plain git, not actions/checkout");
+  const checkouts = (workflow.match(/^ {10}git init \.$/gm) ?? []).length;
   assert.ok(checkouts >= 2, "reconcile and report each check out");
-  assert.ok(!/ref:.*head\.(sha|ref)/.test(workflow), "no checkout may use the PR head ref or sha");
+  assert.ok(!/(ref|CHECKOUT_REF):.*head\.(sha|ref)/.test(workflow), "no checkout may use the PR head ref or sha");
   assert.match(workflow, /github\.event\.pull_request\.base\.sha/);
   // No secrets, no write to contents, no execution of head code.
   assert.ok(!/secrets:/.test(workflow), "the workflow must not reference secrets");

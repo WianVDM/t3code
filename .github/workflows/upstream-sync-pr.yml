@@ -46,15 +46,21 @@ jobs:
     steps:
       # Trusted code only: the default-branch commit for issue events, the PR
       # base commit for pull_request_target. The head is never checked out.
+      # Plain git: actions/checkout with persist-credentials false runs submodule
+      # foreach, which fails on the orphaned gitlinks in the vendored .repos tree.
+      # The repository is public and the job never pushes.
       - name: Checkout the trusted base
-        uses: actions/checkout@v6
-        with:
-          ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.base.sha || github.sha }}
-          fetch-depth: 1
-          persist-credentials: false
-          sparse-checkout: |
-            /.github/scripts/upstream-sync-pr.cjs
-          sparse-checkout-cone-mode: false
+        shell: bash
+        env:
+          CHECKOUT_REF: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.base.sha || github.sha }}
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git"
+          git sparse-checkout set --no-cone '/.github/scripts/upstream-sync-pr.cjs'
+          git fetch --no-tags --depth=1 origin "$CHECKOUT_REF"
+          git checkout --detach FETCH_HEAD
 
       - name: Reconcile the upstream-sync label
         env:
@@ -83,17 +89,21 @@ jobs:
       HEAD_REF: ${{ github.event.pull_request.head.ref }}
       GITHUB_TOKEN: ${{ github.token }}
     steps:
+      # Plain git: actions/checkout with persist-credentials false runs submodule
+      # foreach, which fails on the orphaned gitlinks in the vendored .repos tree.
+      # The repository is public and the job never pushes.
       - name: Checkout the trusted base
-        uses: actions/checkout@v6
-        with:
-          ref: ${{ github.event.pull_request.base.sha }}
-          fetch-depth: 0
-          persist-credentials: false
-          sparse-checkout: |
-            /*
-            !/.repos/
-            !/apps/mobile/modules/t3-terminal/Vendor/**/*.a
-          sparse-checkout-cone-mode: false
+        shell: bash
+        env:
+          CHECKOUT_REF: ${{ github.event.pull_request.base.sha }}
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git"
+          git sparse-checkout set --no-cone '/*' '!/.repos/' '!/apps/mobile/modules/t3-terminal/Vendor/**/*.a'
+          git fetch --no-tags origin "$CHECKOUT_REF"
+          git checkout --detach FETCH_HEAD
 
       # designation=designated|not_designated|invalid, resolved by trusted base
       # code. An authorized removal (not_designated) deletes the report; an
