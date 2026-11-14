@@ -9,18 +9,32 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import * as NodeURL from "node:url";
 
 import {
+  computeFullWindowsPackages,
+  decodeDryRunReport,
+  dryRunUpstreamSync,
+  DryRunReport,
   EXPECTED_REMOTES,
   findAddedConflictMarkers,
   finishUpstreamSync,
   GitCommandError,
   nextForkTag,
+  parseConflictStages,
   parseGitHubRepository,
+  parseUpstreamTagKind,
   prepareUpstreamSync,
+  renderDryRunSummary,
+  replayDryRun,
+  resolveDryRunOutcome,
+  selectLatestUpstreamTag,
   UpstreamSyncError,
   verifyUpstreamSync,
 } from "./upstream-sync.ts";
+import { decide, readWorkspace } from "../.github/scripts/ci-changes.cjs";
+
+import type { DryRunOutcomeInput } from "./upstream-sync.ts";
 
 const TAG = "v1.2.3";
+const NIGHTLY_TAG = "v0.1.8-nightly.20261108.4380";
 // Must stay in sync with the private VERIFIED_MERGE_RECORD_NAME in upstream-sync.ts.
 const VERIFIED_MERGE_RECORD_NAME = "upstream-sync.verified.json";
 const ORIGIN_REMOTE = `https://github.com/${EXPECTED_REMOTES.origin}.git`;
@@ -58,17 +72,21 @@ const runGit = Effect.fn("test.upstreamSyncGit")(function* (
 }, Effect.scoped);
 
 interface RepositoryFixture {
+  readonly root: string;
   readonly cwd: string;
   readonly env: Record<string, string>;
   readonly git: (args: ReadonlyArray<string>) => ReturnType<typeof runGit>;
   readonly rewrites: ReadonlyArray<readonly [string, string]>;
   readonly forkHead: string;
   readonly upstreamHead: string;
+  readonly originLocalUrl: string;
   readonly upstreamLocalUrl: string;
 }
 
 const makeRepositoryFixture = Effect.fn("test.makeUpstreamSyncFixture")(function* (options: {
   readonly variant: "clean" | "conflict";
+  readonly extraUpstreamFiles?: Readonly<Record<string, string>>;
+  readonly upstreamRenames?: ReadonlyArray<readonly [string, string]>;
 }) {
   const conflict = options.variant === "conflict";
   const fs = yield* FileSystem.FileSystem;
@@ -125,6 +143,16 @@ const makeRepositoryFixture = Effect.fn("test.makeUpstreamSyncFixture")(function
   } else {
     yield* fs.writeFileString(path.join(seed, "upstream.txt"), "upstream\n");
   }
+  for (const [relative, content] of Object.entries(options.extraUpstreamFiles ?? {})) {
+    const target = path.join(seed, ...relative.split("/"));
+    yield* fs.makeDirectory(path.dirname(target), { recursive: true });
+    yield* fs.writeFileString(target, content);
+  }
+  for (const [from, to] of options.upstreamRenames ?? []) {
+    const target = path.join(seed, ...to.split("/"));
+    yield* fs.makeDirectory(path.dirname(target), { recursive: true });
+    yield* git(seed, ["mv", from, to]);
+  }
   yield* commitSeed("upstream change");
   const upstreamHead = (yield* git(seed, ["rev-parse", "HEAD"])).trim();
   yield* git(seed, ["tag", TAG]);
@@ -146,12 +174,14 @@ const makeRepositoryFixture = Effect.fn("test.makeUpstreamSyncFixture")(function
   ];
 
   return {
+    root,
     cwd,
     env,
     git: (args: ReadonlyArray<string>) => git(cwd, args),
     rewrites,
     forkHead,
     upstreamHead,
+    originLocalUrl,
     upstreamLocalUrl,
   };
 });
@@ -166,8 +196,9 @@ const localFetchSpawner = Effect.fn("test.localUpstreamSyncFetch")(function* (
   ]);
   return ChildProcessSpawner.make((command) => {
     if (!ChildProcess.isStandardCommand(command)) return native.spawn(command);
+    const talksToRemotes = command.args[0] === "fetch" || command.args[0] === "ls-remote";
     const args =
-      command.command === "git" && command.args[0] === "fetch"
+      command.command === "git" && talksToRemotes
         ? [...rewriteArgs, ...command.args]
         : command.args;
     return native.spawn(
@@ -189,6 +220,51 @@ const headParents = (git: RepositoryFixture["git"]) =>
     Effect.map((output) => output.trim().split(/\s+/)),
   );
 
+// Turns the detached merge into a usage error so the failure carries no unmerged paths.
+const mergeBreakingSpawner = Effect.fn("test.mergeBreakingSpawner")(function* (
+  fixture: RepositoryFixture,
+) {
+  const fetchSpawner = yield* localFetchSpawner(fixture);
+  return ChildProcessSpawner.make((command) => {
+    if (
+      ChildProcess.isStandardCommand(command) &&
+      command.command === "git" &&
+      command.args.includes("merge")
+    ) {
+      return fetchSpawner.spawn(
+        ChildProcess.make(
+          command.command,
+          [...command.args, "--definitely-not-a-git-option"],
+          command.options,
+        ),
+      );
+    }
+    return fetchSpawner.spawn(command);
+  });
+});
+
+// Everything except the disposable refs/upstream-sync namespace, which dry runs own.
+const localRefsSnapshot = (git: RepositoryFixture["git"]) =>
+  git(["for-each-ref", "--format=%(refname) %(objectname)"]).pipe(
+    Effect.map((output) =>
+      output
+        .split(/\r?\n/)
+        .filter((line) => line.length > 0 && !line.startsWith("refs/upstream-sync/"))
+        .sort(),
+    ),
+  );
+
+const readReportFile = Effect.fn("test.readDryRunReport")(function* (reportPath: string) {
+  const fs = yield* FileSystem.FileSystem;
+  const text = yield* fs.readFileString(reportPath);
+  return yield* decodeDryRunReport(text).pipe(Effect.orDie);
+});
+
+const dryRunPaths = (fixture: RepositoryFixture, path: Path.Path) => ({
+  reportPath: path.join(fixture.root, "report.json"),
+  summaryPath: path.join(fixture.root, "summary.md"),
+});
+
 // Simulates an octopus parent appearing only after verify recorded the two-parent state:
 // injected during finish's `git commit` rather than weakening the production guard.
 const commitParentInjectingSpawner = Effect.fn("test.commitParentInjectingSpawner")(function* (
@@ -203,7 +279,7 @@ const commitParentInjectingSpawner = Effect.fn("test.commitParentInjectingSpawne
       if (
         ChildProcess.isStandardCommand(command) &&
         command.command === "git" &&
-        command.args[0] === "commit"
+        command.args.includes("commit")
       ) {
         const mergeHeadPath = path.join(fixture.cwd, ".git", "MERGE_HEAD");
         const existing = yield* fs.readFileString(mergeHeadPath);
@@ -233,6 +309,31 @@ describe("upstream-sync helpers", () => {
       `${TAG}-fork.9007199254740994`,
     );
     assert.throws(() => nextForkTag("1.2.3", []), /Invalid upstream tag/);
+  });
+
+  it("classifies stable and nightly tag grammar with valid calendar dates", () => {
+    assert.equal(parseUpstreamTagKind("v1.2.3"), "stable");
+    assert.equal(parseUpstreamTagKind(NIGHTLY_TAG), "nightly");
+    assert.equal(parseUpstreamTagKind("v10.20.30-nightly.20260101.0"), "nightly");
+    assert.equal(parseUpstreamTagKind("v1.2.3-nightly.20280229.1"), "nightly");
+    assert.equal(parseUpstreamTagKind("v1.2.3-nightly.20000229.1"), "nightly");
+    for (const tag of [
+      "1.2.3",
+      "v1.2",
+      "v1.2.3.4",
+      "v01.2.3",
+      "v1.2.3-rc.1",
+      "v1.2.3-nightly",
+      "v1.2.3-nightly.20261108",
+      "v1.2.3-nightly.2026113.1",
+      "v1.2.3-nightly.20261301.1",
+      "v1.2.3-nightly.20260229.1",
+      "v1.2.3-nightly.19000229.1",
+      "v1.2.3-nightly.20261108.04380",
+      "v1.2.3-nightly.20261108.x",
+    ]) {
+      assert.isUndefined(parseUpstreamTagKind(tag), tag);
+    }
   });
 
   it("parses supported GitHub remotes and rejects other repositories", () => {
@@ -643,4 +744,939 @@ it.live(
         ]);
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+describe("upstream-sync dry-run helpers", () => {
+  it("selects the greatest strict stable tag and rejects everything else", () => {
+    assert.isUndefined(selectLatestUpstreamTag([]));
+    assert.isUndefined(
+      selectLatestUpstreamTag(["main", "v1.2", "v1.2.3-rc.1", "refs/tags/v1.0.0"]),
+    );
+    assert.equal(selectLatestUpstreamTag(["v1.2.3", "v1.2.10", "v1.10.0", "v0.9.9"]), "v1.10.0");
+    assert.equal(selectLatestUpstreamTag(["v2.0.0", "v10.0.0", "v9.9.9"]), "v10.0.0");
+    // Prereleases, fork tags, malformed names, option-like values, and embedded
+    // newlines never win; only strict vX.Y.Z survives.
+    assert.equal(
+      selectLatestUpstreamTag([
+        "v1.0.0",
+        "v2.0.0-rc.1",
+        "v2.0.0-fork.1",
+        "v02.0.0",
+        "-v3.0.0",
+        "v3.0.0\nv9.9.9",
+        "latest",
+      ]),
+      "v1.0.0",
+    );
+    // BigInt components: beyond safe integers the numerically greatest still wins.
+    assert.equal(
+      selectLatestUpstreamTag(["v9007199254740993.0.0", "v1.0.0"]),
+      "v9007199254740993.0.0",
+    );
+  });
+
+  it("groups conflict stages by path from ls-files -u -s -z output", () => {
+    const output = [
+      "100644 1111111111111111111111111111111111111111 1\tconflict.txt",
+      "100644 2222222222222222222222222222222222222222 2\tconflict.txt",
+      "100644 3333333333333333333333333333333333333333 3\tconflict.txt",
+      "100644 1111111111111111111111111111111111111111 1\tother.txt",
+      "100644 3333333333333333333333333333333333333333 3\tother.txt",
+      "",
+    ].join("\0");
+    assert.deepStrictEqual(parseConflictStages(["conflict.txt", "other.txt"], output), [
+      { path: "conflict.txt", stages: [1, 2, 3] },
+      { path: "other.txt", stages: [1, 3] },
+    ]);
+    assert.deepStrictEqual(parseConflictStages(["absent.txt"], output), [
+      { path: "absent.txt", stages: [] },
+    ]);
+  });
+
+  it("escapes unusual paths and caps long sections in the summary", () => {
+    const paths = Array.from({ length: 205 }, (_, index) => `pkg/${index}.ts`);
+    const report: DryRunReport = {
+      schemaVersion: 1,
+      requestedTag: "latest",
+      tag: "v1.2.3",
+      baseSha: "b".repeat(40),
+      mergeBaseSha: "m".repeat(40),
+      upstreamSha: "u".repeat(40),
+      mergeCommit: null,
+      tree: null,
+      status: "conflict",
+      incomingPaths: ['weird "path"\t.ts', ...paths],
+      classification: {
+        fork: paths.map((path) => ({ path, category: "fork" as const, diverged: false })),
+        seam: [{ path: 'seam "x".ts', category: "seam" as const, diverged: true }],
+        shared: [],
+      },
+      conflicts: [{ path: 'weird "path"\t.ts', stages: [1, 2, 3] }],
+      windowsPackages: [],
+    };
+    const summary = renderDryRunSummary(report, null);
+    // The unusual path only appears JSON-escaped, never raw.
+    assert.include(summary, JSON.stringify('weird "path"\t.ts'));
+    assert.isFalse(summary.includes('weird "path"\t.ts\n'));
+    // A 205-entry section shows 200 and names the remainder.
+    assert.include(summary, "and 5 more");
+    assert.include(summary, "++-owned (205)");
+    assert.include(summary, "(diverged)");
+    assert.include(summary, "prepare --tag v1.2.3");
+  });
+});
+
+describe("resolveDryRunOutcome", () => {
+  const lane = (result: string, verification: string | null = null) => ({ result, verification });
+  const input = (overrides: Partial<DryRunOutcomeInput> = {}): DryRunOutcomeInput => ({
+    mergeStatus: "clean",
+    mergeResult: "success",
+    reportPresent: true,
+    linux: lane("success", "passed"),
+    windows: lane("success", "passed"),
+    ...overrides,
+  });
+
+  it("passes a clean merge that verifies on both lanes", () => {
+    const outcome = resolveDryRunOutcome(input());
+    assert.equal(outcome.outcome, "passed");
+    assert.isTrue(outcome.success);
+    assert.deepEqual(outcome.lanes, { linux: "passed", windows: "passed" });
+    assert.deepEqual(outcome.problems, []);
+  });
+
+  it("succeeds on already integrated with both lanes skipped", () => {
+    const outcome = resolveDryRunOutcome(
+      input({
+        mergeStatus: "already_integrated",
+        linux: lane("skipped"),
+        windows: lane("skipped"),
+      }),
+    );
+    assert.equal(outcome.outcome, "already_integrated");
+    assert.isTrue(outcome.success);
+    assert.deepEqual(outcome.problems, []);
+  });
+
+  it("reports a conflict as failure without running lanes", () => {
+    const outcome = resolveDryRunOutcome(
+      input({
+        mergeStatus: "conflict",
+        mergeResult: "failure",
+        linux: lane("skipped"),
+        windows: lane("skipped"),
+      }),
+    );
+    assert.equal(outcome.outcome, "conflict");
+    assert.isFalse(outcome.success);
+    assert.deepEqual(outcome.problems, []);
+  });
+
+  it("reports a merge integrity failure distinctly from a conflict", () => {
+    const outcome = resolveDryRunOutcome(
+      input({
+        mergeStatus: "merge_verification_failed",
+        mergeResult: "failure",
+        linux: lane("skipped"),
+        windows: lane("skipped"),
+      }),
+    );
+    assert.equal(outcome.outcome, "merge_verification_failed");
+    assert.isFalse(outcome.success);
+  });
+
+  it("maps a started lane verification failure to verification_failed", () => {
+    const outcome = resolveDryRunOutcome(
+      input({ windows: lane("failure", "verification_failed") }),
+    );
+    assert.equal(outcome.outcome, "verification_failed");
+    assert.isFalse(outcome.success);
+    assert.deepEqual(outcome.lanes, { linux: "passed", windows: "verification_failed" });
+  });
+
+  it("outranks a lane verification failure with an infrastructure error on the other lane", () => {
+    const outcome = resolveDryRunOutcome(
+      input({
+        linux: lane("failure", "verification_failed"),
+        windows: lane("failure", "error"),
+      }),
+    );
+    assert.equal(outcome.outcome, "error");
+    assert.isFalse(outcome.success);
+    // Both lane states are preserved even though the overall outcome is error.
+    assert.deepEqual(outcome.lanes, { linux: "verification_failed", windows: "error" });
+  });
+
+  it("fails closed on cancellation", () => {
+    for (const mergeResult of ["cancelled", ""]) {
+      const outcome = resolveDryRunOutcome(input({ mergeResult }));
+      assert.equal(outcome.outcome, "error", mergeResult);
+      assert.isFalse(outcome.success, mergeResult);
+    }
+    const cancelledLane = resolveDryRunOutcome(input({ linux: lane("cancelled") }));
+    assert.equal(cancelledLane.outcome, "error");
+    assert.equal(cancelledLane.lanes.linux, "error");
+  });
+
+  it("fails closed on missing or unexpected merge outputs", () => {
+    for (const mergeStatus of [null, "", "surprise"]) {
+      const outcome = resolveDryRunOutcome(input({ mergeStatus }));
+      assert.equal(outcome.outcome, "error", JSON.stringify(mergeStatus));
+      assert.isFalse(outcome.success, JSON.stringify(mergeStatus));
+    }
+  });
+
+  it("fails closed when the diagnostics report is missing", () => {
+    const outcome = resolveDryRunOutcome(input({ reportPresent: false }));
+    assert.equal(outcome.outcome, "error");
+    assert.isFalse(outcome.success);
+  });
+
+  it("fails closed when a clean merge skips a lane or a lane fails without a result", () => {
+    const skipped = resolveDryRunOutcome(input({ linux: lane("skipped") }));
+    assert.equal(skipped.outcome, "error");
+    const noVerification = resolveDryRunOutcome(input({ windows: lane("failure", null) }));
+    assert.equal(noVerification.outcome, "error");
+    assert.equal(noVerification.lanes.windows, "error");
+  });
+
+  it("fails closed when a lane runs despite an already integrated tag", () => {
+    const outcome = resolveDryRunOutcome(
+      input({ mergeStatus: "already_integrated", linux: lane("success", "passed") }),
+    );
+    assert.equal(outcome.outcome, "error");
+    assert.isFalse(outcome.success);
+  });
+});
+
+it.live("dry-run merges on a detached ref and mutates no branch, tag, or remote", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const fixture = yield* makeRepositoryFixture({
+        variant: "clean",
+        extraUpstreamFiles: {
+          "AGENTS.md": "fork governance\n",
+          ".agents/we ird's path.txt": "odd name\n",
+          "packages/shared/src/promptLinks.ts": "export const promptLinks = [];\n",
+          "scripts/dry-run-tool.txt": "tool\n",
+        },
+        upstreamRenames: [["README.md", "docs/README.md"]],
+      });
+      const spawner = yield* localFetchSpawner(fixture);
+      const path = yield* Path.Path;
+      const fs = yield* FileSystem.FileSystem;
+      const git = fixture.git;
+      const paths = dryRunPaths(fixture, path);
+      // A same-named fork tag must survive the upstream fetch into the namespace.
+      yield* git(["tag", TAG, fixture.forkHead]);
+      const refsBefore = yield* localRefsSnapshot(git);
+      const originRefsBefore = (yield* git(["ls-remote", fixture.originLocalUrl])).trim();
+      const mergeBase = (yield* git(["rev-parse", `${fixture.forkHead}^`])).trim();
+      const githubOutputPath = path.join(fixture.root, "github-output.txt");
+
+      process.env.GITHUB_OUTPUT = githubOutputPath;
+      let report: DryRunReport;
+      try {
+        report = yield* withSpawner(spawner)(
+          dryRunUpstreamSync({
+            tag: TAG,
+            cwd: fixture.cwd,
+            ...paths,
+            githubOutput: true,
+            windowsPackages: ["scripts"],
+          }),
+        );
+      } finally {
+        delete process.env.GITHUB_OUTPUT;
+      }
+
+      assert.equal(report.schemaVersion, 1);
+      assert.equal(report.status, "clean");
+      assert.equal(report.requestedTag, TAG);
+      assert.equal(report.tag, TAG);
+      assert.equal(report.baseSha, fixture.forkHead);
+      assert.equal(report.mergeBaseSha, mergeBase);
+      assert.equal(report.upstreamSha, fixture.upstreamHead);
+      assert.isNotNull(report.mergeCommit);
+      assert.isNotNull(report.tree);
+
+      // Exactly two parents, base then upstream, and the recorded tree matches HEAD.
+      const parents = yield* headParents(git);
+      assert.deepEqual(parents.slice(1), [fixture.forkHead, fixture.upstreamHead]);
+      assert.equal(parents[0], report.mergeCommit);
+      assert.equal((yield* git(["rev-parse", "--verify", "HEAD^{tree}"])).trim(), report.tree);
+
+      // Detached: no branch checked out, no sync branch, no ref or remote mutation.
+      assert.equal((yield* git(["branch", "--show-current"])).trim(), "");
+      assert.equal((yield* git(["branch", "--list", `sync/upstream-${TAG}`])).trim(), "");
+      assert.deepEqual(yield* localRefsSnapshot(git), refsBefore);
+      // The same-named fork tag still points at the fork commit, not upstream.
+      assert.equal(
+        (yield* git(["rev-parse", `refs/tags/${TAG}^{commit}`])).trim(),
+        fixture.forkHead,
+      );
+      assert.equal((yield* git(["ls-remote", fixture.originLocalUrl])).trim(), originRefsBefore);
+      assert.equal((yield* git(["remote", "get-url", "origin"])).trim(), ORIGIN_REMOTE);
+      assert.equal((yield* git(["remote", "get-url", "upstream"])).trim(), UPSTREAM_REMOTE);
+      assert.equal((yield* git(["status", "--porcelain"])).trim(), "");
+      assert.equal((yield* git(["show", "HEAD:upstream.txt"])).trim(), "upstream");
+      assert.equal((yield* git(["show", "HEAD:fork.txt"])).trim(), "fork");
+
+      // A no-rename diff lists both sides of the rename, and the fork-only file
+      // is not reported as deleted. Real classifier: fork, seam, and shared.
+      assert.deepEqual([...report.incomingPaths].sort(), [
+        ".agents/we ird's path.txt",
+        "AGENTS.md",
+        "README.md",
+        "docs/README.md",
+        "packages/shared/src/promptLinks.ts",
+        "scripts/dry-run-tool.txt",
+        "upstream.txt",
+      ]);
+      const sortedFork = [...report.classification.fork].sort((a, b) => (a.path < b.path ? -1 : 1));
+      assert.deepEqual(sortedFork, [
+        { path: ".agents/we ird's path.txt", category: "fork", diverged: false },
+        { path: "AGENTS.md", category: "fork", diverged: false },
+      ]);
+      assert.deepEqual(report.classification.seam, [
+        { path: "packages/shared/src/promptLinks.ts", category: "seam", diverged: true },
+      ]);
+      assert.deepEqual(report.classification.shared.map((entry) => entry.path).sort(), [
+        "README.md",
+        "docs/README.md",
+        "scripts/dry-run-tool.txt",
+        "upstream.txt",
+      ]);
+      assert.deepEqual(report.conflicts, []);
+      assert.deepEqual(report.windowsPackages, ["scripts"]);
+
+      // The JSON report round-trips through the versioned schema, the summary
+      // escapes unusual paths, and GITHUB_OUTPUT carries the lane inputs.
+      const persisted = yield* readReportFile(paths.reportPath);
+      assert.deepEqual(persisted, report);
+      const summary = yield* fs.readFileString(paths.summaryPath);
+      assert.include(summary, JSON.stringify(".agents/we ird's path.txt"));
+      assert.include(summary, "(diverged)");
+      assert.include(summary, "**clean**");
+      const output = yield* fs.readFileString(githubOutputPath);
+      assert.include(output, "status=clean\n");
+      assert.include(output, `tag=${TAG}\n`);
+      assert.include(output, `base_sha=${fixture.forkHead}\n`);
+      assert.include(output, "windows_packages=scripts\n");
+      assert.include(output, `merge_tree=${report.tree}\n`);
+    }),
+  ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.live("dry-run verifies a nightly merge on the default base without touching the caller", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const fixture = yield* makeRepositoryFixture({ variant: "clean" });
+      const spawner = yield* localFetchSpawner(fixture);
+      const path = yield* Path.Path;
+      const git = fixture.git;
+      const paths = dryRunPaths(fixture, path);
+      const seed = path.join(fixture.root, "seed");
+      yield* runGit(seed, ["tag", NIGHTLY_TAG, fixture.upstreamHead], fixture.env);
+      yield* runGit(
+        seed,
+        ["push", fixture.upstreamLocalUrl, `refs/tags/${NIGHTLY_TAG}`],
+        fixture.env,
+      );
+
+      const refsBefore = yield* localRefsSnapshot(git);
+      const originRefsBefore = yield* git(["ls-remote", fixture.originLocalUrl]);
+      const upstreamRefsBefore = yield* git(["ls-remote", fixture.upstreamLocalUrl]);
+      const report = yield* withSpawner(spawner)(
+        dryRunUpstreamSync({
+          tag: NIGHTLY_TAG,
+          cwd: fixture.cwd,
+          ...paths,
+          githubOutput: false,
+          windowsPackages: [],
+        }),
+      );
+
+      assert.equal(report.status, "clean");
+      assert.equal(report.requestedTag, NIGHTLY_TAG);
+      assert.equal(report.tag, NIGHTLY_TAG);
+      assert.equal(report.baseSha, fixture.forkHead);
+      assert.equal(report.upstreamSha, fixture.upstreamHead);
+      assert.isNotNull(report.mergeCommit);
+      assert.isNotNull(report.tree);
+      assert.deepEqual(yield* localRefsSnapshot(git), refsBefore);
+      assert.equal(yield* git(["ls-remote", fixture.originLocalUrl]), originRefsBefore);
+      assert.equal(yield* git(["ls-remote", fixture.upstreamLocalUrl]), upstreamRefsBefore);
+      assert.equal((yield* git(["tag", "--list", NIGHTLY_TAG])).trim(), "");
+      assert.equal((yield* git(["branch", "--show-current"])).trim(), "");
+      assert.deepEqual(yield* readReportFile(paths.reportPath), report);
+
+      yield* git(["checkout", "--detach", fixture.forkHead]);
+      const replayed = yield* withSpawner(spawner)(
+        replayDryRun({
+          tag: NIGHTLY_TAG,
+          cwd: fixture.cwd,
+          baseSha: fixture.forkHead,
+          upstreamSha: fixture.upstreamHead,
+          expectedTree: report.tree ?? "",
+        }),
+      );
+      assert.equal(replayed.tree, report.tree);
+    }),
+  ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.live("dry-run stacks the merge onto a custom base ref", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const fixture = yield* makeRepositoryFixture({ variant: "clean" });
+      const spawner = yield* localFetchSpawner(fixture);
+      const path = yield* Path.Path;
+      const fs = yield* FileSystem.FileSystem;
+      const git = fixture.git;
+      const paths = dryRunPaths(fixture, path);
+
+      const optionLikeBaseError = yield* Effect.flip(
+        withSpawner(spawner)(
+          dryRunUpstreamSync({
+            tag: TAG,
+            cwd: fixture.cwd,
+            baseRef: "--upload-pack=unexpected",
+            ...paths,
+            githubOutput: false,
+            windowsPackages: [],
+          }),
+        ),
+      );
+      assert.instanceOf(optionLikeBaseError, UpstreamSyncError);
+      assert.match(optionLikeBaseError.message, /base ref must not start/);
+      assert.equal((yield* git(["branch", "--show-current"])).trim(), "main");
+      assert.isNull((yield* readReportFile(paths.reportPath)).baseSha);
+
+      yield* git(["switch", "-c", "stack"]);
+      yield* fs.writeFileString(path.join(fixture.cwd, "stack.txt"), "stack\n");
+      yield* git(["add", "stack.txt"]);
+      yield* git(["commit", "-m", "stack change"]);
+      const stackHead = (yield* git(["rev-parse", "HEAD"])).trim();
+      yield* git(["switch", "main"]);
+      const refsBefore = yield* localRefsSnapshot(git);
+
+      const report = yield* withSpawner(spawner)(
+        dryRunUpstreamSync({
+          tag: TAG,
+          cwd: fixture.cwd,
+          baseRef: "stack",
+          ...paths,
+          githubOutput: false,
+          windowsPackages: [],
+        }),
+      );
+      assert.equal(report.status, "clean");
+      assert.equal(report.baseSha, stackHead);
+      assert.equal((yield* git(["rev-parse", "HEAD"])).trim(), report.mergeCommit);
+      assert.equal((yield* git(["show", "HEAD:stack.txt"])).trim(), "stack");
+      assert.deepEqual(yield* localRefsSnapshot(git), refsBefore);
+    }),
+  ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.live("dry-run reports a real conflict with stages and commits nothing", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const fixture = yield* makeRepositoryFixture({ variant: "conflict" });
+      const spawner = yield* localFetchSpawner(fixture);
+      const path = yield* Path.Path;
+      const fs = yield* FileSystem.FileSystem;
+      const git = fixture.git;
+      const paths = dryRunPaths(fixture, path);
+      const refsBefore = yield* localRefsSnapshot(git);
+
+      const error = yield* Effect.flip(
+        withSpawner(spawner)(
+          dryRunUpstreamSync({ tag: TAG, cwd: fixture.cwd, ...paths, githubOutput: false }),
+        ),
+      );
+      assert.instanceOf(error, UpstreamSyncError);
+      assert.match(error.message, /prepare --tag v1\.2\.3/);
+
+      const report = yield* readReportFile(paths.reportPath);
+      assert.equal(report.status, "conflict");
+      assert.deepEqual(report.conflicts, [{ path: "conflict.txt", stages: [1, 2, 3] }]);
+      assert.deepEqual(report.incomingPaths, ["conflict.txt"]);
+      assert.deepEqual(
+        report.classification.shared.map((entry) => entry.path),
+        ["conflict.txt"],
+      );
+      assert.isNull(report.mergeCommit);
+      assert.isNull(report.tree);
+      // No merge commit was created and no ref moved.
+      assert.equal((yield* git(["rev-parse", "HEAD"])).trim(), fixture.forkHead);
+      assert.equal((yield* headParents(git)).length, 2);
+      assert.deepEqual(yield* localRefsSnapshot(git), refsBefore);
+      const summary = yield* fs.readFileString(paths.summaryPath);
+      assert.include(summary, `node scripts/upstream-sync.ts prepare --tag ${TAG}`);
+      assert.include(summary, '"conflict.txt" (stages 1, 2, 3)');
+    }),
+  ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.live("dry-run distinguishes a conflict-marker clean merge from a real conflict", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      // Upstream adds a file that already contains conflict markers, so the merge
+      // is clean but integrity verification must reject it.
+      const fixture = yield* makeRepositoryFixture({
+        variant: "clean",
+        extraUpstreamFiles: {
+          "docs/marker.md": "before\n<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> v1.2.3\nafter\n",
+        },
+      });
+      const spawner = yield* localFetchSpawner(fixture);
+      const path = yield* Path.Path;
+      const git = fixture.git;
+      const paths = dryRunPaths(fixture, path);
+
+      const error = yield* Effect.flip(
+        withSpawner(spawner)(
+          dryRunUpstreamSync({ tag: TAG, cwd: fixture.cwd, ...paths, githubOutput: false }),
+        ),
+      );
+      assert.instanceOf(error, UpstreamSyncError);
+      assert.match(error.message, /integrity verification/);
+
+      const report = yield* readReportFile(paths.reportPath);
+      assert.equal(report.status, "merge_verification_failed");
+      // Distinct from a conflict: no unmerged paths and no downstream verification.
+      assert.deepEqual(report.conflicts, []);
+      assert.isNull(report.mergeCommit);
+      assert.equal((yield* git(["rev-parse", "HEAD"])).trim(), fixture.forkHead);
+    }),
+  ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.live("dry-run maps a non-conflict merge failure to an infrastructure error", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const fixture = yield* makeRepositoryFixture({ variant: "clean" });
+      const spawner = yield* mergeBreakingSpawner(fixture);
+      const path = yield* Path.Path;
+      const git = fixture.git;
+      const paths = dryRunPaths(fixture, path);
+
+      const error = yield* Effect.flip(
+        withSpawner(spawner)(
+          dryRunUpstreamSync({ tag: TAG, cwd: fixture.cwd, ...paths, githubOutput: false }),
+        ),
+      );
+      assert.instanceOf(error, GitCommandError);
+
+      const report = yield* readReportFile(paths.reportPath);
+      assert.equal(report.status, "error");
+      assert.deepEqual(report.conflicts, []);
+      assert.isNull(report.mergeCommit);
+      assert.equal((yield* git(["rev-parse", "HEAD"])).trim(), fixture.forkHead);
+    }),
+  ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.live("dry-run reports an already integrated tag without merging", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const fixture = yield* makeRepositoryFixture({ variant: "clean" });
+      const spawner = yield* localFetchSpawner(fixture);
+      const path = yield* Path.Path;
+      const git = fixture.git;
+      const integratedTag = "v1.2.2";
+      yield* git(["tag", integratedTag, `${fixture.forkHead}^`]);
+      yield* git([
+        "push",
+        fixture.upstreamLocalUrl,
+        `refs/tags/${integratedTag}:refs/tags/${integratedTag}`,
+      ]);
+      const refsBefore = yield* localRefsSnapshot(git);
+      const paths = dryRunPaths(fixture, path);
+
+      const report = yield* withSpawner(spawner)(
+        dryRunUpstreamSync({ tag: integratedTag, cwd: fixture.cwd, ...paths, githubOutput: false }),
+      );
+
+      assert.equal(report.status, "already_integrated");
+      assert.equal(report.tag, integratedTag);
+      assert.equal(report.upstreamSha, (yield* git(["rev-parse", `${fixture.forkHead}^`])).trim());
+      assert.isNull(report.mergeCommit);
+      assert.isNull(report.tree);
+      assert.deepEqual(report.incomingPaths, []);
+      assert.deepEqual(report.windowsPackages, []);
+      // HEAD is the detached base; nothing merged and no ref moved.
+      assert.equal((yield* git(["rev-parse", "HEAD"])).trim(), fixture.forkHead);
+      assert.equal((yield* headParents(git)).length, 2);
+      assert.deepEqual(yield* localRefsSnapshot(git), refsBefore);
+    }),
+  ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.live("dry-run rejects an invalid tag and a manual run never falls back to latest", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const fixture = yield* makeRepositoryFixture({ variant: "clean" });
+      const spawner = yield* localFetchSpawner(fixture);
+      const path = yield* Path.Path;
+      const git = fixture.git;
+
+      for (const tag of [
+        "1.2.3",
+        "v1.2",
+        "v1.2.3-rc.1",
+        "v1.2.3-nightly.20260229.1",
+        "v1.2.3-nightly.20261108.04380",
+        "refs/tags/v1.2.3",
+        "-v1.2.3",
+        "v1.2.3\nv9.9.9",
+        "main",
+      ]) {
+        const paths = dryRunPaths(fixture, path);
+        const error = yield* Effect.flip(
+          withSpawner(spawner)(
+            dryRunUpstreamSync({ tag, cwd: fixture.cwd, ...paths, githubOutput: false }),
+          ),
+        );
+        assert.instanceOf(error, UpstreamSyncError, tag);
+        assert.match(error.message, /Invalid upstream tag/, tag);
+        const report = yield* readReportFile(paths.reportPath);
+        assert.equal(report.status, "error", tag);
+        assert.equal(report.requestedTag, tag, tag);
+        assert.isNull(report.baseSha, tag);
+      }
+
+      // Validation precedes repository mutation, so the branch was never detached.
+      assert.equal((yield* git(["branch", "--show-current"])).trim(), "main");
+
+      // A missing upstream tag is an error; a manual tag never falls back to latest.
+      const paths = dryRunPaths(fixture, path);
+      const missing = yield* Effect.flip(
+        withSpawner(spawner)(
+          dryRunUpstreamSync({ tag: "v9.9.9", cwd: fixture.cwd, ...paths, githubOutput: false }),
+        ),
+      );
+      assert.instanceOf(missing, GitCommandError);
+      assert.match(missing.message, /couldn't find remote ref/);
+      const missingReport = yield* readReportFile(paths.reportPath);
+      assert.equal(missingReport.status, "error");
+      assert.equal(missingReport.tag, "v9.9.9");
+      assert.isNull(missingReport.upstreamSha);
+    }),
+  ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.live("scheduled dry-run selects the latest annotated stable tag", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const fixture = yield* makeRepositoryFixture({ variant: "clean" });
+      const spawner = yield* localFetchSpawner(fixture);
+      const path = yield* Path.Path;
+      const git = fixture.git;
+      // v1.10.0 is annotated and numerically greater than v1.2.3 and v1.9.0. The
+      // seed repository owns the upstream objects, so publish the tags from there.
+      const seed = path.join(fixture.root, "seed");
+      yield* runGit(
+        seed,
+        ["tag", "-a", "v1.10.0", "-m", "annotated", fixture.upstreamHead],
+        fixture.env,
+      );
+      yield* runGit(
+        seed,
+        ["push", fixture.upstreamLocalUrl, "refs/tags/v1.10.0:refs/tags/v1.10.0"],
+        fixture.env,
+      );
+      yield* runGit(seed, ["tag", "v1.9.0", fixture.upstreamHead], fixture.env);
+      yield* runGit(
+        seed,
+        ["push", fixture.upstreamLocalUrl, "refs/tags/v1.9.0:refs/tags/v1.9.0"],
+        fixture.env,
+      );
+      const paths = dryRunPaths(fixture, path);
+
+      const report = yield* withSpawner(spawner)(
+        dryRunUpstreamSync({
+          tag: "latest",
+          cwd: fixture.cwd,
+          ...paths,
+          githubOutput: false,
+          windowsPackages: [],
+        }),
+      );
+
+      assert.equal(report.requestedTag, "latest");
+      assert.equal(report.tag, "v1.10.0");
+      assert.equal(report.upstreamSha, fixture.upstreamHead);
+      assert.equal(report.status, "clean");
+      // The namespaced fetch never writes refs/tags in the working repository.
+      assert.equal((yield* git(["tag", "--list", "v1.10.0"])).trim(), "");
+      assert.equal(
+        (yield* git(["rev-parse", `refs/upstream-sync/v1.10.0^{commit}`])).trim(),
+        fixture.upstreamHead,
+      );
+    }),
+  ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.live("replay-dry-run reproduces the verified merge identity", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const fixture = yield* makeRepositoryFixture({ variant: "clean" });
+      const spawner = yield* localFetchSpawner(fixture);
+      const path = yield* Path.Path;
+      const git = fixture.git;
+      const paths = dryRunPaths(fixture, path);
+      const first = yield* withSpawner(spawner)(
+        dryRunUpstreamSync({
+          tag: TAG,
+          cwd: fixture.cwd,
+          ...paths,
+          githubOutput: false,
+          windowsPackages: [],
+        }),
+      );
+      assert.equal(first.status, "clean");
+      const baseSha = first.baseSha ?? "";
+      const upstreamSha = first.upstreamSha ?? "";
+      const expectedTree = first.tree ?? "";
+
+      // Reset to the base and replay from scratch; parents and tree must match.
+      yield* git(["checkout", "--detach", baseSha]);
+      const replayed = yield* withSpawner(spawner)(
+        replayDryRun({ tag: TAG, cwd: fixture.cwd, baseSha, upstreamSha, expectedTree }),
+      );
+      assert.equal(replayed.tree, expectedTree);
+      const parents = yield* headParents(git);
+      assert.deepEqual(parents.slice(1), [baseSha, upstreamSha]);
+      assert.equal((yield* git(["rev-parse", "--verify", "HEAD^{tree}"])).trim(), expectedTree);
+      // The commit SHA and timestamp need not match the original merge commit.
+    }),
+  ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.live("replay-dry-run fails on a moved tag before any verification", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const fixture = yield* makeRepositoryFixture({ variant: "clean" });
+      const spawner = yield* localFetchSpawner(fixture);
+      const path = yield* Path.Path;
+      const git = fixture.git;
+      const paths = dryRunPaths(fixture, path);
+      const first = yield* withSpawner(spawner)(
+        dryRunUpstreamSync({
+          tag: TAG,
+          cwd: fixture.cwd,
+          ...paths,
+          githubOutput: false,
+          windowsPackages: [],
+        }),
+      );
+      const baseSha = first.baseSha ?? "";
+      yield* git(["checkout", "--detach", baseSha]);
+
+      // Move the upstream tag to a different commit after the dry run recorded it.
+      const moved = (yield* git([
+        "commit-tree",
+        (yield* git(["rev-parse", `${fixture.upstreamHead}^{tree}`])).trim(),
+        "-p",
+        fixture.upstreamHead,
+        "-m",
+        "moved",
+      ])).trim();
+      yield* git(["push", "--force", fixture.upstreamLocalUrl, `${moved}:refs/tags/${TAG}`]);
+
+      const error = yield* Effect.flip(
+        withSpawner(spawner)(
+          replayDryRun({
+            tag: TAG,
+            cwd: fixture.cwd,
+            baseSha,
+            upstreamSha: first.upstreamSha ?? "",
+            expectedTree: first.tree ?? "",
+          }),
+        ),
+      );
+      assert.instanceOf(error, UpstreamSyncError);
+      assert.match(error.message, /tag moved/i);
+      assert.equal((yield* git(["rev-parse", "HEAD"])).trim(), baseSha);
+      assert.equal((yield* headParents(git)).length, 2);
+    }),
+  ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.live("replay-dry-run fails on a wrong expected tree and a wrong checked-out base", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const fixture = yield* makeRepositoryFixture({ variant: "clean" });
+      const spawner = yield* localFetchSpawner(fixture);
+      const path = yield* Path.Path;
+      const git = fixture.git;
+      const paths = dryRunPaths(fixture, path);
+      const first = yield* withSpawner(spawner)(
+        dryRunUpstreamSync({
+          tag: TAG,
+          cwd: fixture.cwd,
+          ...paths,
+          githubOutput: false,
+          windowsPackages: [],
+        }),
+      );
+      const baseSha = first.baseSha ?? "";
+      const upstreamSha = first.upstreamSha ?? "";
+
+      // A wrong expected tree fails after the commit, on the identity check.
+      yield* git(["checkout", "--detach", baseSha]);
+      const treeError = yield* Effect.flip(
+        withSpawner(spawner)(
+          replayDryRun({
+            tag: TAG,
+            cwd: fixture.cwd,
+            baseSha,
+            upstreamSha,
+            expectedTree: "0".repeat(40),
+          }),
+        ),
+      );
+      assert.instanceOf(treeError, UpstreamSyncError);
+      assert.match(treeError.message, /expected 0{40}/);
+
+      // A wrong checked-out base fails before any merge.
+      yield* git(["checkout", "--detach", `${baseSha}^`]);
+      const baseError = yield* Effect.flip(
+        withSpawner(spawner)(
+          replayDryRun({
+            tag: TAG,
+            cwd: fixture.cwd,
+            baseSha,
+            upstreamSha,
+            expectedTree: first.tree ?? "",
+          }),
+        ),
+      );
+      assert.instanceOf(baseError, UpstreamSyncError);
+      assert.match(baseError.message, /does not match the dry-run base/);
+    }),
+  ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.live("replay-dry-run refuses a branch checkout and rejects a replay conflict", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const fixture = yield* makeRepositoryFixture({ variant: "conflict" });
+      const spawner = yield* localFetchSpawner(fixture);
+      const git = fixture.git;
+      const baseSha = (yield* git(["rev-parse", "HEAD"])).trim();
+
+      // On a branch: refuses before any merge, protecting the source ref.
+      const branchError = yield* Effect.flip(
+        withSpawner(spawner)(
+          replayDryRun({
+            tag: TAG,
+            cwd: fixture.cwd,
+            baseSha,
+            upstreamSha: fixture.upstreamHead,
+            expectedTree: "0".repeat(40),
+          }),
+        ),
+      );
+      assert.instanceOf(branchError, UpstreamSyncError);
+      assert.match(branchError.message, /detached HEAD/);
+      assert.equal((yield* git(["branch", "--show-current"])).trim(), "main");
+
+      // Detached: the conflicting replay is rejected and commits nothing.
+      yield* git(["checkout", "--detach", baseSha]);
+      const conflictError = yield* Effect.flip(
+        withSpawner(spawner)(
+          replayDryRun({
+            tag: TAG,
+            cwd: fixture.cwd,
+            baseSha,
+            upstreamSha: fixture.upstreamHead,
+            expectedTree: "0".repeat(40),
+          }),
+        ),
+      );
+      assert.instanceOf(conflictError, UpstreamSyncError);
+      assert.match(conflictError.message, /conflicted/);
+      assert.equal((yield* git(["rev-parse", "HEAD"])).trim(), baseSha);
+      assert.equal((yield* headParents(git)).length, 2);
+    }),
+  ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.live("replay-dry-run fails on an injected extra parent and malformed inputs", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const fixture = yield* makeRepositoryFixture({ variant: "clean" });
+      const path = yield* Path.Path;
+      const git = fixture.git;
+      const paths = dryRunPaths(fixture, path);
+      const fetchSpawner = yield* localFetchSpawner(fixture);
+      const first = yield* withSpawner(fetchSpawner)(
+        dryRunUpstreamSync({
+          tag: TAG,
+          cwd: fixture.cwd,
+          ...paths,
+          githubOutput: false,
+          windowsPackages: [],
+        }),
+      );
+      const baseSha = first.baseSha ?? "";
+
+      // An octopus parent injected at commit time breaks the exact-parents check.
+      const extraParent = (yield* git(["rev-parse", `${baseSha}^`])).trim();
+      const injecting = yield* commitParentInjectingSpawner(fixture, extraParent);
+      yield* git(["checkout", "--detach", baseSha]);
+      const parentError = yield* Effect.flip(
+        withSpawner(injecting)(
+          replayDryRun({
+            tag: TAG,
+            cwd: fixture.cwd,
+            baseSha,
+            upstreamSha: first.upstreamSha ?? "",
+            expectedTree: first.tree ?? "",
+          }),
+        ),
+      );
+      assert.instanceOf(parentError, UpstreamSyncError);
+      assert.match(parentError.message, /expected exactly/);
+
+      // Malformed identities are rejected before any git work.
+      const sha = "a".repeat(40);
+      for (const overrides of [
+        { baseSha: "nope", upstreamSha: sha, expectedTree: sha },
+        { baseSha: sha, upstreamSha: "SHORT", expectedTree: sha },
+        { baseSha: sha, upstreamSha: sha, expectedTree: "Z".repeat(40) },
+      ]) {
+        const error = yield* Effect.flip(
+          withSpawner(fetchSpawner)(replayDryRun({ tag: TAG, cwd: fixture.cwd, ...overrides })),
+        );
+        assert.instanceOf(error, UpstreamSyncError);
+        assert.match(error.message, /full lowercase hex object SHA/);
+      }
+    }),
+  ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.live("the trusted detector provides the full Windows package surface", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const repoRoot = NodeURL.fileURLToPath(new URL("..", import.meta.url));
+      const surface = yield* computeFullWindowsPackages(repoRoot);
+      assert.deepEqual(
+        surface,
+        decide([], readWorkspace(), true).outputs.windows_packages.split(" ").filter(Boolean),
+      );
+      assert.isTrue(surface.length >= 7);
+
+      // A cwd that is not the detector's repository root fails closed.
+      const empty = yield* fs.makeTempDirectoryScoped({ prefix: "windows-packages-" });
+      const error = yield* Effect.flip(computeFullWindowsPackages(empty));
+      assert.instanceOf(error, UpstreamSyncError);
+      assert.match(error.message, /missing from the merged tree/);
+    }),
+  ).pipe(Effect.provide(NodeServices.layer)),
 );

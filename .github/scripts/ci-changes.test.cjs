@@ -541,3 +541,109 @@ test("--check-results passes a green run and fails unexplained results", () => {
   assert.equal(failOpen.status, 1);
   assert.match(failOpen.output, /fail_open/);
 });
+
+// The upstream sync dry run (#49) is read-only automation: no write token,
+// secret, or push, credential-less checkouts, two independent replay lanes,
+// fail-closed reporting. These assertions pin that wiring so a refactor cannot
+// silently drop a guard; they read raw YAML like the ci.yml tests above.
+const repoRoot = path.resolve(__dirname, "../..");
+const dryRunWorkflow = fs.readFileSync(
+  path.join(repoRoot, ".github/workflows/upstream-sync-dry-run.yml"),
+  "utf8",
+);
+const windowsWorkflow = fs.readFileSync(
+  path.join(repoRoot, ".github/workflows/windows-tests.yml"),
+  "utf8",
+);
+
+test("the dry-run workflow is read-only: no write token, secrets, or push", () => {
+  assert.match(dryRunWorkflow, /^permissions:\n  contents: read\n  id-token: none$/m);
+  // No secret is passed to any job, and no step pushes or writes a ref.
+  assert.ok(!/secrets:/.test(dryRunWorkflow), "dry run must not reference secrets");
+  assert.ok(!/\bcontents: write\b/.test(dryRunWorkflow));
+  assert.ok(!/git push|update-ref|--tags\b/.test(dryRunWorkflow));
+  // Every checkout disables credentials.
+  const checkouts = (dryRunWorkflow.match(/uses: actions\/checkout@v6/g) ?? []).length;
+  const noCreds = (dryRunWorkflow.match(/persist-credentials: false/g) ?? []).length;
+  assert.equal(checkouts, noCreds, "every checkout must set persist-credentials: false");
+  assert.ok(checkouts >= 3, "merge, verify_linux, and report each check out");
+});
+
+test("the dry-run workflow has strict triggers and a fail-closed topology", () => {
+  // Manual dispatch requires a tag; the schedule resolves "latest" itself.
+  assert.match(dryRunWorkflow, /workflow_dispatch:\n\s+inputs:\n\s+tag:/);
+  assert.match(dryRunWorkflow, /required: true/);
+  assert.match(dryRunWorkflow, /- cron: "17 6 \* \* \*"/);
+  // One non-cancelling concurrency group on the default branch.
+  assert.match(dryRunWorkflow, /group: upstream-sync-dry-run-main/);
+  assert.match(dryRunWorkflow, /cancel-in-progress: false/);
+  assert.match(dryRunWorkflow, /only runs on the default branch/);
+});
+
+test("the verification lanes gate independently on a clean merge", () => {
+  // Linux and Windows both need merge only, so one cannot suppress the other.
+  const linuxIf =
+    "verify_linux:\n    name: Verify merge (Linux)\n    needs: merge\n    if: ${{ !cancelled() && needs.merge.outputs.status == 'clean' }}";
+  assert.ok(dryRunWorkflow.includes(linuxIf), "verify_linux must gate on a clean merge alone");
+  const windowsIf =
+    "windows:\n    name: Verify merge (Windows)\n    needs: merge\n    if: ${{ !cancelled() && needs.merge.outputs.status == 'clean' }}";
+  assert.ok(dryRunWorkflow.includes(windowsIf), "windows must gate on a clean merge alone");
+  // Windows replays the full merge-provided distribution scope.
+  assert.match(dryRunWorkflow, /package: \$\{\{ needs\.merge\.outputs\.windows_packages \}\}/);
+  // Both lanes pass all four replay identities.
+  for (const input of [
+    "dry_run_tag: ${{ needs.merge.outputs.tag }}",
+    "dry_run_base_sha: ${{ needs.merge.outputs.base_sha }}",
+    "dry_run_upstream_sha: ${{ needs.merge.outputs.upstream_sha }}",
+    "dry_run_merge_tree: ${{ needs.merge.outputs.merge_tree }}",
+  ]) {
+    assert.ok(dryRunWorkflow.includes(input), `windows lane must pass ${input}`);
+  }
+  // Each lane records one of the three verification results, fail-closed.
+  assert.equal((dryRunWorkflow.match(/result=verification_failed ;;/g) ?? []).length, 1);
+  assert.equal((dryRunWorkflow.match(/result=error\n/g) ?? []).length, 1);
+});
+
+test("the report job always runs and aggregates every lane", () => {
+  const report = dryRunWorkflow.slice(dryRunWorkflow.indexOf("\n  report:\n"));
+  assert.match(report, /if: always\(\)/);
+  assert.match(report, /needs: \[merge, verify_linux, windows\]/);
+  // It applies the outcome matrix through the script and reads all lane states.
+  assert.match(report, /resolve-outcome/);
+  for (const env of [
+    "DRY_RUN_MERGE_STATUS: ${{ needs.merge.outputs.status }}",
+    "DRY_RUN_MERGE_RESULT: ${{ needs.merge.result }}",
+    "DRY_RUN_LINUX_RESULT: ${{ needs.verify_linux.result }}",
+    "DRY_RUN_LINUX_VERIFICATION: ${{ needs.verify_linux.outputs.verification_result }}",
+    "DRY_RUN_WINDOWS_RESULT: ${{ needs.windows.result }}",
+    "DRY_RUN_WINDOWS_VERIFICATION: ${{ needs.windows.outputs.verification_result }}",
+  ]) {
+    assert.ok(report.includes(env), `report job must read ${env}`);
+  }
+});
+
+test("windows-tests exposes replay inputs as all-or-none and a verification output", () => {
+  for (const input of [
+    "dry_run_tag",
+    "dry_run_base_sha",
+    "dry_run_upstream_sha",
+    "dry_run_merge_tree",
+  ]) {
+    assert.ok(
+      windowsWorkflow.includes(`${input}:`),
+      `windows-tests must declare the ${input} input`,
+    );
+  }
+  assert.match(windowsWorkflow, /all four dry_run inputs or none/);
+  assert.match(windowsWorkflow, /a dry-run replay rejects a files scope/);
+  assert.match(
+    windowsWorkflow,
+    /verification_result:\n\s+description:[^\n]*\n\s+value: \$\{\{ jobs\.test\.outputs\.verification_result \}\}/,
+  );
+  assert.match(windowsWorkflow, /id: verification_result\n\s+if: always\(\)/);
+  // The replay checkout drops credentials; a normal run keeps its prior behavior.
+  assert.match(windowsWorkflow, /persist-credentials: \$\{\{ inputs\.dry_run_base_sha == '' \}\}/);
+  // Existing CI/manual behavior is preserved.
+  assert.match(windowsWorkflow, /was called without a package/);
+  assert.match(windowsWorkflow, /files is only supported by manual runs/);
+});
