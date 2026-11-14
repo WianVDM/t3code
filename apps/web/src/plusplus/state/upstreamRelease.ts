@@ -52,8 +52,12 @@ const NO_PROJECT_FOUND_MESSAGE = `No project found for github.com/${FORK_REPOSIT
 const START_MERGE_FAILED_MESSAGE = "Could not start upstream merge";
 
 export type NewThreadRunner = ReturnType<typeof useNewThreadHandler>;
+interface StartUpstreamMergeOptions {
+  readonly newThread?: NewThreadRunner;
+}
 
 let activeNewThreadRunner: NewThreadRunner | null = null;
+let upstreamMergeStartInFlight = false;
 
 export function registerNewThreadRunner(runner: NewThreadRunner): () => void {
   activeNewThreadRunner = runner;
@@ -120,9 +124,20 @@ export function useUpstreamRelease(): UpstreamReleaseResult | null {
 
 export async function startUpstreamMerge(
   tag: string,
-  options?: {
-    readonly newThread?: NewThreadRunner;
-  },
+  options?: StartUpstreamMergeOptions,
+): Promise<void> {
+  if (upstreamMergeStartInFlight) return;
+  upstreamMergeStartInFlight = true;
+  try {
+    await startUpstreamMergeUnchecked(tag, options);
+  } finally {
+    upstreamMergeStartInFlight = false;
+  }
+}
+
+async function startUpstreamMergeUnchecked(
+  tag: string,
+  options?: StartUpstreamMergeOptions,
 ): Promise<void> {
   if (shouldDeferUpstreamMerge(readDesktopUpdateState())) {
     toastManager.add(
@@ -148,11 +163,15 @@ export async function startUpstreamMerge(
     return;
   }
 
-  if (!(await readUpstreamMergeAccess(projectRef.environmentId))) {
+  const pushAccess = await readUpstreamMergeAccess(projectRef.environmentId);
+  if (pushAccess !== true) {
     toastManager.add(
       stackedThreadToast({
         type: "error",
-        title: "No push access to WianVDM/t3code",
+        title:
+          pushAccess === undefined
+            ? "Couldn't check push access to WianVDM/t3code"
+            : "No push access to WianVDM/t3code",
       }),
     );
     return;

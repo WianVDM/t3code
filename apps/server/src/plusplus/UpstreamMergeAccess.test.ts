@@ -3,19 +3,28 @@ import { definition } from "@t3tools/source-control-github/shared/definition";
 import type { SourceControlDriverInstance } from "@t3tools/source-control-core/server/driver";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
 import { vi } from "vite-plus/test";
 
 import * as SourceControlBuiltInDrivers from "../sourceControl/builtInDrivers.ts";
 import * as UpstreamMergeAccess from "./UpstreamMergeAccess.ts";
 
-type CanPush = NonNullable<SourceControlDriverInstance["canPushRepository"]>;
+class TestCanPushError extends Schema.TaggedError<TestCanPushError>()("TestCanPushError", {}) {}
 
-function testLayer(canPushRepository?: CanPush) {
+type CanPush = (host: string, repository: string) => Effect.Effect<boolean, TestCanPushError>;
+
+function testLayer(
+  canPushRepository?: CanPush,
+  options?: { readonly includeGitHubDriver?: boolean },
+) {
   const instance = { canPushRepository } as SourceControlDriverInstance;
-  const drivers = Layer.succeed(SourceControlBuiltInDrivers.SourceControlDrivers, [
-    { driver: { kind: definition.kind, definition }, instance },
-  ]);
+  const drivers = Layer.succeed(
+    SourceControlBuiltInDrivers.SourceControlDrivers,
+    options?.includeGitHubDriver === false
+      ? []
+      : [{ driver: { kind: definition.kind, definition }, instance }],
+  );
   return Layer.effect(UpstreamMergeAccess.UpstreamMergeAccess, UpstreamMergeAccess.make).pipe(
     Layer.provide(drivers),
     Layer.provideMerge(TestClock.layer()),
@@ -36,6 +45,21 @@ it.effect("returns false without a GitHub push capability", () =>
     const access = yield* UpstreamMergeAccess.UpstreamMergeAccess;
     expect(yield* access.check).toBe(false);
   }).pipe(Effect.provide(testLayer())),
+);
+
+it.effect("returns false when the GitHub capability fails", () => {
+  const canPush = vi.fn<CanPush>().mockReturnValue(Effect.fail(new TestCanPushError()));
+  return Effect.gen(function* () {
+    const access = yield* UpstreamMergeAccess.UpstreamMergeAccess;
+    expect(yield* access.check).toBe(false);
+  }).pipe(Effect.provide(testLayer(canPush)));
+});
+
+it.effect("returns false when no GitHub driver is registered", () =>
+  Effect.gen(function* () {
+    const access = yield* UpstreamMergeAccess.UpstreamMergeAccess;
+    expect(yield* access.check).toBe(false);
+  }).pipe(Effect.provide(testLayer(undefined, { includeGitHubDriver: false }))),
 );
 
 it.effect("checks GitHub once while a true result is cached", () => {

@@ -398,6 +398,40 @@ describe("startUpstreamMerge", () => {
     });
   });
 
+  it("distinguishes an unreachable access check from resolved denial", async () => {
+    setup();
+    state.readUpstreamMergeAccess.mockResolvedValue(undefined);
+
+    await startUpstreamMerge(state.tag, { newThread: state.newThread });
+
+    expect(state.newThread).not.toHaveBeenCalled();
+    expect(state.runAtomCommand).not.toHaveBeenCalled();
+    expect(state.toastAdd).toHaveBeenCalledWith({
+      type: "error",
+      title: "Couldn't check push access to WianVDM/t3code",
+    });
+  });
+
+  it("ignores a second click while the access check is in flight", async () => {
+    setup();
+    let resolveAccess!: (allowed: boolean) => void;
+    state.readUpstreamMergeAccess.mockReturnValue(
+      new Promise<boolean>((resolve) => {
+        resolveAccess = resolve;
+      }),
+    );
+
+    const first = startUpstreamMerge(state.tag, { newThread: state.newThread });
+    await startUpstreamMerge(state.tag, { newThread: state.newThread });
+
+    expect(state.readUpstreamMergeAccess).toHaveBeenCalledTimes(1);
+    expect(state.newThread).not.toHaveBeenCalled();
+    resolveAccess(true);
+    await first;
+    expect(state.newThread).toHaveBeenCalledTimes(1);
+    expect(state.runAtomCommand).toHaveBeenCalledTimes(1);
+  });
+
   it("returns before opening a runner or dispatching a command when the merge is deferred", async () => {
     setup();
     state.shouldDeferUpstreamMerge.mockReturnValue(true);

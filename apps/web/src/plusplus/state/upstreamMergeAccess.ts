@@ -24,7 +24,9 @@ const checkUpstreamMergeAccess = createEnvironmentRpcCommand(connectionAtomRunti
   tag: WS_METHODS.plusplusUpstreamMergeAccess,
 });
 
-export async function readUpstreamMergeAccess(environmentId: EnvironmentId): Promise<boolean> {
+export async function readUpstreamMergeAccess(
+  environmentId: EnvironmentId,
+): Promise<boolean | undefined> {
   const result = await runAtomCommand(
     appAtomRegistry,
     checkUpstreamMergeAccess,
@@ -35,5 +37,5 @@ export async function readUpstreamMergeAccess(environmentId: EnvironmentId): Pro
       reportDefect: false,
     },
   );
-  return result._tag === "Success" && result.value;
+  return result._tag === "Success" ? result.value : undefined;
 }

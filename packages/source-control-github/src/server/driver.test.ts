@@ -35,6 +35,23 @@ describe("push access", () => {
     }).pipe(Effect.provide(api));
   });
 
+  it.effect("rejects invalid repository paths without calling GitHub", () => {
+    const paths: Array<string> = [];
+    const api = Layer.mock(GitHubRest.GitHubRest)({
+      rest: (input) => {
+        paths.push(input.path);
+        return Effect.die(new Error("unexpected request"));
+      },
+    });
+    return Effect.gen(function* () {
+      const canPush = yield* makeCanPushRepository;
+      assert.isFalse(yield* canPush("github.com", "../repos"));
+      assert.isFalse(yield* canPush("github.com", "WianVDM/./t3code"));
+      assert.isFalse(yield* canPush("github.com", "WianVDM/t3code/issues"));
+      assert.deepStrictEqual(paths, []);
+    }).pipe(Effect.provide(api));
+  });
+
   it.effect.each([
     {
       name: "push false",

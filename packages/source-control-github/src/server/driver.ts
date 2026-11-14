@@ -54,13 +54,15 @@ const makeSignIn = Effect.gen(function* () {
   } satisfies SourceControlSignIn;
 });
 
-const starredPath = (repository: string) => {
+const repositoryPath = (prefix: string, repository: string) => {
   const segments = repository.split("/");
-  // "." and ".." survive encoding and would normalize the URL out of user/starred.
+  // "." and ".." survive encoding and would normalize the URL out of the repository path.
   return segments.length === 2 && segments.every((segment) => !["", ".", ".."].includes(segment))
-    ? `user/starred/${segments.map(encodeURIComponent).join("/")}`
+    ? `${prefix}/${segments.map(encodeURIComponent).join("/")}`
     : undefined;
 };
+
+const starredPath = (repository: string) => repositoryPath("user/starred", repository);
 
 // Only 204 means starred. Tokens without star access, a missing login, and 404 all read as false.
 export const makeIsRepositoryStarred = Effect.gen(function* () {
@@ -89,10 +91,12 @@ export const makeCanPushRepository = Effect.gen(function* () {
   const api = yield* GitHubRest.GitHubRest;
   return Effect.fn("GitHubDriver.canPushRepository")(
     function* (host: string, repository: string) {
+      const path = repositoryPath("repos", repository);
+      if (path === undefined) return false;
       const response = yield* api.rest({
         host,
         operation: "canPushRepository",
-        path: `repos/${repository}`,
+        path,
         allowReserve: false,
       });
       if (response.status !== 200) return false;
