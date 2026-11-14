@@ -274,15 +274,21 @@ export function validateForkInventory(inventory: ForkInventory): string[] {
 
   for (const root of inventory.plusplusOwnedRoots) {
     const prefix = `${root}/`;
-    const ownUnderRoot = inventory.entries.some(
-      (entry) => entry.category === "plusplus-owned" && entry.path.startsWith(prefix),
+    const entriesUnderRoot = inventory.entries.filter(
+      (entry) => entry.path.startsWith(prefix) || entry.upstreamPath?.startsWith(prefix) === true,
     );
-    if (!ownUnderRoot) issues.push(`plusplusOwnedRoots: ${root} contains no plusplus-owned entry`);
-    for (const entry of inventory.entries) {
+    // A root with no baseline entries postdates the pinned baseline (e.g. packages/plusplus);
+    // coverage is only required for roots that existed at the baseline.
+    const existedAtBaseline = entriesUnderRoot.length > 0;
+    if (
+      existedAtBaseline &&
+      !entriesUnderRoot.some((entry) => entry.category === "plusplus-owned")
+    ) {
+      issues.push(`plusplusOwnedRoots: ${root} contains no plusplus-owned entry`);
+    }
+    for (const entry of entriesUnderRoot) {
       if (entry.category === "plusplus-owned") continue;
-      if (entry.path.startsWith(prefix) || entry.upstreamPath?.startsWith(prefix) === true) {
-        issues.push(`plusplusOwnedRoots: ${root} contains non-fork path ${entry.path}`);
-      }
+      issues.push(`plusplusOwnedRoots: ${root} contains non-fork path ${entry.path}`);
     }
   }
 
