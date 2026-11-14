@@ -60,7 +60,8 @@ jobs:
               {
                 name: "upstream-sync",
                 color: "0052cc",
-                description: "Merging an upstream release into the fork.",
+                description:
+                  "Protected sync designation: maintainers/triage only; forces full CI and merge validation.",
               },
               {
                 name: "plusplus-only",

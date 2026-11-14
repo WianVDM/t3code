@@ -25,19 +25,45 @@ outputs:
   # every gate is on but Check refuses to merge the run.
   fail_open:
     value: ${{ steps.detect.outputs.fail_open }}
+  # Protected upstream-sync designation (#50): "true" forces the full run and
+  # the sync merge job; sync_designation_error additionally fails Check.
+  upstream_sync:
+    value: ${{ steps.detect.outputs.upstream_sync }}
+  sync_designation_error:
+    value: ${{ steps.detect.outputs.sync_designation_error }}
 runs:
   using: composite
   steps:
+    # Resolves the upstream-sync claim before detection. An ordinary PR claims
+    # nothing and never touches the network; a claimed PR resolves through the
+    # timeline/permission proof in upstream-sync-pr.cjs, fail-closed to
+    # "invalid" on any lookup error or resolver crash.
+    - id: designation
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        set -uo pipefail
+        if ! node .github/scripts/upstream-sync-pr.cjs --resolve-ci-designation >> "$GITHUB_OUTPUT"; then
+          echo "sync=invalid" >> "$GITHUB_OUTPUT"
+        fi
+
     - id: detect
       shell: bash
       env:
         EVENT_NAME: ${{ github.event_name }}
         BEFORE_SHA: ${{ github.event.before }}
+        SYNC: ${{ steps.designation.outputs.sync }}
       run: |
         set -uo pipefail
 
+        case "$SYNC" in
+          none|designated|invalid) ;;
+          *) SYNC=invalid ;;
+        esac
+
         decide() {
-          node .github/scripts/ci-changes.cjs "$@" | tee -a "$GITHUB_OUTPUT"
+          node .github/scripts/ci-changes.cjs --sync "$SYNC" "$@" | tee -a "$GITHUB_OUTPUT"
           exit "${PIPESTATUS[0]}"
         }
 

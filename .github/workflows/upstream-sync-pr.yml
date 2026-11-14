@@ -1,0 +1,220 @@
+# Protected upstream-sync designation (#50). Two trusted jobs:
+#
+# reconcile - resolves every upstream-sync label event (and every PR event on
+#   a labeled PR) through timeline and permission proof, removes unproven
+#   additions, and restores provable designations after unauthorized removals.
+#   Only authorized users and this workflow's own official github-actions[bot]
+#   writes are trusted; API uncertainty aborts without speculative mutation.
+#
+# report - for a verified sync PR only, validates the newest trusted-provenance
+#   dry-run artifact against the real merge and upserts one hotspot report
+#   comment. It runs trusted base code, checks out the base commit (never the
+#   head), treats fetched PR-head objects and the artifact as passive data, and
+#   never installs, requires, or executes anything from the head tree.
+name: Upstream Sync PR
+
+on:
+  issues:
+    types: [labeled, unlabeled]
+  pull_request_target:
+    types: [opened, reopened, synchronize, labeled, unlabeled]
+
+permissions:
+  contents: read
+
+# Label mutations serialize per issue/PR and are never cancelled mid-flight.
+concurrency:
+  group: upstream-sync-pr-${{ github.event.issue.number || github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    name: Reconcile designation
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: >-
+      (github.event_name == 'issues' && github.event.label.name == 'upstream-sync') ||
+      (github.event_name == 'pull_request_target' &&
+        (((github.event.action == 'labeled' || github.event.action == 'unlabeled') &&
+          github.event.label.name == 'upstream-sync') ||
+         ((github.event.action == 'opened' || github.event.action == 'reopened' || github.event.action == 'synchronize') &&
+          contains(github.event.pull_request.labels.*.name, 'upstream-sync'))))
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    steps:
+      # Trusted code only: the default-branch commit for issue events, the PR
+      # base commit for pull_request_target. The head is never checked out.
+      - name: Checkout the trusted base
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.base.sha || github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+          sparse-checkout: |
+            /.github/scripts/upstream-sync-pr.cjs
+          sparse-checkout-cone-mode: false
+
+      - name: Reconcile the upstream-sync label
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node .github/scripts/upstream-sync-pr.cjs reconcile
+
+  report:
+    name: Sync hotspot report
+    needs: reconcile
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: >-
+      github.event_name == 'pull_request_target' &&
+      (((github.event.action == 'labeled' || github.event.action == 'unlabeled') &&
+        github.event.label.name == 'upstream-sync') ||
+       ((github.event.action == 'opened' || github.event.action == 'reopened' || github.event.action == 'synchronize') &&
+        contains(github.event.pull_request.labels.*.name, 'upstream-sync')))
+    permissions:
+      contents: read
+      actions: read
+      issues: read
+      pull-requests: write
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      HEAD_REF: ${{ github.event.pull_request.head.ref }}
+      GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout the trusted base
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+          sparse-checkout: |
+            /*
+            !/.repos/
+            !/apps/mobile/modules/t3-terminal/Vendor/**/*.a
+          sparse-checkout-cone-mode: false
+
+      # designation=designated|not_designated|invalid, resolved by trusted base
+      # code. An authorized removal (not_designated) deletes the report; an
+      # unauthorized removal resolves to designated and regenerates it.
+      - name: Resolve the designation
+        id: designation
+        run: node .github/scripts/upstream-sync-pr.cjs resolve-pr >> "$GITHUB_OUTPUT"
+
+      - name: Delete the report after an authorized removal
+        if: steps.designation.outputs.designation == 'not_designated'
+        run: node .github/scripts/upstream-sync-pr.cjs delete-comment --number "$PR_NUMBER"
+
+      - name: Point upstream at the canonical repository
+        if: steps.designation.outputs.designation == 'designated'
+        run: |
+          git remote get-url upstream >/dev/null 2>&1 ||
+            git remote add upstream https://github.com/pingdotgg/t3code.git
+
+      # Passive git objects only: the head is fetched, never checked out, and
+      # nothing from the head tree is installed or executed.
+      - name: Resolve the real merge identity
+        id: merge
+        if: steps.designation.outputs.designation == 'designated'
+        run: |
+          set -euo pipefail
+          if ! [[ "$HEAD_REF" =~ ^sync/upstream-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::head branch $HEAD_REF is not sync/upstream-vX.Y.Z." >&2
+            exit 1
+          fi
+          tag="v${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.${BASH_REMATCH[3]}"
+          git fetch --no-tags origin "+refs/pull/${PR_NUMBER}/head:refs/upstream-sync/pr/${PR_NUMBER}"
+          head=$(git rev-parse "refs/upstream-sync/pr/${PR_NUMBER}")
+          if [[ "$head" != "$HEAD_SHA" ]]; then
+            echo "::error::PR head $head no longer matches the payload SHA $HEAD_SHA." >&2
+            exit 1
+          fi
+          parents=$(git rev-list --parents -n 1 "$head")
+          read -r _commit base upstream extra <<< "$parents"
+          if [[ -z "${base:-}" || -z "${upstream:-}" || -n "${extra:-}" ]]; then
+            echo "::error::the PR head is not an exact two-parent merge." >&2
+            exit 1
+          fi
+          git fetch --no-recurse-submodules --no-tags upstream "+refs/tags/${tag}:refs/upstream-sync/${tag}"
+          upstream_sha=$(git rev-parse --verify "refs/upstream-sync/${tag}^{commit}")
+          if [[ "$upstream_sha" != "$upstream" ]]; then
+            echo "::error::tag ${tag} resolves to ${upstream_sha}, not the merged ${upstream}." >&2
+            exit 1
+          fi
+          {
+            echo "tag=${tag}"
+            echo "base_sha=${base}"
+            echo "upstream_sha=${upstream}"
+          } >> "$GITHUB_OUTPUT"
+
+      # Trusted provenance only: completed default-branch dry runs triggered by
+      # the schedule or a manual dispatch; newest matching identity wins.
+      - name: Select the dry-run report artifact
+        id: artifact
+        if: steps.designation.outputs.designation == 'designated'
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          EXPECT_TAG: ${{ steps.merge.outputs.tag }}
+          EXPECT_BASE_SHA: ${{ steps.merge.outputs.base_sha }}
+          EXPECT_UPSTREAM_SHA: ${{ steps.merge.outputs.upstream_sha }}
+        run: >-
+          node .github/scripts/upstream-sync-pr.cjs select-artifact
+          --expect-tag "$EXPECT_TAG"
+          --expect-base-sha "$EXPECT_BASE_SHA"
+          --expect-upstream-sha "$EXPECT_UPSTREAM_SHA"
+          >> "$GITHUB_OUTPUT"
+
+      - name: Require a matching dry-run artifact
+        if: steps.designation.outputs.designation == 'designated' && steps.artifact.outputs.found != 'true'
+        run: |
+          echo "::error::No trusted dry-run report artifact matches this merge; refusing to publish a report." >&2
+          exit 1
+
+      - name: Download the dry-run artifact
+        if: steps.designation.outputs.designation == 'designated' && steps.artifact.outputs.found == 'true'
+        env:
+          ARTIFACT_ID: ${{ steps.artifact.outputs.artifact_id }}
+        run: |
+          set -euo pipefail
+          curl -sSL \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "${GITHUB_API_URL:-https://api.github.com}/repos/$GITHUB_REPOSITORY/actions/artifacts/${ARTIFACT_ID}/zip" \
+            -o "$RUNNER_TEMP/dry-run-artifact.zip"
+          unzip -o -q "$RUNNER_TEMP/dry-run-artifact.zip" -d "$RUNNER_TEMP/dry-run-report"
+          test -s "$RUNNER_TEMP/dry-run-report/upstream-sync-report.json"
+
+      - name: Setup Vite+
+        if: steps.designation.outputs.designation == 'designated'
+        uses: ./.github/actions/setup-ci-deps
+
+      # Full semantic validation (schema, identity, recomputed incoming paths
+      # and classification, tree equality) runs before anything is rendered.
+      - name: Generate the validated hotspot report
+        if: steps.designation.outputs.designation == 'designated'
+        env:
+          SOURCE_RUN: ${{ steps.artifact.outputs.run_url }}
+        run: >-
+          node scripts/upstream-sync.ts hotspot-report --cwd .
+          --pr-number "$PR_NUMBER" --head-sha "$HEAD_SHA"
+          --report "$RUNNER_TEMP/dry-run-report/upstream-sync-report.json"
+          --source-run "$SOURCE_RUN"
+          --output "$RUNNER_TEMP/hotspot-report.md"
+
+      - name: Revalidate the head immediately before publishing
+        if: steps.designation.outputs.designation == 'designated'
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "+refs/pull/${PR_NUMBER}/head:refs/upstream-sync/pr-recheck"
+          head=$(git rev-parse refs/upstream-sync/pr-recheck)
+          if [[ "$head" != "$HEAD_SHA" ]]; then
+            echo "::error::the PR head moved to $head; aborting the stale report." >&2
+            exit 1
+          fi
+
+      - name: Publish the hotspot report comment
+        if: steps.designation.outputs.designation == 'designated'
+        run: >-
+          node .github/scripts/upstream-sync-pr.cjs upsert-comment
+          --number "$PR_NUMBER" --body-file "$RUNNER_TEMP/hotspot-report.md"

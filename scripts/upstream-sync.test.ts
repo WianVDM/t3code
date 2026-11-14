@@ -15,21 +15,29 @@ import {
   DryRunReport,
   EXPECTED_REMOTES,
   findAddedConflictMarkers,
+  findUnmappedForkPaths,
   finishUpstreamSync,
+  generateHotspotReport,
   GitCommandError,
   nextForkTag,
   parseConflictStages,
   parseGitHubRepository,
   parseUpstreamTagKind,
+  parseSyncBranchTag,
   prepareUpstreamSync,
   renderDryRunSummary,
+  renderHotspotReport,
   replayDryRun,
   resolveDryRunOutcome,
   selectLatestUpstreamTag,
   UpstreamSyncError,
+  validateHotspotReport,
+  validateSyncPullRequestMetadata,
+  validateUpstreamSyncMerge,
   verifyUpstreamSync,
 } from "./upstream-sync.ts";
 import { decide, readWorkspace } from "../.github/scripts/ci-changes.cjs";
+import { classifyPaths } from "../.github/scripts/pr-ownership-label.cjs";
 
 import type { DryRunOutcomeInput } from "./upstream-sync.ts";
 
@@ -1677,6 +1685,568 @@ it.live("the trusted detector provides the full Windows package surface", () =>
       const error = yield* Effect.flip(computeFullWindowsPackages(empty));
       assert.instanceOf(error, UpstreamSyncError);
       assert.match(error.message, /missing from the merged tree/);
+    }),
+  ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+const jsonText = (value: unknown): string => JSON.stringify(value);
+
+const sha = (char: string): string => char.repeat(40);
+
+const SYNC_METADATA = {
+  prNumber: 7,
+  headSha: sha("c"),
+  baseSha: sha("b"),
+  baseRepo: "WianVDM/t3code",
+  baseRef: "main",
+  headRepo: "WianVDM/t3code",
+  headRef: `sync/upstream-${TAG}`,
+};
+
+describe("sync PR metadata", () => {
+  it("parses only exact sync/upstream-vX.Y.Z head branches", () => {
+    assert.equal(parseSyncBranchTag(`sync/upstream-${TAG}`), TAG);
+    assert.isUndefined(parseSyncBranchTag("sync/upstream-v1.2"));
+    assert.isUndefined(parseSyncBranchTag("sync/upstream-v1.2.3-rc.1"));
+    assert.isUndefined(parseSyncBranchTag("sync/upstream-latest"));
+    assert.isUndefined(parseSyncBranchTag("sync/downstream-v1.2.3"));
+    assert.isUndefined(parseSyncBranchTag("main"));
+    assert.isUndefined(parseSyncBranchTag("sync/upstream-v01.2.3"));
+  });
+
+  it("accepts the exact sync PR shape and rejects every deviation", () => {
+    assert.deepEqual(validateSyncPullRequestMetadata(SYNC_METADATA), {
+      tag: TAG,
+      problems: [],
+    });
+    const problemCases: ReadonlyArray<readonly [string, Partial<typeof SYNC_METADATA>]> = [
+      ["a fork head", { headRepo: "someone/t3code" }],
+      ["a wrong base repo", { baseRepo: "pingdotgg/t3code" }],
+      ["a wrong base branch", { baseRef: "release" }],
+      ["an ordinary branch", { headRef: "fix/thing" }],
+      ["a malformed head SHA", { headSha: "abc123" }],
+      ["a malformed base SHA", { baseSha: sha("Z") }],
+      ["a non-positive PR number", { prNumber: 0 }],
+    ];
+    for (const [name, overrides] of problemCases) {
+      const result = validateSyncPullRequestMetadata({ ...SYNC_METADATA, ...overrides });
+      assert.isUndefined(result.tag, name);
+      assert.isTrue(result.problems.length > 0, name);
+    }
+  });
+});
+
+describe("hotspot report validation", () => {
+  const real = {
+    tag: TAG,
+    baseSha: sha("b"),
+    upstreamSha: sha("c"),
+    headSha: sha("e"),
+    headTree: sha("f"),
+    mergeBaseSha: sha("d"),
+    incomingPaths: ["upstream.txt"],
+  };
+  const report = (overrides: Partial<DryRunReport> = {}): DryRunReport => ({
+    schemaVersion: 1,
+    requestedTag: TAG,
+    tag: TAG,
+    baseSha: real.baseSha,
+    mergeBaseSha: real.mergeBaseSha,
+    upstreamSha: real.upstreamSha,
+    mergeCommit: sha("a"),
+    tree: real.headTree,
+    status: "clean",
+    incomingPaths: ["upstream.txt"],
+    classification: {
+      fork: [],
+      seam: [],
+      shared: [{ path: "upstream.txt", category: "shared", diverged: false }],
+    },
+    conflicts: [],
+    windowsPackages: ["apps/desktop"],
+    ...overrides,
+  });
+
+  it("accepts a report that matches the recomputed real merge", () => {
+    assert.deepEqual(validateHotspotReport(report(), real), []);
+  });
+
+  it("rejects an identity mismatch against the real merge", () => {
+    for (const overrides of [
+      { tag: "v9.9.9" },
+      { baseSha: sha("0") },
+      { upstreamSha: sha("1") },
+      { mergeBaseSha: sha("2") },
+    ]) {
+      assert.isNotEmpty(validateHotspotReport(report(overrides), real), jsonText(overrides));
+    }
+  });
+
+  it("rejects incoming-path and classification mismatches before rendering", () => {
+    assert.isNotEmpty(validateHotspotReport(report({ incomingPaths: ["bogus.txt"] }), real));
+    assert.isNotEmpty(validateHotspotReport(report({ incomingPaths: [] }), real));
+    assert.isNotEmpty(
+      validateHotspotReport(
+        report({
+          classification: {
+            fork: [],
+            seam: [],
+            shared: [{ path: "upstream.txt", category: "shared", diverged: true }],
+          },
+        }),
+        real,
+      ),
+    );
+    assert.isNotEmpty(
+      validateHotspotReport(
+        report({
+          classification: {
+            fork: [{ path: "upstream.txt", category: "fork", diverged: false }],
+            seam: [],
+            shared: [],
+          },
+        }),
+        real,
+      ),
+    );
+  });
+
+  it("requires the clean report tree to equal the real merged tree", () => {
+    assert.deepEqual(validateHotspotReport(report({ tree: real.headTree }), real), []);
+    assert.isNotEmpty(validateHotspotReport(report({ tree: sha("0") }), real));
+  });
+
+  it("enforces status-specific nullable fields", () => {
+    assert.isNotEmpty(validateHotspotReport(report({ tree: null }), real));
+    assert.isNotEmpty(validateHotspotReport(report({ mergeCommit: null }), real));
+    // A conflict report must not claim a merged tree, and must list conflicts.
+    const conflictReal = { ...real, headTree: sha("9") };
+    const conflict = report({
+      status: "conflict",
+      mergeCommit: null,
+      tree: null,
+      conflicts: [{ path: "conflict.txt", stages: [1, 2, 3] }],
+    });
+    assert.deepEqual(validateHotspotReport(conflict, conflictReal), []);
+    assert.isNotEmpty(validateHotspotReport(report({ status: "conflict" }), real));
+    assert.isNotEmpty(
+      validateHotspotReport(
+        report({
+          status: "conflict",
+          mergeCommit: null,
+          tree: sha("f"),
+          conflicts: [{ path: "x", stages: [1] }],
+        }),
+        real,
+      ),
+    );
+    assert.isNotEmpty(
+      validateHotspotReport(
+        report({ status: "already_integrated", mergeCommit: sha("a"), tree: sha("f") }),
+        real,
+      ),
+    );
+  });
+
+  it("rejects malformed SHAs, non-strict tags, and illegal conflict stages", () => {
+    assert.isNotEmpty(validateHotspotReport(report({ baseSha: "short" }), real));
+    assert.isNotEmpty(validateHotspotReport(report({ tag: "v1.2" }), real));
+    assert.isNotEmpty(
+      validateHotspotReport(
+        report({
+          status: "conflict",
+          mergeCommit: null,
+          tree: null,
+          conflicts: [{ path: "conflict.txt", stages: [4] }],
+        }),
+        real,
+      ),
+    );
+    assert.isNotEmpty(
+      validateHotspotReport(
+        report({
+          status: "conflict",
+          mergeCommit: null,
+          tree: null,
+          conflicts: [{ path: "conflict.txt", stages: [] }],
+        }),
+        real,
+      ),
+    );
+  });
+});
+
+describe("unmapped fork detection", () => {
+  it("flags only shared-classified PR paths the upstream tag never knew", () => {
+    const unmapped = findUnmappedForkPaths(
+      [
+        "apps/web/src/invented.ts",
+        "README.md",
+        "docs/removed-by-upstream.md",
+        ".github/workflows/ci.yml",
+        "apps/desktop/src/main.ts",
+      ],
+      ["docs/removed-by-upstream.md"],
+      ["README.md", "docs/other.md", "apps/desktop/src/main.ts"],
+    );
+    // README.md exists upstream; the deleted path is incoming upstream work;
+    // .github and apps/desktop/src/main.ts are fork/seam classified.
+    assert.deepEqual(unmapped, ["apps/web/src/invented.ts"]);
+  });
+});
+
+describe("hotspot report rendering", () => {
+  const view = {
+    report: {
+      schemaVersion: 1 as const,
+      requestedTag: TAG,
+      tag: TAG,
+      baseSha: sha("b"),
+      mergeBaseSha: sha("d"),
+      upstreamSha: sha("c"),
+      mergeCommit: sha("a"),
+      tree: sha("f"),
+      status: "clean" as const,
+      incomingPaths: ["apps/desktop/src/main.ts", "upstream.txt"],
+      classification: {
+        fork: [],
+        seam: [{ path: "apps/desktop/src/main.ts", category: "seam" as const, diverged: true }],
+        shared: [{ path: "upstream.txt", category: "shared" as const, diverged: false }],
+      },
+      conflicts: [],
+      windowsPackages: ["apps/desktop"],
+    },
+    real: {
+      tag: TAG,
+      baseSha: sha("b"),
+      upstreamSha: sha("c"),
+      headSha: sha("e"),
+      headTree: sha("f"),
+      mergeBaseSha: sha("d"),
+      incomingPaths: ["apps/desktop/src/main.ts", "upstream.txt"],
+    },
+    unmappedForkPaths: ['weird "path".ts'],
+    sourceRun: "https://github.com/WianVDM/t3code/actions/runs/42",
+    artifactName: "upstream-sync-dry-run-report",
+  };
+
+  it("renders every required section from validated data", () => {
+    const markdown = renderHotspotReport(view);
+    assert.isTrue(markdown.startsWith("<!-- upstream-sync-hotspot-report -->"));
+    assert.include(markdown, view.sourceRun);
+    assert.include(markdown, "upstream-sync-dry-run-report");
+    assert.include(markdown, `\`${TAG}\``);
+    assert.include(markdown, `\`${sha("e")}\``);
+    assert.include(markdown, "Integration seams (1)");
+    assert.include(markdown, "(diverged)");
+    assert.include(markdown, "Unmapped ++-owned files — maintainer review required");
+    // Paths only ever appear JSON-escaped.
+    assert.include(markdown, JSON.stringify('weird "path".ts'));
+  });
+
+  it("caps long ownership sections", () => {
+    const paths = Array.from({ length: 205 }, (_, index) => `pkg/${index}.ts`);
+    const capped = renderHotspotReport({
+      ...view,
+      report: {
+        ...view.report,
+        incomingPaths: paths,
+        classification: {
+          fork: paths.map((path) => ({ path, category: "fork" as const, diverged: false })),
+          seam: [],
+          shared: [],
+        },
+      },
+      real: { ...view.real, incomingPaths: paths },
+      unmappedForkPaths: [],
+    });
+    assert.include(capped, "and 5 more");
+    assert.include(capped, "Unmapped ++-owned files — maintainer review required");
+    assert.include(capped, "(none)");
+  });
+});
+
+// Live flows: validate-merge over real repositories, and the hotspot report
+// over a real two-parent merge with a hand-built trusted artifact.
+const syncPrFixture = Effect.fn("test.syncPrFixture")(function* (
+  options: { readonly extraMergeFiles?: Readonly<Record<string, string>> } = {},
+) {
+  const fixture = yield* makeRepositoryFixture({ variant: "clean" });
+  const spawner = yield* localFetchSpawner(fixture);
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const syncOptions = { tag: TAG, cwd: fixture.cwd };
+
+  yield* Effect.gen(function* () {
+    yield* prepareUpstreamSync(syncOptions);
+    for (const [relative, content] of Object.entries(options.extraMergeFiles ?? {})) {
+      const target = path.join(fixture.cwd, ...relative.split("/"));
+      yield* fs.makeDirectory(path.dirname(target), { recursive: true });
+      yield* fs.writeFileString(target, content);
+    }
+    if (Object.keys(options.extraMergeFiles ?? {}).length > 0) {
+      yield* fixture.git(["add", "-A"]);
+    }
+    yield* verifyUpstreamSync(syncOptions);
+    yield* finishUpstreamSync(syncOptions);
+  }).pipe(withSpawner(spawner));
+
+  const headSha = (yield* fixture.git(["rev-parse", "HEAD"])).trim();
+  const headTree = (yield* fixture.git(["rev-parse", "HEAD^{tree}"])).trim();
+  const mergeBaseSha = (yield* fixture.git([
+    "merge-base",
+    fixture.forkHead,
+    fixture.upstreamHead,
+  ])).trim();
+  yield* fixture.git(["push", fixture.originLocalUrl, "HEAD:refs/pull/7/head"]);
+
+  return { fixture, spawner, fs, path, headSha, headTree, mergeBaseSha };
+});
+
+const classificationOf = (paths: ReadonlyArray<string>) => {
+  const classification = classifyPaths(paths);
+  return { fork: classification.fork, seam: classification.seam, shared: classification.shared };
+};
+
+const trustedReport = (overrides: Record<string, unknown>): string =>
+  jsonText({
+    schemaVersion: 1,
+    requestedTag: TAG,
+    tag: TAG,
+    baseSha: null,
+    mergeBaseSha: null,
+    upstreamSha: null,
+    mergeCommit: null,
+    tree: null,
+    status: "clean",
+    incomingPaths: ["upstream.txt"],
+    classification: { fork: [], seam: [], shared: [] },
+    conflicts: [],
+    windowsPackages: [],
+    ...overrides,
+  });
+
+const hotspotOptions = (fixtureRoot: string, cwd: string, prNumber: number, headSha: string) => ({
+  cwd,
+  prNumber,
+  headSha,
+  reportPath: `${fixtureRoot}/artifact-report.json`,
+  sourceRun: "https://github.com/WianVDM/t3code/actions/runs/42",
+  outputPath: `${fixtureRoot}/hotspot.md`,
+});
+
+it.live("validate-merge accepts the real two-parent sync merge", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { fixture, spawner, headSha } = yield* syncPrFixture();
+      const result = yield* withSpawner(spawner)(
+        validateUpstreamSyncMerge({
+          cwd: fixture.cwd,
+          prNumber: 7,
+          headSha,
+          baseSha: fixture.forkHead,
+          baseRepo: "WianVDM/t3code",
+          baseRef: "main",
+          headRepo: "WianVDM/t3code",
+          headRef: `sync/upstream-${TAG}`,
+        }),
+      );
+      assert.equal(result.tag, TAG);
+      assert.equal(result.headSha, headSha);
+      assert.equal(result.upstreamSha, fixture.upstreamHead);
+    }),
+  ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.live(
+  "validate-merge rejects squashed, swapped, octopus, stale, mismatched, and moved-tag merges",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { fixture, spawner, headSha, mergeBaseSha } = yield* syncPrFixture();
+        const git = fixture.git;
+        const metadata = {
+          cwd: fixture.cwd,
+          baseSha: fixture.forkHead,
+          baseRepo: "WianVDM/t3code",
+          baseRef: "main",
+          headRepo: "WianVDM/t3code",
+          headRef: `sync/upstream-${TAG}`,
+        };
+        const fails = (options: typeof metadata & { prNumber: number; headSha: string }) =>
+          Effect.flip(withSpawner(spawner)(validateUpstreamSyncMerge(options)));
+        const tree = (yield* git(["rev-parse", "HEAD^{tree}"])).trim();
+
+        // A malformed head SHA never reaches git.
+        assert.match(
+          (yield* fails({ ...metadata, prNumber: 7, headSha: "nope" })).message,
+          /full lowercase hex/,
+        );
+        // A head SHA that is not the fetched PR head.
+        assert.match(
+          (yield* fails({ ...metadata, prNumber: 7, headSha: fixture.forkHead })).message,
+          /does not match the payload SHA/,
+        );
+
+        // A squashed single-parent commit of the same tree.
+        const squashed = (yield* git([
+          "commit-tree",
+          tree,
+          "-p",
+          fixture.forkHead,
+          "-m",
+          "squash",
+        ])).trim();
+        yield* git(["push", fixture.originLocalUrl, `${squashed}:refs/pull/8/head`]);
+        const squashError = yield* fails({ ...metadata, prNumber: 8, headSha: squashed });
+        assert.instanceOf(squashError, UpstreamSyncError);
+        assert.match(squashError.message, /expected exactly/);
+
+        // Swapped parents.
+        const swapped = (yield* git([
+          "commit-tree",
+          tree,
+          "-p",
+          fixture.upstreamHead,
+          "-p",
+          fixture.forkHead,
+          "-m",
+          "swapped",
+        ])).trim();
+        yield* git(["push", fixture.originLocalUrl, `${swapped}:refs/pull/9/head`]);
+        assert.match(
+          (yield* fails({ ...metadata, prNumber: 9, headSha: swapped })).message,
+          /expected exactly/,
+        );
+
+        // An octopus merge.
+        const octopus = (yield* git([
+          "commit-tree",
+          tree,
+          "-p",
+          fixture.forkHead,
+          "-p",
+          fixture.upstreamHead,
+          "-p",
+          mergeBaseSha,
+          "-m",
+          "octopus",
+        ])).trim();
+        yield* git(["push", fixture.originLocalUrl, `${octopus}:refs/pull/10/head`]);
+        assert.match(
+          (yield* fails({ ...metadata, prNumber: 10, headSha: octopus })).message,
+          /expected exactly/,
+        );
+
+        // A stale base SHA: the merge is right, the claimed base is not.
+        assert.match(
+          (yield* fails({ ...metadata, baseSha: mergeBaseSha, prNumber: 7, headSha })).message,
+          /expected exactly/,
+        );
+
+        // A moved upstream tag: the second parent no longer matches the tag.
+        yield* git([
+          "push",
+          "--force",
+          fixture.upstreamLocalUrl,
+          `${fixture.forkHead}:refs/tags/${TAG}`,
+        ]);
+        const movedError = yield* fails({ ...metadata, prNumber: 7, headSha });
+        assert.instanceOf(movedError, UpstreamSyncError);
+        assert.match(movedError.message, /expected exactly/);
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.live("hotspot-report validates the artifact against the real merge and renders it", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const prepared = yield* syncPrFixture({
+        extraMergeFiles: {
+          "apps/web/src/invented.ts": "export const invented = true;\n",
+          "README.md": "base\nfork edit during resolution\n",
+        },
+      });
+      const { fixture, spawner, fs, path, headSha, headTree, mergeBaseSha } = prepared;
+      yield* fs.writeFileString(
+        path.join(fixture.root, "artifact-report.json"),
+        trustedReport({
+          baseSha: fixture.forkHead,
+          mergeBaseSha,
+          upstreamSha: fixture.upstreamHead,
+          mergeCommit: headSha,
+          tree: headTree,
+          classification: classificationOf(["upstream.txt"]),
+        }),
+      );
+
+      const result = yield* withSpawner(spawner)(
+        generateHotspotReport(hotspotOptions(fixture.root, fixture.cwd, 7, headSha)),
+      );
+      // The fork-invented shared path is unmapped; README.md exists upstream
+      // and stays shared even though the resolution touched it.
+      assert.deepEqual(result.unmappedForkPaths, ["apps/web/src/invented.ts"]);
+
+      const markdown = yield* fs.readFileString(path.join(fixture.root, "hotspot.md"));
+      assert.isTrue(markdown.startsWith("<!-- upstream-sync-hotspot-report -->"));
+      assert.include(markdown, "https://github.com/WianVDM/t3code/actions/runs/42");
+      assert.include(markdown, "Unmapped ++-owned files — maintainer review required");
+      assert.include(markdown, JSON.stringify("apps/web/src/invented.ts"));
+      assert.isFalse(markdown.includes('"README.md"'));
+      assert.include(markdown, headSha);
+    }),
+  ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.live("hotspot-report fails closed before rendering on any mismatch", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { fixture, spawner, fs, path, headSha, headTree, mergeBaseSha } =
+        yield* syncPrFixture();
+      const reportPath = path.join(fixture.root, "artifact-report.json");
+      const options = hotspotOptions(fixture.root, fixture.cwd, 7, headSha);
+      const goodFields = {
+        baseSha: fixture.forkHead,
+        mergeBaseSha,
+        upstreamSha: fixture.upstreamHead,
+        mergeCommit: headSha,
+        tree: headTree,
+        classification: classificationOf(["upstream.txt"]),
+      };
+      const generate = () =>
+        Effect.flip(withSpawner(spawner)(generateHotspotReport({ ...options, reportPath })));
+
+      // A missing JSON file is an error.
+      const missing = yield* generate();
+      assert.instanceOf(missing, UpstreamSyncError);
+      assert.match(missing.message, /missing/i);
+
+      // A malformed JSON payload fails the schema before any git work.
+      yield* fs.writeFileString(reportPath, "{not json");
+      assert.match((yield* generate()).message, /invalid/i);
+
+      // An identity mismatch fails before rendering; no output file appears.
+      yield* fs.writeFileString(
+        reportPath,
+        trustedReport({ ...goodFields, upstreamSha: sha("0") }),
+      );
+      assert.match((yield* generate()).message, /does not survive validation/);
+      assert.isFalse(yield* fs.exists(options.outputPath));
+
+      // A stale head (the payload SHA moved) fails before anything else.
+      yield* fs.writeFileString(reportPath, trustedReport(goodFields));
+      const stale = yield* Effect.flip(
+        withSpawner(spawner)(generateHotspotReport({ ...options, headSha: sha("0"), reportPath })),
+      );
+      assert.match(stale.message, /payload SHA/);
+
+      // An incoming/classification mismatch fails before rendering.
+      yield* fs.writeFileString(
+        reportPath,
+        trustedReport({ ...goodFields, incomingPaths: ["bogus.txt"] }),
+      );
+      assert.match((yield* generate()).message, /does not survive validation/);
+      assert.isFalse(yield* fs.exists(options.outputPath));
     }),
   ).pipe(Effect.provide(NodeServices.layer)),
 );

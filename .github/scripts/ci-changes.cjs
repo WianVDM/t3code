@@ -23,7 +23,7 @@ const RUNS_EVERYTHING = [
   /^config\/fork-inventory\.json$/,
   /^\.github\/workflows\/(ci|windows-tests)\.yml$/,
   /^\.github\/actions\/ci-changes\//,
-  /^\.github\/scripts\/ci-changes/,
+  /^\.github\/scripts\/(ci-changes|upstream-sync-pr)/,
 ];
 
 // The ++ fork-boundary infrastructure named by the trusted policy shapes how
@@ -157,6 +157,7 @@ const EXPECTED_JOBS = {
   release_smoke: { gates: ["release_smoke"] },
   shared_persistence_compat: { gates: null },
   windows: { gates: ["windows"] },
+  sync: { gates: ["upstream_sync"] },
 };
 
 // Fail-closed result policy shared by CI's Check job (--check-results) and
@@ -183,6 +184,15 @@ function checkJobResults(needs) {
       // detection is never a healthy run: Check requires the explicit all-clear.
       if (job === "changes" && gates.fail_open !== "false") {
         problems.push(`changes: fail_open is ${JSON.stringify(gates.fail_open)}, expected "false"`);
+      }
+      // An invalid or unproven upstream-sync claim (#50) forces full CI and can
+      // never merge green: Check requires this explicit all-clear too.
+      if (job === "changes" && gates.sync_designation_error !== "false") {
+        problems.push(
+          `changes: sync_designation_error is ${JSON.stringify(
+            gates.sync_designation_error,
+          )}, expected "false"`,
+        );
       }
       continue;
     }
@@ -246,10 +256,26 @@ function propagateDependents(packages, seed, depsOf) {
   return result;
 }
 
-function decide(files, packages, full, boundaryInfra = readBoundaryInfrastructure()) {
+// Sync designation states from the ci-changes action: "none" (no claim),
+// "designated" (verified upstream-sync), "invalid" (claimed but unproven or a
+// resolver/API failure). Anything but "none" forces the full run.
+const SYNC_DESIGNATIONS = new Set(["none", "designated", "invalid"]);
+
+function decide(
+  files,
+  packages,
+  full,
+  sync = "none",
+  boundaryInfra = readBoundaryInfrastructure(),
+) {
+  if (!SYNC_DESIGNATIONS.has(sync)) {
+    throw new Error(
+      `Invalid --sync designation ${JSON.stringify(sync)}. Expected none, designated, or invalid.`,
+    );
+  }
   const all = new Set(packages.map((pkg) => pkg.name));
   let affected = new Set();
-  let everything = full || files === null || boundaryInfra === null;
+  let everything = full || files === null || sync !== "none" || boundaryInfra === null;
   let rust = false;
 
   for (const file of files ?? []) {
@@ -319,6 +345,8 @@ function decide(files, packages, full, boundaryInfra = readBoundaryInfrastructur
       release_smoke: scriptsChanged,
       windows,
       windows_packages: windowsPackages.join(" "),
+      upstream_sync: sync !== "none",
+      sync_designation_error: sync === "invalid",
     },
   };
 }
@@ -348,6 +376,8 @@ function main() {
   const args = process.argv.slice(2);
   if (args.includes("--check-results")) return checkResults();
   const pathsIndex = args.indexOf("--paths");
+  const syncIndex = args.indexOf("--sync");
+  const sync = syncIndex === -1 ? "none" : args[syncIndex + 1];
   const files =
     pathsIndex === -1
       ? null
@@ -355,7 +385,7 @@ function main() {
           .readFileSync(args[pathsIndex + 1], "utf8")
           .split("\n")
           .filter(Boolean);
-  const { affected, outputs } = decide(files, readWorkspace(), args.includes("--full"));
+  const { affected, outputs } = decide(files, readWorkspace(), args.includes("--full"), sync);
 
   console.error(`Affected packages: ${affected.join(", ") || "none"}`);
   for (const [key, value] of Object.entries(outputs)) console.log(`${key}=${value}`);
