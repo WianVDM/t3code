@@ -191,6 +191,11 @@ jobs:
         if: steps.validate.outputs.replay == 'true'
         shell: bash
         env:
+          # Runners have no git identity; the dry-run merge commit is never pushed.
+          GIT_AUTHOR_NAME: github-actions[bot]
+          GIT_AUTHOR_EMAIL: 41898299+github-actions[bot]@users.noreply.github.com
+          GIT_COMMITTER_NAME: github-actions[bot]
+          GIT_COMMITTER_EMAIL: 41898299+github-actions[bot]@users.noreply.github.com
           DRY_RUN_TAG: ${{ inputs.dry_run_tag }}
           DRY_RUN_BASE_SHA: ${{ inputs.dry_run_base_sha }}
           DRY_RUN_UPSTREAM_SHA: ${{ inputs.dry_run_upstream_sha }}

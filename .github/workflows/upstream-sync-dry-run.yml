@@ -94,6 +94,12 @@ jobs:
 
       - name: Dry-run merge
         id: dry_run
+        env:
+          # Runners have no git identity; the dry-run merge commit is never pushed.
+          GIT_AUTHOR_NAME: github-actions[bot]
+          GIT_AUTHOR_EMAIL: 41898299+github-actions[bot]@users.noreply.github.com
+          GIT_COMMITTER_NAME: github-actions[bot]
+          GIT_COMMITTER_EMAIL: 41898299+github-actions[bot]@users.noreply.github.com
         run: node scripts/upstream-sync.ts dry-run --tag "$REQUESTED_TAG" --cwd . --report "$RUNNER_TEMP/upstream-sync-report.json" --summary "$RUNNER_TEMP/upstream-sync-report.md" --github-output
 
       - name: Upload diagnostics
@@ -185,6 +191,11 @@ jobs:
       # Any identity mismatch fails here, before merged dependencies or tests.
       - name: Replay the merge
         env:
+          # Runners have no git identity; the dry-run merge commit is never pushed.
+          GIT_AUTHOR_NAME: github-actions[bot]
+          GIT_AUTHOR_EMAIL: 41898299+github-actions[bot]@users.noreply.github.com
+          GIT_COMMITTER_NAME: github-actions[bot]
+          GIT_COMMITTER_EMAIL: 41898299+github-actions[bot]@users.noreply.github.com
           DRY_TAG: ${{ needs.merge.outputs.tag }}
           DRY_BASE_SHA: ${{ needs.merge.outputs.base_sha }}
           DRY_UPSTREAM_SHA: ${{ needs.merge.outputs.upstream_sha }}
