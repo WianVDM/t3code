@@ -9,12 +9,32 @@ import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
-import * as Stream from "effect/Stream";
 import { Command, Flag } from "effect/cli";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import { decide, readWorkspace } from "../.github/scripts/ci-changes.cjs";
-import { classifyPath, classifyPaths } from "../.github/scripts/pr-ownership-label.cjs";
+import {
+  SEAM_REGISTRY_PATH,
+  SYNC_HISTORY_PATH,
+  SeamMechanism,
+  collectStreamAsString,
+  compareText,
+  locateRegion,
+  normalizeRegion,
+  parseSeamRegistry,
+  parseSyncHistory,
+  readFileAt,
+  refreshRegistry,
+  serializeRegistry,
+  serializeSyncHistory,
+  upsertSyncEntry,
+  type RegionLookup,
+  type Seam,
+  type SeamAnchor,
+  type SeamRegistry,
+  type SyncHistory,
+  type SyncHistoryEntry,
+} from "./seamRegistry.ts";
 
 export const EXPECTED_REMOTES = {
   origin: "WianVDM/t3code",
@@ -49,7 +69,7 @@ const VerifiedMergeRecordJson = Schema.fromJsonString(VerifiedMergeRecord);
 const encodeVerifiedMergeRecord = Schema.encodeEffect(VerifiedMergeRecordJson);
 const decodeVerifiedMergeRecord = Schema.decodeEffect(VerifiedMergeRecordJson);
 
-export const DRY_RUN_REPORT_SCHEMA_VERSION = 1;
+export const DRY_RUN_REPORT_SCHEMA_VERSION = 2;
 
 export const DryRunStatus = Schema.Literals([
   "already_integrated",
@@ -60,13 +80,6 @@ export const DryRunStatus = Schema.Literals([
 ]);
 export type DryRunStatus = typeof DryRunStatus.Type;
 
-export const ClassifiedPathEntry = Schema.Struct({
-  path: Schema.String,
-  category: Schema.Literals(["fork", "seam", "shared"]),
-  diverged: Schema.Boolean,
-});
-export type ClassifiedPathEntry = typeof ClassifiedPathEntry.Type;
-
 export const DryRunConflictEntry = Schema.Struct({
   path: Schema.String,
   stages: Schema.Array(Schema.Number),
@@ -74,6 +87,50 @@ export const DryRunConflictEntry = Schema.Struct({
 export type DryRunConflictEntry = typeof DryRunConflictEntry.Type;
 
 const NullableHex = Schema.NullOr(Schema.String);
+
+export const SeamState = Schema.Literals([
+  "same",
+  "changed",
+  "missing",
+  "ambiguous",
+  "file-deleted",
+]);
+export type SeamState = typeof SeamState.Type;
+
+const RegionImpact = {
+  state: SeamState,
+  conflict: Schema.Boolean,
+  diff: Schema.NullOr(Schema.String),
+};
+
+// Which ++ features an upstream ref touches: per seam and sibling, the state of
+// the anchored region and whether a merge conflicts on its path.
+export const ImpactReport = Schema.Struct({
+  upstreamRef: Schema.String,
+  targetRef: Schema.String,
+  features: Schema.Array(
+    Schema.Struct({
+      feature: Schema.String,
+      title: Schema.String,
+      issue: Schema.NullOr(Schema.Number),
+      seams: Schema.Array(
+        Schema.Struct({
+          id: Schema.String,
+          path: Schema.String,
+          mechanism: SeamMechanism,
+          ...RegionImpact,
+        }),
+      ),
+      siblings: Schema.Array(
+        Schema.Struct({ upstream: Schema.String, plusplus: Schema.String, ...RegionImpact }),
+      ),
+    }),
+  ),
+  legacyTouched: Schema.Array(Schema.Struct({ path: Schema.String, conflict: Schema.Boolean })),
+  unregisteredConflicts: Schema.Array(Schema.Struct({ path: Schema.String, hunks: Schema.Number })),
+  unregisteredDeltas: Schema.Array(Schema.String),
+});
+export type ImpactReport = typeof ImpactReport.Type;
 
 // Versioned so the protected sync PR automation (#50) can consume it blindly.
 export const DryRunReport = Schema.Struct({
@@ -87,12 +144,9 @@ export const DryRunReport = Schema.Struct({
   tree: NullableHex,
   status: DryRunStatus,
   incomingPaths: Schema.Array(Schema.String),
-  classification: Schema.Struct({
-    fork: Schema.Array(ClassifiedPathEntry),
-    seam: Schema.Array(ClassifiedPathEntry),
-    shared: Schema.Array(ClassifiedPathEntry),
-  }),
+  impact: Schema.NullOr(ImpactReport),
   conflicts: Schema.Array(DryRunConflictEntry),
+  seamRefreshProblems: Schema.Array(Schema.String),
   windowsPackages: Schema.Array(Schema.String),
 });
 export type DryRunReport = typeof DryRunReport.Type;
@@ -105,6 +159,14 @@ const encodeDryRunReport = Schema.encodeEffect(DryRunReportJson);
 // every stringification goes through these pure helpers.
 const jsonText = (value: unknown): string => JSON.stringify(value);
 const prettyJsonText = (value: unknown): string => JSON.stringify(value, null, 2);
+
+// Key order never decides equality between a decoded artifact and a recomputation.
+const canonicalJson = (value: unknown): string =>
+  JSON.stringify(value, (_key, child: unknown) =>
+    child !== null && typeof child === "object" && !Array.isArray(child)
+      ? Object.fromEntries(Object.entries(child).sort(([a], [b]) => compareText(a, b)))
+      : child,
+  );
 
 export class UpstreamSyncError extends Schema.TaggedError<UpstreamSyncError>()(
   "UpstreamSyncError",
@@ -268,6 +330,111 @@ const summaryList = (lines: ReadonlyArray<string>): Array<string> =>
         `- …and ${lines.length - SUMMARY_SECTION_PATH_LIMIT} more (full list in the JSON report)`,
       ];
 
+const ADAPT_PROMPT = "Adapt the ++ change, or drop it if upstream now does the same.";
+
+// Table cells and fences carry upstream text, so neither may be broken out of.
+const codeCell = (text: string): string => `\`${text.replace(/[`|\r\n]/g, " ")}\``;
+
+function fenceFor(text: string): string {
+  const longestRun = Math.max(0, ...(text.match(/`+/g) ?? []).map((run) => run.length));
+  return "`".repeat(Math.max(3, longestRun + 1));
+}
+
+const stateCells = (entry: { state: SeamState; conflict: boolean }): string =>
+  `${entry.state} | ${entry.conflict ? "conflict" : "-"}`;
+
+function renderFeatureImpact(feature: ImpactReport["features"][number]): Array<string> {
+  const issue = feature.issue === null ? "" : ` (#${feature.issue})`;
+  const rows = [
+    ...feature.seams.map(
+      (seam) =>
+        `| ${codeCell(seam.id)} | ${codeCell(seam.path)} | ${seam.mechanism} | ${stateCells(seam)} |`,
+    ),
+    ...feature.siblings.map(
+      (sibling) =>
+        `| sibling | ${codeCell(sibling.upstream)} | ${codeCell(sibling.plusplus)} | ${stateCells(sibling)} |`,
+    ),
+  ];
+  const changed = [
+    ...feature.seams.map((seam) => ({ label: seam.id, diff: seam.diff, state: seam.state })),
+    ...feature.siblings.map((sibling) => ({
+      label: `sibling ${sibling.upstream}`,
+      diff: sibling.diff,
+      state: sibling.state,
+    })),
+  ];
+  const details = changed.flatMap(({ label, diff, state }) => {
+    if (state !== "changed" || diff === null) return [];
+    const fence = fenceFor(diff);
+    return [
+      "",
+      `<details><summary>${label.replace(/[<>&]/g, " ")}: upstream changed this region</summary>`,
+      "",
+      ADAPT_PROMPT,
+      "",
+      `${fence}diff`,
+      diff,
+      fence,
+      "",
+      "</details>",
+    ];
+  });
+  return [
+    `### ${feature.feature}: ${feature.title}${issue}`,
+    "",
+    "| Seam | Path | Mechanism or ++ file | State | Conflict |",
+    "| :-- | :-- | :-- | :-- | :-- |",
+    ...rows,
+    ...details,
+  ];
+}
+
+export function renderImpactReport(report: ImpactReport): Array<string> {
+  const list = (title: string, items: ReadonlyArray<string>): Array<string> => [
+    "",
+    `### ${title} (${items.length})`,
+    "",
+    ...(items.length === 0 ? ["(none)"] : summaryList(items)),
+  ];
+  return [
+    "## ++ impact",
+    "",
+    `Registry ref \`${report.upstreamRef}\` against \`${report.targetRef}\`.`,
+    ...report.features.flatMap((feature) => ["", ...renderFeatureImpact(feature)]),
+    ...list(
+      "Legacy files upstream touches",
+      report.legacyTouched.map(
+        (entry) => `- ${JSON.stringify(entry.path)}${entry.conflict ? " (conflict)" : ""}`,
+      ),
+    ),
+    ...list(
+      "Unregistered conflicts",
+      report.unregisteredConflicts.map(
+        (entry) => `- ${JSON.stringify(entry.path)} (${entry.hunks} hunks)`,
+      ),
+    ),
+    ...list(
+      "Unregistered fork deltas (should be none)",
+      report.unregisteredDeltas.map((path) => `- ${JSON.stringify(path)}`),
+    ),
+  ];
+}
+
+const renderImpactSection = (impact: ImpactReport | null): Array<string> =>
+  impact === null ? ["## ++ impact", "", "(not computed)"] : renderImpactReport(impact);
+
+const renderSeamRefreshSection = (problems: ReadonlyArray<string>): Array<string> =>
+  problems.length === 0
+    ? []
+    : [
+        "",
+        `## Seam registry refresh (${problems.length})`,
+        "",
+        "The registry cannot be refreshed against the merged tag; verify refuses until each is fixed.",
+        "",
+        ...summaryList(problems.map((problem) => `- ${JSON.stringify(problem)}`)),
+      ];
+
 export function renderDryRunSummary(report: DryRunReport, detail: string | null): string {
   const value = (label: string, text: string | null): string =>
     `- ${label}: ${text === null ? "(unresolved)" : `\`${text}\``}`;
@@ -282,6 +449,7 @@ export function renderDryRunSummary(report: DryRunReport, detail: string | null)
     value("Upstream commit", report.upstreamSha),
     value("Dry-run merge commit", report.mergeCommit),
     value("Merged tree", report.tree),
+    `- Incoming paths: ${report.incomingPaths.length}`,
     `- Windows packages: ${
       report.windowsPackages.length === 0
         ? "(none)"
@@ -291,25 +459,6 @@ export function renderDryRunSummary(report: DryRunReport, detail: string | null)
   if (detail !== null) {
     lines.push("", `> ${detail.split(/\r?\n/).join("\n> ")}`);
   }
-  lines.push("", `## Incoming paths (${report.incomingPaths.length})`, "");
-  lines.push(`### ++-owned (${report.classification.fork.length})`, "");
-  lines.push(
-    ...(report.classification.fork.length === 0
-      ? ["(none)"]
-      : summaryList(report.classification.fork.map((entry) => `- ${JSON.stringify(entry.path)}`))),
-  );
-  lines.push("", `### Integration seams (${report.classification.seam.length})`, "");
-  lines.push(
-    ...(report.classification.seam.length === 0
-      ? ["(none)"]
-      : summaryList(
-          report.classification.seam.map(
-            (entry) =>
-              `- ${JSON.stringify(entry.path)} (${entry.diverged ? "diverged" : "fork-only"})`,
-          ),
-        )),
-  );
-  lines.push("", `Other shared paths: ${report.classification.shared.length}`);
   if (report.conflicts.length > 0) {
     lines.push("", `## Conflicts (${report.conflicts.length})`, "");
     lines.push(
@@ -320,7 +469,9 @@ export function renderDryRunSummary(report: DryRunReport, detail: string | null)
       ),
     );
   }
+  lines.push("", ...renderImpactSection(report.impact));
   lines.push(
+    ...renderSeamRefreshSection(report.seamRefreshProblems),
     "",
     "## Verification lanes",
     "",
@@ -382,7 +533,15 @@ export function resolveDryRunOutcome(input: DryRunOutcomeInput): DryRunOutcome {
   const laneState = (lane: string, { result, verification }: LaneOutcomeInput): DryRunLaneState => {
     switch (result) {
       case "success":
-        return "passed";
+        // A lane's verify step is continue-on-error, so a failing check still
+        // concludes the job as success; its verification_result tells the truth.
+        if (verification === "passed" || verification === "verification_failed") {
+          return verification;
+        }
+        problems.push(
+          `${lane}: succeeded without a usable verification_result (${JSON.stringify(verification)})`,
+        );
+        return "error";
       case "failure":
         if (verification === "verification_failed" || verification === "error") {
           return verification;
@@ -441,7 +600,7 @@ export function resolveDryRunOutcome(input: DryRunOutcomeInput): DryRunOutcome {
       }
       case "conflict":
       case "merge_verification_failed": {
-        if (input.mergeResult !== "failure") {
+        if (input.mergeResult !== "success") {
           problems.push(
             `the merge job result is ${JSON.stringify(input.mergeResult)} despite ${JSON.stringify(
               status,
@@ -484,7 +643,7 @@ export function resolveDryRunOutcome(input: DryRunOutcomeInput): DryRunOutcome {
   const outcome = decideOutcome();
   return {
     outcome: problems.length > 0 ? "error" : outcome,
-    success: problems.length === 0 && (outcome === "passed" || outcome === "already_integrated"),
+    success: problems.length === 0 && outcome !== "error",
     problems,
     lanes,
   };
@@ -519,15 +678,6 @@ const indentLines = (lines: ReadonlyArray<string>): string =>
   lines.map((line) => `  ${line}`).join("\n");
 
 const upstreamReleaseRef = (tag: string): string => `${UPSTREAM_RELEASE_REF_PREFIX}${tag}`;
-
-const collectStreamAsString = <E>(stream: Stream.Stream<Uint8Array, E>): Effect.Effect<string, E> =>
-  stream.pipe(
-    Stream.decodeText(),
-    Stream.runFold(
-      () => "",
-      (acc, chunk) => acc + chunk,
-    ),
-  );
 
 const runGit = Effect.fn("upstream-sync.runGit")(function* (
   cwd: string,
@@ -736,6 +886,8 @@ const verifyMergeState = Effect.fn("upstream-sync.verifyMergeState")(function* (
     "Unmerged paths remain. Resolve and stage them before continuing",
   );
 
+  const seamProblems = yield* stageSeamRefresh(cwd, tag, mergeHead);
+
   yield* requireNoLeftoverPaths(
     cwd,
     ["diff", "--name-only", "-z", "--"],
@@ -782,7 +934,17 @@ const verifyMergeState = Effect.fn("upstream-sync.verifyMergeState")(function* (
 
   const head = (yield* git(cwd, ["rev-parse", "--verify", "HEAD^{commit}"])).trim();
   const tree = (yield* git(cwd, ["write-tree"])).trim();
-  return { head, mergeHead, tree };
+  return { head, mergeHead, tree, seamProblems };
+});
+
+const requireSeamRefresh = Effect.fn("upstream-sync.requireSeamRefresh")(function* (
+  tag: string,
+  seamProblems: ReadonlyArray<string>,
+) {
+  if (seamProblems.length === 0) return;
+  return yield* new UpstreamSyncError({
+    message: `The seam registry cannot be refreshed for ${tag}. Fix each anchor, or register each fork delta, then run verify again:\n${indentLines(seamProblems)}`,
+  });
 });
 
 export const prepareUpstreamSync = Effect.fn("upstream-sync.prepare")(function* (
@@ -866,6 +1028,7 @@ export const verifyUpstreamSync = Effect.fn("upstream-sync.verify")(function* (
 ) {
   const { cwd, tag } = yield* resolveContext(options);
   const state = yield* verifyMergeState(cwd, tag);
+  yield* requireSeamRefresh(tag, state.seamProblems);
   yield* writeVerifiedMergeRecord(cwd, state);
   yield* Console.log(`Verified pending merge of ${tag} at ${state.mergeHead}.`);
   return { mergeHead: state.mergeHead };
@@ -876,6 +1039,7 @@ export const finishUpstreamSync = Effect.fn("upstream-sync.finish")(function* (
 ) {
   const { cwd, tag } = yield* resolveContext(options);
   const state = yield* verifyMergeState(cwd, tag);
+  yield* requireSeamRefresh(tag, state.seamProblems);
   const record = yield* readVerifiedMergeRecord(cwd, tag);
 
   const drift: string[] = [];
@@ -1086,14 +1250,13 @@ interface DryRunDraft {
   upstreamSha: string | null;
   mergeCommit: string | null;
   tree: string | null;
+  // The merge commit's tree the lanes replay; unlike `tree` it is never withheld.
+  replayTree: string | null;
   status: DryRunStatus;
   incomingPaths: Array<string>;
-  classification: {
-    fork: Array<ClassifiedPathEntry>;
-    seam: Array<ClassifiedPathEntry>;
-    shared: Array<ClassifiedPathEntry>;
-  };
+  impact: ImpactReport | null;
   conflicts: Array<DryRunConflictEntry>;
+  seamRefreshProblems: Array<string>;
   windowsPackages: Array<string>;
 }
 
@@ -1105,10 +1268,12 @@ const emptyDryRunDraft = (requestedTag: string): DryRunDraft => ({
   upstreamSha: null,
   mergeCommit: null,
   tree: null,
+  replayTree: null,
   status: "error",
   incomingPaths: [],
-  classification: { fork: [], seam: [], shared: [] },
+  impact: null,
   conflicts: [],
+  seamRefreshProblems: [],
   windowsPackages: [],
 });
 
@@ -1123,12 +1288,9 @@ const draftReport = (draft: DryRunDraft): DryRunReport => ({
   tree: draft.tree,
   status: draft.status,
   incomingPaths: [...draft.incomingPaths],
-  classification: {
-    fork: [...draft.classification.fork],
-    seam: [...draft.classification.seam],
-    shared: [...draft.classification.shared],
-  },
+  impact: draft.impact,
   conflicts: draft.conflicts.map((conflict) => ({ ...conflict, stages: [...conflict.stages] })),
+  seamRefreshProblems: [...draft.seamRefreshProblems],
   windowsPackages: [...draft.windowsPackages],
 });
 
@@ -1241,6 +1403,307 @@ export const computeFullWindowsPackages = Effect.fn("upstream-sync.computeFullWi
   },
 );
 
+const asSyncError = (cause: { readonly message: string }): UpstreamSyncError =>
+  new UpstreamSyncError({ message: cause.message });
+
+const readRegistryAt = Effect.fn("upstream-sync.readRegistryAt")(function* (
+  cwd: string,
+  ref: string,
+) {
+  const text = yield* readFileAt(cwd, ref, SEAM_REGISTRY_PATH).pipe(Effect.mapError(asSyncError));
+  if (Option.isNone(text)) {
+    return yield* new UpstreamSyncError({
+      message: `${SEAM_REGISTRY_PATH} does not exist at ${ref}; the impact report needs the registry of the fork base.`,
+    });
+  }
+  return yield* parseSeamRegistry(text.value).pipe(Effect.mapError(asSyncError));
+});
+
+const CONFLICT_HUNK_START = /^<{7}(?:[\t ].*)?$/;
+
+// Conflicted paths of a trial merge with the hunk count of each. A
+// modify/delete conflict leaves no markers and counts 0 hunks.
+const mergeTreeConflicts = Effect.fn("upstream-sync.mergeTreeConflicts")(function* (
+  cwd: string,
+  forkSha: string,
+  targetSha: string,
+) {
+  const args = ["merge-tree", "--write-tree", "--name-only", "-z", forkSha, targetSha];
+  const result = yield* runGit(cwd, args);
+  if (result.exitCode > 1) return yield* new GitCommandError({ args, ...result });
+  const conflicts = new Map<string, number>();
+  if (result.exitCode === 0) return conflicts;
+
+  const [tree = "", ...rest] = result.stdout.split("\0");
+  const end = rest.indexOf("");
+  for (const path of end === -1 ? rest : rest.slice(0, end)) {
+    const merged = yield* runGit(cwd, ["show", `${tree}:${path}`]);
+    const hunks =
+      merged.exitCode === 0
+        ? merged.stdout.split(/\r?\n/).filter((line) => CONFLICT_HUNK_START.test(line)).length
+        : 0;
+    conflicts.set(path, hunks);
+  }
+  return conflicts;
+});
+
+type RegionComparison =
+  | { readonly state: "same" | "missing" | "ambiguous" | "file-deleted" }
+  | { readonly state: "changed"; readonly before: string; readonly after: string };
+
+const regionProblem = (
+  lookups: ReadonlyArray<RegionLookup>,
+): "missing" | "ambiguous" | undefined => {
+  if (lookups.some((lookup) => lookup._tag === "Missing")) return "missing";
+  if (lookups.some((lookup) => lookup._tag === "Ambiguous")) return "ambiguous";
+  return undefined;
+};
+
+function compareRegion(
+  path: string,
+  anchor: SeamAnchor,
+  atRef: Option.Option<string>,
+  atTarget: Option.Option<string>,
+): RegionComparison {
+  if (Option.isNone(atTarget)) return { state: "file-deleted" };
+  if (Option.isNone(atRef)) return { state: "missing" };
+  const before = locateRegion(path, atRef.value, anchor);
+  const after = locateRegion(path, atTarget.value, anchor);
+  if (before._tag !== "Found" || after._tag !== "Found") {
+    return { state: regionProblem([before, after]) ?? "missing" };
+  }
+  const normalizedBefore = normalizeRegion(before.text);
+  const normalizedAfter = normalizeRegion(after.text);
+  if (normalizedBefore === normalizedAfter) return { state: "same" };
+  return { state: "changed", before: normalizedBefore, after: normalizedAfter };
+}
+
+const MAX_REGION_DIFF_LINES = 80;
+
+// Upstream's diff of one region, via temp files so nothing enters the object database.
+const diffRegions = Effect.fn("upstream-sync.diffRegions")(function* (
+  before: string,
+  after: string,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const dir = yield* fs
+    .makeTempDirectoryScoped({ prefix: "upstream-sync-region-" })
+    .pipe(Effect.mapError(asSyncError));
+  yield* fs
+    .writeFileString(path.join(dir, "before"), `${before}\n`)
+    .pipe(Effect.mapError(asSyncError));
+  yield* fs
+    .writeFileString(path.join(dir, "after"), `${after}\n`)
+    .pipe(Effect.mapError(asSyncError));
+  const args = ["diff", "--no-index", "--no-color", "--no-ext-diff", "--", "before", "after"];
+  const result = yield* runGit(dir, args);
+  if (result.exitCode > 1) return yield* new GitCommandError({ args, ...result });
+  const lines = result.stdout.split(/\r?\n/);
+  const hunks = lines.slice(
+    Math.max(
+      0,
+      lines.findIndex((line) => line.startsWith("@@")),
+    ),
+  );
+  while (hunks.at(-1) === "") hunks.pop();
+  if (hunks.length <= MAX_REGION_DIFF_LINES) return hunks.join("\n");
+  const omitted = hunks.length - MAX_REGION_DIFF_LINES;
+  return [...hunks.slice(0, MAX_REGION_DIFF_LINES), `… ${omitted} more lines`].join("\n");
+}, Effect.scoped);
+
+const seamsOfFeature = (
+  registry: SeamRegistry,
+  featureId: string,
+): Array<{ path: string; seam: Seam }> =>
+  Object.entries(registry.files).flatMap(([path, entry]) =>
+    "legacy" in entry
+      ? []
+      : entry.seams.filter((seam) => seam.feature === featureId).map((seam) => ({ path, seam })),
+  );
+
+export const buildImpactReport = Effect.fn("upstream-sync.buildImpactReport")(function* (input: {
+  readonly cwd: string;
+  readonly registry: SeamRegistry;
+  readonly forkSha: string;
+  readonly targetSha: string;
+}) {
+  const { cwd, registry, forkSha, targetSha } = input;
+  const conflicts = yield* mergeTreeConflicts(cwd, forkSha, targetSha);
+
+  const sources = new Map<string, readonly [Option.Option<string>, Option.Option<string>]>();
+  const sourcesOf = Effect.fn("upstream-sync.impactSources")(function* (path: string) {
+    const cached = sources.get(path);
+    if (cached !== undefined) return cached;
+    const atRef = yield* readFileAt(cwd, registry.upstreamRef, path);
+    const atTarget = yield* readFileAt(cwd, targetSha, path);
+    sources.set(path, [atRef, atTarget]);
+    return [atRef, atTarget] as const;
+  }, Effect.mapError(asSyncError));
+  const impactOf = Effect.fn("upstream-sync.regionImpact")(function* (
+    path: string,
+    anchor: SeamAnchor,
+  ) {
+    const [atRef, atTarget] = yield* sourcesOf(path);
+    const comparison = compareRegion(path, anchor, atRef, atTarget);
+    const diff =
+      comparison.state === "changed"
+        ? yield* diffRegions(comparison.before, comparison.after)
+        : null;
+    return { state: comparison.state, conflict: conflicts.has(path), diff };
+  });
+
+  const features: ImpactReport["features"][number][] = [];
+  for (const featureId of Object.keys(registry.features).sort()) {
+    const feature = registry.features[featureId]!;
+    const seams: Array<ImpactReport["features"][number]["seams"][number]> = [];
+    for (const { path, seam } of seamsOfFeature(registry, featureId)) {
+      seams.push({
+        id: seam.id,
+        path,
+        mechanism: seam.mechanism,
+        ...(yield* impactOf(path, seam.anchor)),
+      });
+    }
+    const siblings: Array<ImpactReport["features"][number]["siblings"][number]> = [];
+    for (const sibling of registry.siblings.filter(
+      (candidate) => candidate.feature === featureId,
+    )) {
+      siblings.push({
+        upstream: sibling.upstream,
+        plusplus: sibling.plusplus,
+        ...(yield* impactOf(sibling.upstream, { file: true })),
+      });
+    }
+    if (seams.length === 0 && siblings.length === 0) continue;
+    features.push({
+      feature: featureId,
+      title: feature.title,
+      issue: feature.issue ?? null,
+      seams,
+      siblings,
+    });
+  }
+
+  const touchedUpstream = parseNullSeparated(
+    yield* git(cwd, [
+      "diff",
+      "--name-only",
+      "--no-renames",
+      "-z",
+      `${registry.upstreamRef}...${targetSha}`,
+      "--",
+    ]),
+  );
+  const isRegistered = (path: string) => Object.hasOwn(registry.files, path);
+  const forkDelta = parseNullSeparated(
+    yield* git(cwd, [
+      "diff",
+      "--name-only",
+      "--no-renames",
+      "--diff-filter=MD",
+      "-z",
+      registry.upstreamRef,
+      forkSha,
+      "--",
+    ]),
+  );
+  return {
+    upstreamRef: registry.upstreamRef,
+    targetRef: targetSha,
+    features,
+    legacyTouched: touchedUpstream
+      .filter((path) => {
+        const entry = registry.files[path];
+        return entry !== undefined && "legacy" in entry;
+      })
+      .sort()
+      .map((path) => ({ path, conflict: conflicts.has(path) })),
+    unregisteredConflicts: [...conflicts]
+      .filter(([path]) => !isRegistered(path))
+      .map(([path, hunks]) => ({ path, hunks }))
+      .sort((a, b) => compareText(a.path, b.path)),
+    unregisteredDeltas: forkDelta.filter((path) => !isRegistered(path)).sort(),
+  } satisfies ImpactReport;
+});
+
+const featuresOf = (registry: SeamRegistry, path: string): Array<string> => {
+  const entry = registry.files[path];
+  if (entry === undefined || "legacy" in entry) return [];
+  return [...new Set(entry.seams.map((seam) => seam.feature))].sort();
+};
+
+// Stages the registry and history refresh into the pending merge; idempotent.
+// Returns the problems that blocked it (nothing is staged then) so callers
+// decide whether to refuse or only report.
+const stageSeamRefresh = Effect.fn("upstream-sync.stageSeamRefresh")(function* (
+  cwd: string,
+  tag: string,
+  mergeHead: string,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const registry = yield* git(cwd, ["show", `:${SEAM_REGISTRY_PATH}`]).pipe(
+    Effect.flatMap(parseSeamRegistry),
+    Effect.mapError(asSyncError),
+  );
+  const forkTree = (yield* git(cwd, ["write-tree"])).trim();
+  const refreshed = yield* refreshRegistry({
+    cwd,
+    registry,
+    upstreamRef: mergeHead,
+    forkTree,
+  }).pipe(Effect.mapError(asSyncError));
+  const problems = [
+    ...refreshed.broken,
+    ...refreshed.unregistered.map((unregistered) => `unregistered fork delta: ${unregistered}`),
+  ];
+  if (problems.length > 0) return problems;
+
+  const head = (yield* git(cwd, ["rev-parse", "--verify", "HEAD^{commit}"])).trim();
+  const historyText = Option.getOrElse(
+    yield* readFileAt(cwd, forkTree, SYNC_HISTORY_PATH).pipe(Effect.mapError(asSyncError)),
+    () => jsonText({ version: 1, syncs: [] }),
+  );
+  const history = yield* parseSyncHistory(historyText).pipe(Effect.mapError(asSyncError));
+  const existing = history.syncs.find((sync) => sync.upstreamRef === mergeHead);
+  const conflicts = existing === undefined ? yield* mergeTreeConflicts(cwd, head, mergeHead) : null;
+  const entry: SyncHistoryEntry = existing ?? {
+    tag,
+    upstreamRef: mergeHead,
+    previousUpstreamRef: registry.upstreamRef,
+    conflicts: [...(conflicts ?? [])].map(([conflictPath, hunks]) => ({
+      path: conflictPath,
+      hunks,
+      features: featuresOf(registry, conflictPath),
+    })),
+    dropped: refreshed.dropped,
+  };
+  const nextHistory: SyncHistory = upsertSyncEntry(history, entry);
+
+  // The refresh overwrites these files, so an unstaged or untracked copy would be lost.
+  for (const listing of [
+    ["diff", "--name-only"],
+    ["ls-files", "--others", "--exclude-standard"],
+  ]) {
+    yield* requireNoLeftoverPaths(
+      cwd,
+      [...listing, "-z", "--", SEAM_REGISTRY_PATH, SYNC_HISTORY_PATH],
+      "The seam registry refresh would overwrite unstaged edits. Stage or revert these paths",
+    );
+  }
+
+  const writes = [
+    [SEAM_REGISTRY_PATH, serializeRegistry(refreshed.registry)],
+    [SYNC_HISTORY_PATH, serializeSyncHistory(nextHistory)],
+  ] as const;
+  for (const [target, contents] of writes) {
+    yield* fs.writeFileString(path.join(cwd, target), contents).pipe(Effect.mapError(asSyncError));
+  }
+  yield* git(cwd, ["add", "--", SEAM_REGISTRY_PATH, SYNC_HISTORY_PATH]);
+  return [];
+});
+
 const performDryRun = Effect.fn("upstream-sync.performDryRun")(function* (
   cwd: string,
   options: DryRunOptions,
@@ -1313,12 +1776,13 @@ const performDryRun = Effect.fn("upstream-sync.performDryRun")(function* (
       "--",
     ]),
   );
-  const classification = classifyPaths(draft.incomingPaths);
-  draft.classification = {
-    fork: [...classification.fork],
-    seam: [...classification.seam],
-    shared: [...classification.shared],
-  };
+  const registry = yield* readRegistryAt(cwd, baseSha);
+  draft.impact = yield* buildImpactReport({
+    cwd,
+    registry,
+    forkSha: baseSha,
+    targetSha: upstreamSha,
+  });
 
   const mergeArgs = detachedMergeArgs(`Dry-run merge tag '${tag}'`, upstreamSha);
   const merge = yield* runGit(cwd, mergeArgs);
@@ -1351,6 +1815,8 @@ const performDryRun = Effect.fn("upstream-sync.performDryRun")(function* (
       message: `The clean merge of ${tag} failed integrity verification: ${verification.error.message}`,
     });
   }
+  // A registry that cannot follow the tag is a finding, not a reason to skip the test lanes.
+  draft.seamRefreshProblems = [...verification.state.seamProblems];
 
   yield* commitDetachedMerge(cwd);
   const identity = yield* readCommitIdentity(cwd);
@@ -1366,19 +1832,21 @@ const performDryRun = Effect.fn("upstream-sync.performDryRun")(function* (
     });
   }
   draft.mergeCommit = identity.commit;
-  draft.tree = identity.tree;
-  draft.status = "clean";
+  // The real sync stages the registry refresh this tree lacks, so its tree cannot be pinned.
+  draft.tree = draft.seamRefreshProblems.length > 0 ? null : identity.tree;
+  draft.replayTree = identity.tree;
 
   draft.windowsPackages =
     options.windowsPackages === undefined
       ? yield* computeFullWindowsPackages(cwd)
       : yield* validateWindowsPackageDirs(cwd, options.windowsPackages);
+  draft.status = "clean";
 });
 
 const writeDryRunArtifacts = Effect.fn("upstream-sync.writeDryRunArtifacts")(function* (
   options: DryRunOptions,
   report: DryRunReport,
-  detail: string | null,
+  outcome: { readonly detail: string | null; readonly replayTree: string | null },
 ) {
   const fs = yield* FileSystem.FileSystem;
   const writeFile = (target: string, contents: string, label: string) =>
@@ -1404,7 +1872,11 @@ const writeDryRunArtifacts = Effect.fn("upstream-sync.writeDryRunArtifacts")(fun
     yield* writeFile(options.reportPath, `${json}\n`, "JSON report");
   }
   if (options.summaryPath !== undefined) {
-    yield* writeFile(options.summaryPath, renderDryRunSummary(report, detail), "Markdown summary");
+    yield* writeFile(
+      options.summaryPath,
+      renderDryRunSummary(report, outcome.detail),
+      "Markdown summary",
+    );
   }
   if (options.githubOutput) {
     const outputPath = yield* Config.NonEmptyString("GITHUB_OUTPUT").pipe(
@@ -1421,7 +1893,7 @@ const writeDryRunArtifacts = Effect.fn("upstream-sync.writeDryRunArtifacts")(fun
       ["merge_base_sha", report.mergeBaseSha ?? ""],
       ["upstream_sha", report.upstreamSha ?? ""],
       ["merge_commit", report.mergeCommit ?? ""],
-      ["merge_tree", report.tree ?? ""],
+      ["merge_tree", outcome.replayTree ?? ""],
       ["windows_packages", report.windowsPackages.join(" ")],
     ] as const;
     for (const [key, value] of entries) {
@@ -1453,7 +1925,10 @@ export const dryRunUpstreamSync = Effect.fn("upstream-sync.dryRun")(function* (
     ),
   );
   const report = draftReport(draft);
-  yield* writeDryRunArtifacts(options, report, failure.error?.message ?? null);
+  yield* writeDryRunArtifacts(options, report, {
+    detail: failure.error?.message ?? null,
+    replayTree: draft.replayTree,
+  });
   yield* Console.log(
     `Dry-run status: ${report.status}${report.tag === null ? "" : ` for ${report.tag}`}: ` +
       `${report.incomingPaths.length} incoming paths, ${report.conflicts.length} conflicts, ` +
@@ -1462,7 +1937,8 @@ export const dryRunUpstreamSync = Effect.fn("upstream-sync.dryRun")(function* (
   for (const conflict of report.conflicts.slice(0, 10)) {
     yield* Console.log(`  conflict: ${conflict.path} (stages ${conflict.stages.join(", ")})`);
   }
-  if (failure.error !== undefined) return yield* failure.error;
+  // Report-only: conflicts and failed merge verification are findings, not failures.
+  if (failure.error !== undefined && report.status === "error") return yield* failure.error;
   return report;
 });
 
@@ -1564,6 +2040,8 @@ export interface HotspotRealMerge {
   readonly headTree: string;
   readonly mergeBaseSha: string;
   readonly incomingPaths: ReadonlyArray<string>;
+  // Recomputed from the base registry and the real merge parents.
+  readonly impact: ImpactReport;
 }
 
 const HOTSPOT_SHA_FIELDS = [
@@ -1605,8 +2083,13 @@ export function validateHotspotReport(report: DryRunReport, real: HotspotRealMer
       problems.push(`${field} ${jsonText(value)} is not a full object SHA`);
     }
   }
+  // A registry the real sync must still fix has no tree to pin.
+  const pinsTree = report.seamRefreshProblems.length === 0;
+  if (!pinsTree && report.tree !== null) {
+    problems.push("tree must be null while the seam registry refresh has problems");
+  }
   for (const field of STATUS_REQUIRED_NON_NULL[report.status]) {
-    if (report[field] === null) {
+    if (report[field] === null && (field !== "tree" || pinsTree)) {
       problems.push(`${field} must be set for status ${jsonText(report.status)}`);
     }
   }
@@ -1663,7 +2146,7 @@ export function validateHotspotReport(report: DryRunReport, real: HotspotRealMer
       )}`,
     );
   }
-  if (report.status === "clean" && report.tree !== real.headTree) {
+  if (report.status === "clean" && pinsTree && report.tree !== real.headTree) {
     problems.push("the clean report tree does not equal the real merged tree");
   }
   const reportIncoming = [...report.incomingPaths].sort();
@@ -1673,42 +2156,17 @@ export function validateHotspotReport(report: DryRunReport, real: HotspotRealMer
       "the report incoming paths do not match the recomputed mergeBase...upstream diff",
     );
   }
-  const recomputed = classifyPaths(realIncoming);
-  const entryKey = (entry: { path: string; category: string; diverged: boolean }): string =>
-    jsonText([entry.path, entry.category, entry.diverged]);
-  for (const category of ["fork", "seam", "shared"] as const) {
-    const fromReport = report.classification[category].map(entryKey).sort();
-    const fromClassifier = recomputed[category].map(entryKey).sort();
-    if (jsonText(fromReport) !== jsonText(fromClassifier)) {
-      problems.push(
-        `the report classification (${category}) does not match the recomputed registry classification`,
-      );
-    }
+  if (report.impact === null) {
+    problems.push("the report carries no impact section");
+  } else if (canonicalJson(report.impact) !== canonicalJson(real.impact)) {
+    problems.push("the report impact does not match the impact recomputed from the base registry");
   }
   return problems;
-}
-
-// Unmapped ++-owned files: shared-classified PR paths that are neither
-// incoming upstream work nor known to the validated upstream commit. These
-// are fork-invented files the registry does not claim; maintainers must
-// review them. Upstream-existing or upstream-deleted paths stay shared.
-export function findUnmappedForkPaths(
-  prDiffPaths: ReadonlyArray<string>,
-  incomingPaths: ReadonlyArray<string>,
-  upstreamTreePaths: ReadonlyArray<string>,
-): Array<string> {
-  const incoming = new Set(incomingPaths);
-  const upstreamTree = new Set(upstreamTreePaths);
-  return prDiffPaths.filter(
-    (path) =>
-      classifyPath(path).category === "shared" && !incoming.has(path) && !upstreamTree.has(path),
-  );
 }
 
 export interface HotspotReportView {
   readonly report: DryRunReport;
   readonly real: HotspotRealMerge;
-  readonly unmappedForkPaths: ReadonlyArray<string>;
   readonly sourceRun: string;
   readonly artifactName: string;
 }
@@ -1734,37 +2192,16 @@ export function renderHotspotReport(view: HotspotReportView): string {
     "### Real merge validation",
     "",
     `- Head parents: exactly two, \`${real.baseSha}\` (current PR base) then \`${real.upstreamSha}\` (${report.tag}).`,
-    "- Incoming paths and ++ classification were recomputed from the real merge and match the report.",
+    "- Incoming paths and the ++ impact report were recomputed from the real merge and match the report.",
   ];
-  if (report.status === "clean") {
+  if (report.tree !== null) {
     lines.push(`- Merged tree matches the dry-run tree (${report.tree}).`);
   } else {
     lines.push(
-      `- The resolved tree may differ from the dry run (status: ${report.status}); only a clean dry run pins the tree.`,
+      `- The resolved tree may differ from the dry run (status: ${report.status}); only a clean dry run with a refreshable registry pins the tree.`,
     );
   }
-  lines.push(
-    "",
-    `### Incoming ownership (${report.incomingPaths.length} paths)`,
-    "",
-    `#### ++-owned (${report.classification.fork.length})`,
-    "",
-    ...(report.classification.fork.length === 0
-      ? ["(none)"]
-      : summaryList(report.classification.fork.map((entry) => `- ${jsonText(entry.path)}`))),
-    "",
-    `#### Integration seams (${report.classification.seam.length})`,
-    "",
-    ...(report.classification.seam.length === 0
-      ? ["(none)"]
-      : summaryList(
-          report.classification.seam.map(
-            (entry) => `- ${jsonText(entry.path)} (${entry.diverged ? "diverged" : "fork-only"})`,
-          ),
-        )),
-    "",
-    `Other shared paths: ${report.classification.shared.length}`,
-  );
+  lines.push("", `- Incoming paths: ${report.incomingPaths.length}`);
   if (report.conflicts.length > 0) {
     lines.push("", `### Conflicts (${report.conflicts.length})`, "");
     lines.push(
@@ -1775,16 +2212,8 @@ export function renderHotspotReport(view: HotspotReportView): string {
       ),
     );
   }
-  lines.push(
-    "",
-    "### Unmapped ++-owned files \u2014 maintainer review required",
-    "",
-    ...(view.unmappedForkPaths.length === 0
-      ? ["(none)"]
-      : summaryList(view.unmappedForkPaths.map((path) => `- ${jsonText(path)}`))),
-    "",
-    "Shared-classified PR paths that are neither incoming upstream work nor known to the validated upstream commit. Confirm each is intentional fork work; consider adding it to the ownership registry.",
-  );
+  lines.push("", ...renderImpactReport(real.impact));
+  lines.push(...renderSeamRefreshSection(report.seamRefreshProblems));
   return `${lines.join("\n")}\n`;
 }
 
@@ -1885,6 +2314,12 @@ export const generateHotspotReport = Effect.fn("upstream-sync.hotspotReport")(fu
     headTree: identity.tree,
     mergeBaseSha,
     incomingPaths,
+    impact: yield* buildImpactReport({
+      cwd,
+      registry: yield* readRegistryAt(cwd, baseSha),
+      forkSha: baseSha,
+      targetSha: upstreamSha,
+    }),
   };
 
   // Validation completes before any rendering or output write.
@@ -1897,25 +2332,9 @@ export const generateHotspotReport = Effect.fn("upstream-sync.hotspotReport")(fu
     });
   }
 
-  const prDiffPaths = parseNullSeparated(
-    yield* git(cwd, [
-      "diff",
-      "--name-only",
-      "--no-renames",
-      "-z",
-      `${baseSha}...${identity.commit}`,
-      "--",
-    ]),
-  );
-  const upstreamTreePaths = parseNullSeparated(
-    yield* git(cwd, ["ls-tree", "-r", "--name-only", "-z", upstreamSha]),
-  );
-  const unmappedForkPaths = findUnmappedForkPaths(prDiffPaths, incomingPaths, upstreamTreePaths);
-
   const markdown = renderHotspotReport({
     report,
     real,
-    unmappedForkPaths,
     sourceRun: options.sourceRun,
     artifactName: options.artifactName ?? HOTSPOT_ARTIFACT_NAME,
   });
@@ -1928,9 +2347,9 @@ export const generateHotspotReport = Effect.fn("upstream-sync.hotspotReport")(fu
     ),
   );
   yield* Console.log(
-    `Hotspot report for PR #${options.prNumber} (${report.tag}): ${incomingPaths.length} incoming paths, ${report.conflicts.length} conflicts, ${unmappedForkPaths.length} unmapped ++-owned files.`,
+    `Hotspot report for PR #${options.prNumber} (${report.tag}): ${incomingPaths.length} incoming paths, ${report.conflicts.length} conflicts, ${real.impact.unregisteredConflicts.length} unregistered conflicts.`,
   );
-  return { headSha: identity.commit, tag: report.tag, unmappedForkPaths };
+  return { headSha: identity.commit, tag: report.tag };
 });
 
 const resolveDryRunOutcomeCommand = Effect.fn("upstream-sync.resolveOutcome")(function* (

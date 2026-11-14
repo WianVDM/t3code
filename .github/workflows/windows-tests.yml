@@ -226,6 +226,8 @@ jobs:
       # weakening the gate.
       - name: Test
         id: test
+        # A dry run reports a failing Windows lane instead of failing the run.
+        continue-on-error: ${{ inputs.dry_run_tag != '' }}
         shell: pwsh
         run: |
           $package = '${{ inputs.package }}'

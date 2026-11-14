@@ -4,96 +4,41 @@
 // Label definitions are owned by issue-labels.yml; this script only attaches them.
 const { execFileSync } = require("node:child_process");
 const fs = require("node:fs");
+const path = require("node:path");
 
 const MANAGED_LABELS = ["plusplus-only", "upstream-candidate", "seam", "sync-conflict"];
 
-// Integration seams: files where fork behavior meets upstream code. `diverged`
-// marks files that also exist upstream with fork modifications; syncs are likely
-// to conflict there. Fork-only seam modules cannot conflict themselves. Curated
-// seed registry; the B10 sync hotspot report (#50) extends coverage.
-const SEAM_ENTRIES = [
-  { path: ".github/scripts/check-shared-persistence-compat.cjs", diverged: false },
-  { path: ".github/scripts/check-shared-persistence-compat.test.cjs", diverged: false },
-  { path: "apps/desktop/src/app/DesktopStatePaths.ts", diverged: true },
-  { path: "apps/desktop/src/app/DesktopEnvironment.ts", diverged: true },
-  { path: "apps/desktop/src/app/DesktopEnvironment.test.ts", diverged: true },
-  { path: "apps/desktop/src/app/DesktopUserData.ts", diverged: true },
-  { path: "apps/desktop/src/app/DesktopUserData.test.ts", diverged: true },
-  { path: "apps/desktop/src/app/DesktopVariant.ts", diverged: false },
-  { path: "apps/desktop/src/app/DesktopVariant.test.ts", diverged: false },
-  { path: "apps/desktop/src/main.ts", diverged: true },
-  { path: "apps/web/src/components/settings/UpstreamReleaseRow.tsx", diverged: false },
-  { path: "apps/web/src/components/settings/UpstreamReleaseRow.browser.test.tsx", diverged: false },
-  { path: "apps/web/src/components/sidebar/SidebarUpstreamReleasePill.tsx", diverged: false },
-  {
-    path: "apps/web/src/components/sidebar/SidebarUpstreamReleasePill.browser.test.tsx",
-    diverged: false,
-  },
-  { path: "apps/web/src/components/upstreamRelease.logic.ts", diverged: false },
-  { path: "apps/web/src/components/upstreamRelease.logic.test.ts", diverged: false },
-  { path: "apps/web/src/state/upstreamRelease.ts", diverged: false },
-  { path: "apps/web/src/state/upstreamRelease.test.ts", diverged: false },
-  { path: "packages/provider-pi/src/server/driver.ts", diverged: true },
-  { path: "packages/provider-pi/src/server/driver.test.ts", diverged: true },
-  { path: "packages/provider-pi/src/server/mcpExtensionSource.ts", diverged: true },
-  { path: "packages/provider-pi/src/server/mcpExtensionSource.test.ts", diverged: true },
-  { path: "packages/provider-pi/src/server/mcpInjection.ts", diverged: true },
-  { path: "packages/provider-pi/src/server/mcpInjection.test.ts", diverged: true },
-  { path: "packages/shared/src/promptLinks.ts", diverged: true },
-  { path: "packages/shared/src/promptLinks.test.ts", diverged: true },
-  { path: "scripts/build-desktop-artifact.ts", diverged: true },
-  { path: "scripts/build-desktop-artifact.test.ts", diverged: true },
-  { path: "scripts/lib/desktop-variant.ts", diverged: false },
-];
-
-const SEAM_BY_PATH = new Map(SEAM_ENTRIES.map((entry) => [entry.path, entry]));
-
-// Fork-only surfaces: governance, privileged automation, ++ distribution, and
-// upstream sync tooling. A rule ending in "/**" matches everything below it;
-// any other rule matches one exact path.
-const FORK_RULES = [
-  ".agents/**",
-  ".github/**",
-  ".repos/**",
-  ".coderabbit.config.ts",
-  "AGENTS.md",
-  "CLAUDE.md",
-  "CONTRIBUTING.md",
-  "apps/desktop/resources/linux/com.t3tools.t3code.plusplus.metainfo.xml",
-  "scripts/lib/reference-repos.ts",
-  "scripts/sync-reference-repos.ts",
-  "scripts/upstream-sync.test.ts",
-  "scripts/upstream-sync.ts",
-];
-
-function matchesRule(rule, path) {
-  if (rule.endsWith("/**")) {
-    return path.startsWith(rule.slice(0, -2));
+// Ownership comes from git and the seam registry (plusplus/ARCHITECTURE.md):
+// a path is upstream-owned when it exists at the registry's upstreamRef, and a
+// registry entry means the fork already changes that upstream file. Both are
+// read from the trusted base checkout, never from the PR head.
+function buildOwnership(registry, upstreamPaths) {
+  const featuresByPath = new Map();
+  for (const [path, entry] of Object.entries(registry.files)) {
+    const features = entry.legacy ? [] : entry.seams.map((seam) => seam.feature);
+    featuresByPath.set(path, [...new Set(features)].sort());
   }
-  return rule === path;
+  return { upstreamPaths: new Set(upstreamPaths), featuresByPath };
 }
 
-// Seam entries win over fork prefixes so a seam inside .github/ stays a seam;
-// anything unregistered outside fork surfaces is shared upstream code.
-function classifyPath(path) {
-  const seam = SEAM_BY_PATH.get(path);
-  if (seam !== undefined) {
-    return { path, category: "seam", diverged: seam.diverged };
+function classifyPath(path, ownership) {
+  const features = ownership.featuresByPath.get(path);
+  if (features !== undefined) {
+    return { path, category: "seam", features };
   }
-  if (FORK_RULES.some((rule) => matchesRule(rule, path))) {
-    return { path, category: "fork", diverged: false };
+  if (!ownership.upstreamPaths.has(path)) {
+    return { path, category: "fork", features: [] };
   }
-  return { path, category: "shared", diverged: false };
+  return { path, category: "shared", features: [] };
 }
 
-function classifyPaths(paths) {
-  const classified = paths.map(classifyPath);
+function classifyPaths(paths, ownership) {
+  const classified = paths.map((path) => classifyPath(path, ownership));
   return {
     classified,
     seam: classified.filter((entry) => entry.category === "seam"),
     fork: classified.filter((entry) => entry.category === "fork"),
     shared: classified.filter((entry) => entry.category === "shared"),
-    hasDivergedSeam: classified.some((entry) => entry.category === "seam" && entry.diverged),
   };
 }
 
@@ -103,15 +48,15 @@ function deriveAdvisoryLabels(classification) {
   if (total === 0) {
     return labels;
   }
+  // A registry entry is a fork delta inside an upstream file, so a sync is
+  // likely to conflict there.
   if (classification.seam.length > 0) {
     labels.add("seam");
-  }
-  if (classification.hasDivergedSeam) {
     labels.add("sync-conflict");
   }
-  // plusplus-only means every path is fork-owned: fork surfaces and fork-added
-  // seam modules. Shared paths and diverged upstream files can be upstream work.
-  if (classification.shared.length === 0 && !classification.hasDivergedSeam) {
+  // plusplus-only means every path is ++-owned. Shared paths and registered
+  // upstream files can be upstream work.
+  if (classification.shared.length === 0 && classification.seam.length === 0) {
     labels.add("plusplus-only");
   }
   if (classification.fork.length === 0 && classification.seam.length === 0) {
@@ -174,9 +119,23 @@ function listChangedFiles(prNumber, baseSha, headSha) {
   }
   git(["cat-file", "-e", `${baseSha}^{commit}`]);
 
-  return git(["diff", "--name-only", "-z", `${baseSha}...${resolvedHeadSha}`])
+  return git(["diff", "--name-only", "--no-renames", "-z", `${baseSha}...${resolvedHeadSha}`])
     .split("\0")
     .filter((path) => path !== "");
+}
+
+// The checkout is the trusted base branch, so its registry is the policy.
+function readOwnership() {
+  const registryPath = path.resolve(__dirname, "../../plusplus/seams.json");
+  const registry = JSON.parse(fs.readFileSync(registryPath, "utf8"));
+  const upstreamPaths = execFileSync(
+    "git",
+    ["-c", "core.quotepath=false", "ls-tree", "-r", "--name-only", "-z", registry.upstreamRef],
+    { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
+  )
+    .split("\0")
+    .filter((entry) => entry !== "");
+  return buildOwnership(registry, upstreamPaths);
 }
 
 async function githubFetch(env, path, init = {}) {
@@ -221,7 +180,7 @@ async function applyLabels(env, issueNumber, plan) {
 async function main() {
   const env = readEnv();
   const changedFiles = listChangedFiles(env.prNumber, env.baseSha, env.headSha);
-  const classification = classifyPaths(changedFiles);
+  const classification = classifyPaths(changedFiles, readOwnership());
   const desiredLabels = deriveAdvisoryLabels(classification);
 
   const issuesPath = `/repos/${env.repository}/issues/${env.prNumber}`;
@@ -238,6 +197,7 @@ async function main() {
     `PR #${env.prNumber}: ${changedFiles.length} changed paths -> ` +
       `${classification.seam.length} seam, ${classification.fork.length} fork, ` +
       `${classification.shared.length} shared`,
+    `features: ${[...new Set(classification.seam.flatMap((entry) => entry.features))].sort().join(", ") || "(none)"}`,
     `desired labels: ${[...desiredLabels].sort().join(", ") || "(none)"}`,
     `added: ${plan.add.join(", ") || "(none)"}`,
     `removed: ${plan.remove.join(", ") || "(none)"}`,
@@ -258,9 +218,8 @@ if (require.main === module) {
 }
 
 module.exports = {
-  FORK_RULES,
   MANAGED_LABELS,
-  SEAM_ENTRIES,
+  buildOwnership,
   classifyPath,
   classifyPaths,
   deriveAdvisoryLabels,

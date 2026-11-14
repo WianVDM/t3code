@@ -1,11 +1,12 @@
 // @effect-diagnostics nodeBuiltinImport:off - reports violations through process.exitCode like check-changed.
 // Advisory ++ fork-boundary checker (advisory until B12). Classifies every path
-// this branch changes against the fork-inventory policy read from the trusted
-// base commit, never from the head checkout, so a PR cannot approve its own
-// new upstream implementation or policy. Any Git, JSON, or policy error fails
-// closed. Local: `node scripts/check-fork-boundaries.ts [base-ref]`, defaulting
-// to origin/main; stacked callers pass the immediate parent ref; CI passes the
-// PR base sha or the push's before sha.
+// this branch changes against the seam registry read from the trusted base
+// commit, never from the head checkout, so a PR cannot approve its own new
+// upstream implementation or policy. A path is upstream-owned when it exists at
+// the registry's upstreamRef (plusplus/ARCHITECTURE.md). Any Git, JSON, or
+// policy error fails closed. Local: `node scripts/check-fork-boundaries.ts
+// [base-ref]`, defaulting to origin/main; stacked callers pass the immediate
+// parent ref; CI passes the PR base sha or the push's before sha.
 import ts from "typescript-legacy";
 
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
@@ -15,16 +16,15 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
-import * as Schema from "effect/Schema";
-import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
+import { BOUNDARY_INFRASTRUCTURE } from "../.github/scripts/ci-changes.cjs";
 import {
-  FORK_INVENTORY_PATH,
-  ForkInventory,
-  parseNameStatusZ,
-  validateForkInventory,
-} from "./forkInventory.ts";
+  SEAM_REGISTRY_PATH,
+  collectStreamAsString,
+  parseSeamRegistry,
+  type SeamRegistry,
+} from "./seamRegistry.ts";
 
 export const DEFAULT_BASE_REF = "origin/main";
 
@@ -42,8 +42,7 @@ export type BoundaryVerdict =
   | "UPSTREAM_DELETION_TOUCHED"
   | "SEAM_NON_TS"
   | "SEAM_NOT_THIN"
-  | "SEAM_DELETED"
-  | "STALE_UPSTREAM_PATH";
+  | "SEAM_DELETED";
 
 export interface BoundaryFinding {
   readonly change: "A" | "D" | "M";
@@ -61,15 +60,6 @@ export const ALLOWED_VERDICTS: ReadonlySet<BoundaryVerdict> = new Set([
 
 export const isViolation = (finding: BoundaryFinding): boolean =>
   !ALLOWED_VERDICTS.has(finding.verdict);
-
-const collectStreamAsString = <E>(stream: Stream.Stream<Uint8Array, E>): Effect.Effect<string, E> =>
-  stream.pipe(
-    Stream.decodeText(),
-    Stream.runFold(
-      () => "",
-      (accumulator, chunk) => accumulator + chunk,
-    ),
-  );
 
 const git = Effect.fn("forkBoundaries.git")(function* (cwd: string, args: ReadonlyArray<string>) {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -106,6 +96,40 @@ const git = Effect.fn("forkBoundaries.git")(function* (cwd: string, args: Readon
   }
   return stdout;
 }, Effect.scoped);
+
+export interface NameStatusRecord {
+  readonly status: "A" | "D" | "M" | "R";
+  readonly path: string;
+  readonly upstreamPath?: string;
+}
+
+// `git diff --name-status -M -z` output: NUL-separated, renames carry two paths.
+// Any other status letter (copy, typechange, unmerged) is rejected: skipping it
+// would misread the path tokens that follow as further statuses.
+export function parseNameStatusZ(output: string): NameStatusRecord[] {
+  const tokens = output.split("\0").filter((token) => token.length > 0);
+  const records: NameStatusRecord[] = [];
+  for (let index = 0; index < tokens.length; index++) {
+    const token = tokens[index];
+    if (token === undefined) break;
+    const letter = token[0];
+    if (letter === "R") {
+      const upstreamPath = tokens[++index];
+      const path = tokens[++index];
+      if (upstreamPath === undefined || path === undefined) break;
+      records.push({ status: "R", path, upstreamPath });
+    } else if (letter === "A" || letter === "D" || letter === "M") {
+      const path = tokens[++index];
+      if (path === undefined) break;
+      records.push({ status: letter, path });
+    } else {
+      throw new Error(
+        `parseNameStatusZ: unsupported git name-status "${token}" at token ${index}; only A, D, M, and R records are supported`,
+      );
+    }
+  }
+  return records;
+}
 
 // --no-renames reports a rename as its old and new path; an R record is still
 // flattened so a rename of an upstream path fails on both of its halves.
@@ -252,123 +276,123 @@ export function thinSeamViolation(
 const byPath = (a: { path: string }, b: { path: string }): number =>
   a.path < b.path ? -1 : a.path > b.path ? 1 : 0;
 
-const isSeamPath = (inventory: ForkInventory, path: string): boolean =>
-  inventory.entries.some((entry) => entry.path === path && entry.category === "integration-seam");
+// What the trusted base knows about the tree: the registry plus which paths exist
+// at its upstreamRef and at the base commit itself.
+export interface BoundaryPolicy {
+  readonly registry: SeamRegistry;
+  readonly upstreamPaths: ReadonlySet<string>;
+  readonly basePaths: ReadonlySet<string>;
+}
+
+type PathRoute =
+  | "policy"
+  | "infrastructure"
+  | "owned"
+  | "upstream-deleted"
+  | "seam"
+  | "unclassified";
+
+function routeOf(policy: BoundaryPolicy, path: string): PathRoute {
+  if (path === SEAM_REGISTRY_PATH) return "policy";
+  if (BOUNDARY_INFRASTRUCTURE.has(path)) return "infrastructure";
+  if (!policy.upstreamPaths.has(path)) return "owned";
+  if (!policy.basePaths.has(path)) return "upstream-deleted";
+  return Object.hasOwn(policy.registry.files, path) ? "seam" : "unclassified";
+}
 
 // The seam files classifyChanges will send through thinSeamViolation; the
 // Effect layer preloads their base and head texts into a map for this lookup.
 export const seamAnalysisPaths = (
-  inventory: ForkInventory,
+  policy: BoundaryPolicy,
   changes: ReadonlyArray<BoundaryChange>,
 ): Array<string> =>
   changes
     .filter(
-      ({ status, path }) => status !== "D" && TS_FILE.test(path) && isSeamPath(inventory, path),
+      ({ status, path }) =>
+        status !== "D" && TS_FILE.test(path) && routeOf(policy, path) === "seam",
     )
     .map(({ path }) => path);
 
 export function classifyChanges(
-  inventory: ForkInventory,
+  policy: BoundaryPolicy,
   changes: ReadonlyArray<BoundaryChange>,
   analyzeThinSeam: (path: string) => string | undefined,
 ): BoundaryFinding[] {
-  const infrastructure = new Set(inventory.boundaryInfrastructure);
-  const ownedRoots = inventory.plusplusOwnedRoots.map((root) => `${root}/`);
-  const entryByPath = new Map(inventory.entries.map((entry) => [entry.path, entry]));
-  const renamedFrom = new Map(
-    inventory.entries.flatMap((entry) =>
-      entry.change === "renamed" && entry.upstreamPath !== undefined
-        ? ([[entry.upstreamPath, entry]] as const)
-        : [],
-    ),
-  );
   const finding = (
     change: "A" | "D" | "M",
     path: string,
     verdict: BoundaryVerdict,
-    entry: string | undefined,
     reason: string,
-  ): BoundaryFinding => ({ change, path, verdict, entry, reason });
+  ): BoundaryFinding => ({
+    change,
+    path,
+    verdict,
+    entry: Object.hasOwn(policy.registry.files, path) ? path : undefined,
+    reason,
+  });
+  const classifySeam = (change: "A" | "D" | "M", path: string): BoundaryFinding => {
+    if (change === "D") {
+      return finding(
+        change,
+        path,
+        "SEAM_DELETED",
+        "a seam must stay present; deletion is not a thin edit",
+      );
+    }
+    if (!TS_FILE.test(path)) {
+      return finding(change, path, "SEAM_NON_TS", "only TS/TSX seams may change, and only thinly");
+    }
+    const violation = analyzeThinSeam(path);
+    return violation === undefined
+      ? finding(
+          change,
+          path,
+          "ALLOW_THIN_SEAM",
+          "imports and typed JSX mounts only; remaining AST identical",
+        )
+      : finding(change, path, "SEAM_NOT_THIN", violation);
+  };
 
   const findings = changes.map(({ status: change, path }) => {
-    if (path === FORK_INVENTORY_PATH) {
-      return finding(
-        change,
-        path,
-        "POLICY_CHANGED",
-        undefined,
-        "policy is only trusted from the base commit; a head-side policy edit grants nothing",
-      );
-    }
-    if (infrastructure.has(path)) {
-      return finding(
-        change,
-        path,
-        "ALLOW_INFRASTRUCTURE",
-        undefined,
-        "listed in the base boundaryInfrastructure policy; selects full CI",
-      );
-    }
-    const entry = entryByPath.get(path);
-    if (entry?.category === "plusplus-owned" || ownedRoots.some((root) => path.startsWith(root))) {
-      return finding(change, path, "ALLOW_OWNED", entry?.id, "++ owned path");
-    }
-    if (entry?.category === "integration-seam") {
-      if (change === "D") {
+    switch (routeOf(policy, path)) {
+      case "policy":
         return finding(
           change,
           path,
-          "SEAM_DELETED",
-          entry.id,
-          "a seam must stay present; deletion is not a thin edit",
+          "POLICY_CHANGED",
+          "policy is only trusted from the base commit; a head-side policy edit grants nothing",
         );
-      }
-      if (!TS_FILE.test(path)) {
+      case "infrastructure":
         return finding(
           change,
           path,
-          "SEAM_NON_TS",
-          entry.id,
-          "only TS/TSX seams may change, and only thinly",
+          "ALLOW_INFRASTRUCTURE",
+          "listed in BOUNDARY_INFRASTRUCTURE; selects full CI",
         );
-      }
-      const violation = analyzeThinSeam(path);
-      return violation === undefined
-        ? finding(
-            change,
-            path,
-            "ALLOW_THIN_SEAM",
-            entry.id,
-            "imports and typed JSX mounts only; remaining AST identical",
-          )
-        : finding(change, path, "SEAM_NOT_THIN", entry.id, violation);
+      case "owned":
+        return finding(
+          change,
+          path,
+          "ALLOW_OWNED",
+          "++ owned path: absent at the registry upstreamRef",
+        );
+      case "upstream-deleted":
+        return finding(
+          change,
+          path,
+          "UPSTREAM_DELETION_TOUCHED",
+          "an upstream path the fork already deleted must stay deleted",
+        );
+      case "seam":
+        return classifySeam(change, path);
+      case "unclassified":
+        return finding(
+          change,
+          path,
+          "UNCLASSIFIED",
+          "upstream-owned path with no registry entry at the base commit",
+        );
     }
-    const renamed = renamedFrom.get(path);
-    if (renamed !== undefined) {
-      return finding(
-        change,
-        path,
-        "STALE_UPSTREAM_PATH",
-        renamed.id,
-        "the pre-rename path of a baseline rename must stay gone",
-      );
-    }
-    if (entry !== undefined) {
-      return finding(
-        change,
-        path,
-        "UPSTREAM_DELETION_TOUCHED",
-        entry.id,
-        "a baseline upstream deletion must stay deleted",
-      );
-    }
-    return finding(
-      change,
-      path,
-      "UNCLASSIFIED",
-      undefined,
-      "no base policy entry or owned root covers this upstream path",
-    );
   });
   return findings.sort(byPath);
 }
@@ -392,15 +416,21 @@ export function renderReport(
   return lines.join("\n");
 }
 
-const decodePolicy = Schema.decodeUnknownEffect(Schema.fromJsonString(ForkInventory), {
-  onExcessProperty: "error",
-});
-
 export interface BoundaryRun {
   readonly base: string;
   readonly forkPoint: string;
   readonly findings: BoundaryFinding[];
 }
+
+const treePaths = Effect.fn("forkBoundaries.treePaths")(function* (cwd: string, ref: string) {
+  const output = yield* git(cwd, ["ls-tree", "-r", "--name-only", "-z", ref]).pipe(
+    Effect.mapError(
+      (error) =>
+        `fork-boundaries: cannot list the tree of ${ref}; refusing to guess ownership: ${error}`,
+    ),
+  );
+  return new Set(output.split("\0").filter((path) => path.length > 0));
+});
 
 export const checkForkBoundaries = Effect.fn("forkBoundaries.check")(function* (
   cwd: string,
@@ -426,31 +456,30 @@ export const checkForkBoundaries = Effect.fn("forkBoundaries.check")(function* (
     );
   }
 
-  const policyText = yield* git(cwd, ["show", `${base}:${FORK_INVENTORY_PATH}`]).pipe(
+  const registryText = yield* git(cwd, ["show", `${base}:${SEAM_REGISTRY_PATH}`]).pipe(
     Effect.mapError(
       (error) =>
-        `fork-boundaries: cannot read the trusted policy ${FORK_INVENTORY_PATH} at base ${base}: ${error}`,
+        `fork-boundaries: cannot read the trusted policy ${SEAM_REGISTRY_PATH} at base ${base}: ${error}`,
     ),
   );
-  const inventory = yield* decodePolicy(policyText).pipe(
+  const registry = yield* parseSeamRegistry(registryText).pipe(
     Effect.mapError(
-      (cause) =>
-        `fork-boundaries: the trusted policy at base ${base} is not valid: ${String(cause)}`,
+      (error) =>
+        `fork-boundaries: the trusted policy at base ${base} is not valid: ${error.message}`,
     ),
   );
-  const issues = validateForkInventory(inventory);
-  if (issues.length > 0) {
-    return yield* Effect.fail(
-      `fork-boundaries: the trusted policy at base ${base} fails validation:\n  ${issues.join("\n  ")}`,
-    );
-  }
+  const policy: BoundaryPolicy = {
+    registry,
+    upstreamPaths: yield* treePaths(cwd, registry.upstreamRef),
+    basePaths: yield* treePaths(cwd, base),
+  };
 
   const diff = yield* git(cwd, ["diff", "--name-status", "--no-renames", "-z", forkPoint]);
   const untracked = yield* git(cwd, ["ls-files", "--others", "--exclude-standard"]);
   const changes = collectChanges(diff, untracked);
 
   const seamResults = new Map<string, string | undefined>();
-  for (const seamPath of seamAnalysisPaths(inventory, changes)) {
+  for (const seamPath of seamAnalysisPaths(policy, changes)) {
     const baseText = Option.getOrUndefined(
       yield* Effect.option(git(cwd, ["show", `${forkPoint}:${seamPath}`])),
     );
@@ -467,7 +496,7 @@ export const checkForkBoundaries = Effect.fn("forkBoundaries.check")(function* (
     );
   }
 
-  const findings = classifyChanges(inventory, changes, (seamPath) =>
+  const findings = classifyChanges(policy, changes, (seamPath) =>
     seamResults.has(seamPath)
       ? seamResults.get(seamPath)
       : "no thin-seam analysis ran for this path; refusing to treat it as thin",

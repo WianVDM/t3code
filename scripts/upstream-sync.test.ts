@@ -1,6 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off - pathToFileURL turns the fixture's temp repos into file:// remotes.
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
+import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -9,13 +10,13 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import * as NodeURL from "node:url";
 
 import {
+  buildImpactReport,
   computeFullWindowsPackages,
   decodeDryRunReport,
   dryRunUpstreamSync,
   DryRunReport,
   EXPECTED_REMOTES,
   findAddedConflictMarkers,
-  findUnmappedForkPaths,
   finishUpstreamSync,
   generateHotspotReport,
   GitCommandError,
@@ -27,6 +28,7 @@ import {
   prepareUpstreamSync,
   renderDryRunSummary,
   renderHotspotReport,
+  renderImpactReport,
   replayDryRun,
   resolveDryRunOutcome,
   selectLatestUpstreamTag,
@@ -37,9 +39,18 @@ import {
   verifyUpstreamSync,
 } from "./upstream-sync.ts";
 import { decide, readWorkspace } from "../.github/scripts/ci-changes.cjs";
-import { classifyPaths } from "../.github/scripts/pr-ownership-label.cjs";
+import {
+  SEAM_REGISTRY_PATH,
+  SYNC_HISTORY_PATH,
+  parseSeamRegistry,
+  parseSyncHistory,
+  serializeRegistry,
+  serializeSyncHistory,
+  type SeamAnchor,
+  type SeamRegistry,
+} from "./seamRegistry.ts";
 
-import type { DryRunOutcomeInput } from "./upstream-sync.ts";
+import type { DryRunOutcomeInput, ImpactReport } from "./upstream-sync.ts";
 
 const TAG = "v1.2.3";
 const NIGHTLY_TAG = "v0.1.8-nightly.20261108.4380";
@@ -79,6 +90,45 @@ const runGit = Effect.fn("test.upstreamSyncGit")(function* (
   return stdout;
 }, Effect.scoped);
 
+// The fork's hook sits inside hooked(); other() is upstream-only territory.
+const APP_BASE = [
+  "export function hooked() {",
+  "  const a = 1;",
+  "  const b = 2;",
+  "  const c = 3;",
+  "  return a + b + c;",
+  "}",
+  "",
+  "export function other() {",
+  "  return 2;",
+  "}",
+  "",
+].join("\n");
+const APP_FORK = APP_BASE.replace("return a + b + c;", "return a + b + c + hook();");
+const PLACEHOLDER_FINGERPRINT = "sha256:0000000000000000";
+
+const demoRegistry = (upstreamRef: string, variant: "clean" | "conflict"): SeamRegistry => ({
+  version: 1,
+  upstreamRef,
+  features: { demo: { title: "Demo", issue: 1 } },
+  files: {
+    "app.ts": {
+      delta: [1, 1],
+      seams: [
+        {
+          id: "demo.hook",
+          feature: "demo",
+          mechanism: "hook",
+          anchor: { symbol: "hooked" },
+          fingerprint: PLACEHOLDER_FINGERPRINT,
+        },
+      ],
+    },
+    ...(variant === "conflict" ? { "conflict.txt": { delta: [1, 1], legacy: true as const } } : {}),
+  },
+  siblings: [],
+});
+
 interface RepositoryFixture {
   readonly root: string;
   readonly cwd: string;
@@ -86,6 +136,8 @@ interface RepositoryFixture {
   readonly git: (args: ReadonlyArray<string>) => ReturnType<typeof runGit>;
   readonly rewrites: ReadonlyArray<readonly [string, string]>;
   readonly forkHead: string;
+  readonly baseHead: string;
+  readonly registry: SeamRegistry;
   readonly upstreamHead: string;
   readonly originLocalUrl: string;
   readonly upstreamLocalUrl: string;
@@ -95,6 +147,8 @@ const makeRepositoryFixture = Effect.fn("test.makeUpstreamSyncFixture")(function
   readonly variant: "clean" | "conflict";
   readonly extraUpstreamFiles?: Readonly<Record<string, string>>;
   readonly upstreamRenames?: ReadonlyArray<readonly [string, string]>;
+  readonly upstreamDeletions?: ReadonlyArray<string>;
+  readonly forkSyncHistoryText?: string;
 }) {
   const conflict = options.variant === "conflict";
   const fs = yield* FileSystem.FileSystem;
@@ -123,10 +177,13 @@ const makeRepositoryFixture = Effect.fn("test.makeUpstreamSyncFixture")(function
   yield* git(seed, ["config", "user.email", "upstream-sync@example.invalid"]);
   yield* git(seed, ["config", "commit.gpgsign", "false"]);
   yield* fs.writeFileString(path.join(seed, "README.md"), "base\n");
+  yield* fs.writeFileString(path.join(seed, "app.ts"), APP_BASE);
   if (conflict) {
     yield* fs.writeFileString(path.join(seed, "conflict.txt"), "base\n");
   }
   yield* commitSeed("base");
+  const baseHead = (yield* git(seed, ["rev-parse", "HEAD"])).trim();
+  const registry = demoRegistry(baseHead, options.variant);
 
   const originPath = path.join(root, "origin.git");
   const upstreamPath = path.join(root, "upstream.git");
@@ -141,6 +198,13 @@ const makeRepositoryFixture = Effect.fn("test.makeUpstreamSyncFixture")(function
   } else {
     yield* fs.writeFileString(path.join(seed, "fork.txt"), "fork\n");
   }
+  yield* fs.writeFileString(path.join(seed, "app.ts"), APP_FORK);
+  yield* fs.makeDirectory(path.join(seed, "plusplus"), { recursive: true });
+  yield* fs.writeFileString(path.join(seed, SEAM_REGISTRY_PATH), serializeRegistry(registry));
+  yield* fs.writeFileString(
+    path.join(seed, SYNC_HISTORY_PATH),
+    options.forkSyncHistoryText ?? serializeSyncHistory({ version: 1, syncs: [] }),
+  );
   yield* commitSeed("fork change");
   const forkHead = (yield* git(seed, ["rev-parse", "HEAD"])).trim();
   yield* git(seed, ["push", originLocalUrl, "fork:main"]);
@@ -160,6 +224,9 @@ const makeRepositoryFixture = Effect.fn("test.makeUpstreamSyncFixture")(function
     const target = path.join(seed, ...to.split("/"));
     yield* fs.makeDirectory(path.dirname(target), { recursive: true });
     yield* git(seed, ["mv", from, to]);
+  }
+  for (const deleted of options.upstreamDeletions ?? []) {
+    yield* git(seed, ["rm", "--quiet", deleted]);
   }
   yield* commitSeed("upstream change");
   const upstreamHead = (yield* git(seed, ["rev-parse", "HEAD"])).trim();
@@ -188,6 +255,8 @@ const makeRepositoryFixture = Effect.fn("test.makeUpstreamSyncFixture")(function
     git: (args: ReadonlyArray<string>) => git(cwd, args),
     rewrites,
     forkHead,
+    baseHead,
+    registry,
     upstreamHead,
     originLocalUrl,
     upstreamLocalUrl,
@@ -410,6 +479,24 @@ it.live("prepare, verify, and finish create a real two-parent merge", () =>
         assert.equal(verified.mergeHead, fixture.upstreamHead);
         assert.equal((yield* fixture.git(["rev-parse", "HEAD"])).trim(), fixture.forkHead);
 
+        // Verify staged the refresh: the registry now sits on the tag commit and
+        // the history holds one entry for it.
+        const staged = yield* parseSeamRegistry(
+          yield* fixture.git(["show", `:${SEAM_REGISTRY_PATH}`]),
+        );
+        assert.equal(staged.upstreamRef, fixture.upstreamHead);
+        const history = yield* parseSyncHistory(
+          yield* fixture.git(["show", `:${SYNC_HISTORY_PATH}`]),
+        );
+        assert.deepStrictEqual(
+          history.syncs.map((sync) => [sync.tag, sync.upstreamRef, sync.previousUpstreamRef]),
+          [[TAG, fixture.upstreamHead, fixture.baseHead]],
+        );
+        // Verifying again stages the identical tree and adds no duplicate entry.
+        const treeBefore = (yield* fixture.git(["write-tree"])).trim();
+        yield* verifyUpstreamSync(options);
+        assert.equal((yield* fixture.git(["write-tree"])).trim(), treeBefore);
+
         yield* finishUpstreamSync(options);
       }).pipe(withSpawner(spawner));
 
@@ -422,6 +509,107 @@ it.live("prepare, verify, and finish create a real two-parent merge", () =>
       assert.equal((yield* fixture.git(["show", "HEAD:upstream.txt"])).trim(), "upstream");
       assert.equal((yield* fixture.git(["remote", "get-url", "origin"])).trim(), ORIGIN_REMOTE);
       assert.equal((yield* fixture.git(["remote", "get-url", "upstream"])).trim(), UPSTREAM_REMOTE);
+    }),
+  ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.live("verify refuses to refresh the registry past a lost anchor or an unregistered delta", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const fixture = yield* makeRepositoryFixture({
+        variant: "clean",
+        extraUpstreamFiles: {
+          "app.ts": APP_BASE.replace("function hooked", "function hookedRenamed"),
+        },
+      });
+      const spawner = yield* localFetchSpawner(fixture);
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const options = { tag: TAG, cwd: fixture.cwd };
+
+      yield* withSpawner(spawner)(prepareUpstreamSync(options));
+      const lost = yield* Effect.flip(withSpawner(spawner)(verifyUpstreamSync(options)));
+      assert.instanceOf(lost, UpstreamSyncError);
+      assert.match(lost.message, /demo\.hook \(app\.ts\)[\s\S]*anchor is missing/);
+
+      // With the anchor repaired, a fork delta that has no registry entry is refused too.
+      yield* fs.writeFileString(
+        path.join(fixture.cwd, "app.ts"),
+        APP_FORK.replace("function hooked", "function hookedRenamed"),
+      );
+      yield* fs.writeFileString(
+        path.join(fixture.cwd, SEAM_REGISTRY_PATH),
+        serializeRegistry({
+          ...fixture.registry,
+          files: {
+            "app.ts": {
+              delta: [1, 1],
+              seams: [
+                {
+                  id: "demo.hook",
+                  feature: "demo",
+                  mechanism: "hook",
+                  anchor: { symbol: "hookedRenamed" },
+                  fingerprint: PLACEHOLDER_FINGERPRINT,
+                },
+              ],
+            },
+          },
+        }),
+      );
+      yield* fs.writeFileString(path.join(fixture.cwd, "README.md"), "base\nresolution edit\n");
+      yield* fixture.git(["add", "-A"]);
+      const unregistered = yield* Effect.flip(withSpawner(spawner)(verifyUpstreamSync(options)));
+      assert.match(unregistered.message, /unregistered fork delta: README\.md/);
+
+      yield* fixture.git(["checkout", fixture.upstreamHead, "--", "README.md"]);
+      const verified = yield* withSpawner(spawner)(verifyUpstreamSync(options));
+      assert.equal(verified.mergeHead, fixture.upstreamHead);
+    }),
+  ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.live("verify refuses to overwrite an unstaged registry edit and keeps it", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const fixture = yield* makeRepositoryFixture({ variant: "clean" });
+      const spawner = yield* localFetchSpawner(fixture);
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const options = { tag: TAG, cwd: fixture.cwd };
+      const registryFile = path.join(fixture.cwd, SEAM_REGISTRY_PATH);
+
+      yield* withSpawner(spawner)(prepareUpstreamSync(options));
+      const edited = `${yield* fs.readFileString(registryFile)}\n`;
+      yield* fs.writeFileString(registryFile, edited);
+
+      const error = yield* Effect.flip(withSpawner(spawner)(verifyUpstreamSync(options)));
+      assert.instanceOf(error, UpstreamSyncError);
+      assert.match(error.message, /would overwrite unstaged edits[\s\S]*seams\.json/);
+      assert.equal(yield* fs.readFileString(registryFile), edited);
+    }),
+  ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.live("verify refuses a seam whose file upstream deleted instead of dropping it", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const fixture = yield* makeRepositoryFixture({
+        variant: "clean",
+        upstreamDeletions: ["app.ts"],
+      });
+      const spawner = yield* localFetchSpawner(fixture);
+      const options = { tag: TAG, cwd: fixture.cwd };
+
+      // The fork modified app.ts, so the delete is a modify/delete conflict; keeping the file resolves it.
+      yield* Effect.flip(withSpawner(spawner)(prepareUpstreamSync(options)));
+      yield* fixture.git(["add", "app.ts"]);
+      const refused = yield* Effect.flip(withSpawner(spawner)(verifyUpstreamSync(options)));
+      assert.instanceOf(refused, UpstreamSyncError);
+      assert.match(
+        refused.message,
+        /demo\.hook \(app\.ts\)[\s\S]*file is absent at the upstream ref/,
+      );
     }),
   ).pipe(Effect.provide(NodeServices.layer)),
 );
@@ -801,10 +989,43 @@ describe("upstream-sync dry-run helpers", () => {
     ]);
   });
 
-  it("escapes unusual paths and caps long sections in the summary", () => {
+  it("renders the impact per feature and escapes unusual paths in the summary", () => {
     const paths = Array.from({ length: 205 }, (_, index) => `pkg/${index}.ts`);
+    const impact: ImpactReport = {
+      upstreamRef: "a".repeat(40),
+      targetRef: "u".repeat(40),
+      features: [
+        {
+          feature: "demo",
+          title: "Demo",
+          issue: 1,
+          seams: [
+            {
+              id: "demo.hook",
+              path: "app.ts",
+              mechanism: "hook",
+              state: "changed",
+              conflict: true,
+              diff: "@@ -1 +1 @@\n-old\n+new ```\n",
+            },
+            {
+              id: "demo.other",
+              path: "other|odd`.ts",
+              mechanism: "mount",
+              state: "same",
+              conflict: false,
+              diff: null,
+            },
+          ],
+          siblings: [],
+        },
+      ],
+      legacyTouched: paths.map((path) => ({ path, conflict: false })),
+      unregisteredConflicts: [{ path: 'weird "path"\t.ts', hunks: 2 }],
+      unregisteredDeltas: [],
+    };
     const report: DryRunReport = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       requestedTag: "latest",
       tag: "v1.2.3",
       baseSha: "b".repeat(40),
@@ -814,23 +1035,28 @@ describe("upstream-sync dry-run helpers", () => {
       tree: null,
       status: "conflict",
       incomingPaths: ['weird "path"\t.ts', ...paths],
-      classification: {
-        fork: paths.map((path) => ({ path, category: "fork" as const, diverged: false })),
-        seam: [{ path: 'seam "x".ts', category: "seam" as const, diverged: true }],
-        shared: [],
-      },
+      impact,
       conflicts: [{ path: 'weird "path"\t.ts', stages: [1, 2, 3] }],
+      seamRefreshProblems: [],
       windowsPackages: [],
     };
     const summary = renderDryRunSummary(report, null);
+    assert.include(summary, "## ++ impact");
+    assert.include(summary, "### demo: Demo (#1)");
+    assert.include(summary, "| `demo.hook` | `app.ts` | hook | changed | conflict |");
+    assert.include(summary, "| `demo.other` | `other odd .ts` | mount | same | - |");
+    assert.include(summary, "Adapt the ++ change, or drop it if upstream now does the same.");
+    // The diff fence outgrows backticks inside the diff, so it cannot be closed early.
+    assert.include(summary, "````diff\n@@ -1 +1 @@");
     // The unusual path only appears JSON-escaped, never raw.
     assert.include(summary, JSON.stringify('weird "path"\t.ts'));
     assert.isFalse(summary.includes('weird "path"\t.ts\n'));
-    // A 205-entry section shows 200 and names the remainder.
+    // A 205-entry list shows 200 and names the remainder.
     assert.include(summary, "and 5 more");
-    assert.include(summary, "++-owned (205)");
-    assert.include(summary, "(diverged)");
+    assert.include(summary, "Legacy files upstream touches (205)");
+    assert.include(summary, "Unregistered conflicts (1)");
     assert.include(summary, "prepare --tag v1.2.3");
+    assert.include(renderDryRunSummary({ ...report, impact: null }, null), "(not computed)");
   });
 });
 
@@ -866,8 +1092,20 @@ describe("resolveDryRunOutcome", () => {
     assert.deepEqual(outcome.problems, []);
   });
 
-  it("reports a conflict as failure without running lanes", () => {
+  it("reports a conflict as a finding without running lanes", () => {
     const outcome = resolveDryRunOutcome(
+      input({
+        mergeStatus: "conflict",
+        mergeResult: "success",
+        linux: lane("skipped"),
+        windows: lane("skipped"),
+      }),
+    );
+    assert.equal(outcome.outcome, "conflict");
+    assert.isTrue(outcome.success);
+    assert.deepEqual(outcome.problems, []);
+    // The merge job only fails when the report cannot be computed.
+    const failedMerge = resolveDryRunOutcome(
       input({
         mergeStatus: "conflict",
         mergeResult: "failure",
@@ -875,31 +1113,43 @@ describe("resolveDryRunOutcome", () => {
         windows: lane("skipped"),
       }),
     );
-    assert.equal(outcome.outcome, "conflict");
-    assert.isFalse(outcome.success);
-    assert.deepEqual(outcome.problems, []);
+    assert.equal(failedMerge.outcome, "error");
+    assert.isFalse(failedMerge.success);
   });
 
   it("reports a merge integrity failure distinctly from a conflict", () => {
     const outcome = resolveDryRunOutcome(
       input({
         mergeStatus: "merge_verification_failed",
-        mergeResult: "failure",
+        mergeResult: "success",
         linux: lane("skipped"),
         windows: lane("skipped"),
       }),
     );
     assert.equal(outcome.outcome, "merge_verification_failed");
-    assert.isFalse(outcome.success);
+    assert.isTrue(outcome.success);
   });
 
-  it("maps a started lane verification failure to verification_failed", () => {
+  it("reads a lane verification failure from a continue-on-error success", () => {
     const outcome = resolveDryRunOutcome(
-      input({ windows: lane("failure", "verification_failed") }),
+      input({ windows: lane("success", "verification_failed") }),
     );
     assert.equal(outcome.outcome, "verification_failed");
-    assert.isFalse(outcome.success);
+    assert.isTrue(outcome.success);
     assert.deepEqual(outcome.lanes, { linux: "passed", windows: "verification_failed" });
+    const failedJob = resolveDryRunOutcome(
+      input({ windows: lane("failure", "verification_failed") }),
+    );
+    assert.equal(failedJob.outcome, "verification_failed");
+    assert.isTrue(failedJob.success);
+  });
+
+  it("fails closed when a successful lane has no usable verification result", () => {
+    for (const verification of [null, "error", "surprise"]) {
+      const outcome = resolveDryRunOutcome(input({ linux: lane("success", verification) }));
+      assert.equal(outcome.outcome, "error", String(verification));
+      assert.isFalse(outcome.success, String(verification));
+    }
   });
 
   it("outranks a lane verification failure with an infrastructure error on the other lane", () => {
@@ -998,8 +1248,9 @@ it.live("dry-run merges on a detached ref and mutates no branch, tag, or remote"
         delete process.env.GITHUB_OUTPUT;
       }
 
-      assert.equal(report.schemaVersion, 1);
+      assert.equal(report.schemaVersion, 2);
       assert.equal(report.status, "clean");
+      assert.deepEqual(report.seamRefreshProblems, []);
       assert.equal(report.requestedTag, TAG);
       assert.equal(report.tag, TAG);
       assert.equal(report.baseSha, fixture.forkHead);
@@ -1031,7 +1282,7 @@ it.live("dry-run merges on a detached ref and mutates no branch, tag, or remote"
       assert.equal((yield* git(["show", "HEAD:fork.txt"])).trim(), "fork");
 
       // A no-rename diff lists both sides of the rename, and the fork-only file
-      // is not reported as deleted. Real classifier: fork, seam, and shared.
+      // is not reported as deleted.
       assert.deepEqual([...report.incomingPaths].sort(), [
         ".agents/we ird's path.txt",
         "AGENTS.md",
@@ -1041,20 +1292,31 @@ it.live("dry-run merges on a detached ref and mutates no branch, tag, or remote"
         "scripts/dry-run-tool.txt",
         "upstream.txt",
       ]);
-      const sortedFork = [...report.classification.fork].sort((a, b) => (a.path < b.path ? -1 : 1));
-      assert.deepEqual(sortedFork, [
-        { path: ".agents/we ird's path.txt", category: "fork", diverged: false },
-        { path: "AGENTS.md", category: "fork", diverged: false },
-      ]);
-      assert.deepEqual(report.classification.seam, [
-        { path: "packages/shared/src/promptLinks.ts", category: "seam", diverged: true },
-      ]);
-      assert.deepEqual(report.classification.shared.map((entry) => entry.path).sort(), [
-        "README.md",
-        "docs/README.md",
-        "scripts/dry-run-tool.txt",
-        "upstream.txt",
-      ]);
+      assert.deepEqual(report.impact, {
+        upstreamRef: fixture.baseHead,
+        targetRef: fixture.upstreamHead,
+        features: [
+          {
+            feature: "demo",
+            title: "Demo",
+            issue: 1,
+            seams: [
+              {
+                id: "demo.hook",
+                path: "app.ts",
+                mechanism: "hook",
+                state: "same",
+                conflict: false,
+                diff: null,
+              },
+            ],
+            siblings: [],
+          },
+        ],
+        legacyTouched: [],
+        unregisteredConflicts: [],
+        unregisteredDeltas: [],
+      });
       assert.deepEqual(report.conflicts, []);
       assert.deepEqual(report.windowsPackages, ["scripts"]);
 
@@ -1063,8 +1325,8 @@ it.live("dry-run merges on a detached ref and mutates no branch, tag, or remote"
       const persisted = yield* readReportFile(paths.reportPath);
       assert.deepEqual(persisted, report);
       const summary = yield* fs.readFileString(paths.summaryPath);
-      assert.include(summary, JSON.stringify(".agents/we ird's path.txt"));
-      assert.include(summary, "(diverged)");
+      assert.include(summary, "## ++ impact");
+      assert.include(summary, "### demo: Demo (#1)");
       assert.include(summary, "**clean**");
       const output = yield* fs.readFileString(githubOutputPath);
       assert.include(output, "status=clean\n");
@@ -1199,22 +1461,27 @@ it.live("dry-run reports a real conflict with stages and commits nothing", () =>
       const paths = dryRunPaths(fixture, path);
       const refsBefore = yield* localRefsSnapshot(git);
 
-      const error = yield* Effect.flip(
-        withSpawner(spawner)(
-          dryRunUpstreamSync({ tag: TAG, cwd: fixture.cwd, ...paths, githubOutput: false }),
-        ),
+      // Report-only: a conflict is a finding, so the run itself succeeds.
+      const returned = yield* withSpawner(spawner)(
+        dryRunUpstreamSync({ tag: TAG, cwd: fixture.cwd, ...paths, githubOutput: false }),
       );
-      assert.instanceOf(error, UpstreamSyncError);
-      assert.match(error.message, /prepare --tag v1\.2\.3/);
 
       const report = yield* readReportFile(paths.reportPath);
+      assert.deepEqual(returned, report);
+      assert.equal(report.schemaVersion, 2);
       assert.equal(report.status, "conflict");
       assert.deepEqual(report.conflicts, [{ path: "conflict.txt", stages: [1, 2, 3] }]);
       assert.deepEqual(report.incomingPaths, ["conflict.txt"]);
-      assert.deepEqual(
-        report.classification.shared.map((entry) => entry.path),
-        ["conflict.txt"],
-      );
+      assert.deepEqual(report.impact?.legacyTouched, [{ path: "conflict.txt", conflict: true }]);
+      assert.deepEqual(report.impact?.unregisteredConflicts, []);
+      assert.deepEqual(report.impact?.features[0]?.seams[0], {
+        id: "demo.hook",
+        path: "app.ts",
+        mechanism: "hook",
+        state: "same",
+        conflict: false,
+        diff: null,
+      });
       assert.isNull(report.mergeCommit);
       assert.isNull(report.tree);
       // No merge commit was created and no ref moved.
@@ -1224,6 +1491,73 @@ it.live("dry-run reports a real conflict with stages and commits nothing", () =>
       const summary = yield* fs.readFileString(paths.summaryPath);
       assert.include(summary, `node scripts/upstream-sync.ts prepare --tag ${TAG}`);
       assert.include(summary, '"conflict.txt" (stages 1, 2, 3)');
+      assert.include(summary, "Legacy files upstream touches (1)");
+      assert.include(summary, '- "conflict.txt" (conflict)');
+    }),
+  ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.live("dry-run records a registry refresh failure and still commits the clean merge", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const fixture = yield* makeRepositoryFixture({
+        variant: "clean",
+        extraUpstreamFiles: {
+          "app.ts": APP_BASE.replace("function hooked", "function hookedRenamed"),
+        },
+      });
+      const spawner = yield* localFetchSpawner(fixture);
+      const path = yield* Path.Path;
+      const fs = yield* FileSystem.FileSystem;
+      const paths = dryRunPaths(fixture, path);
+      const githubOutputPath = path.join(fixture.root, "github-output.txt");
+
+      const returned = yield* withSpawner(spawner)(
+        dryRunUpstreamSync({
+          tag: TAG,
+          cwd: fixture.cwd,
+          ...paths,
+          githubOutput: true,
+          windowsPackages: [],
+        }),
+      ).pipe(
+        Effect.provide(
+          ConfigProvider.layer(
+            ConfigProvider.fromEnv({ env: { GITHUB_OUTPUT: githubOutputPath } }),
+          ),
+        ),
+      );
+
+      // Not merge_verification_failed: the Linux and Windows lanes still need to run.
+      assert.equal(returned.status, "clean");
+      assert.isNotNull(returned.mergeCommit);
+      // The real sync stages the refresh this merge lacks, so the report pins no tree.
+      assert.isNull(returned.tree);
+      assert.lengthOf(returned.seamRefreshProblems, 1);
+      assert.match(returned.seamRefreshProblems[0] ?? "", /demo\.hook \(app\.ts\)[\s\S]*missing/);
+
+      // The lanes still get every replay input, and the merge replays to the same tree.
+      const mergeTree = (yield* fixture.git(["rev-parse", "--verify", "HEAD^{tree}"])).trim();
+      const output = yield* fs.readFileString(githubOutputPath);
+      assert.include(output, "status=clean\n");
+      assert.include(output, `tag=${TAG}\n`);
+      assert.include(output, `base_sha=${fixture.forkHead}\n`);
+      assert.include(output, `upstream_sha=${fixture.upstreamHead}\n`);
+      assert.include(output, `merge_tree=${mergeTree}\n`);
+      yield* fixture.git(["checkout", "--detach", fixture.forkHead]);
+      const replayed = yield* withSpawner(spawner)(
+        replayDryRun({
+          tag: TAG,
+          cwd: fixture.cwd,
+          baseSha: fixture.forkHead,
+          upstreamSha: fixture.upstreamHead,
+          expectedTree: mergeTree,
+        }),
+      );
+      assert.equal(replayed.tree, mergeTree);
+      assert.deepEqual(yield* readReportFile(paths.reportPath), returned);
+      const summary = yield* fs.readFileString(paths.summaryPath);
+      assert.include(summary, "## Seam registry refresh (1)");
     }),
   ).pipe(Effect.provide(NodeServices.layer)),
 );
@@ -1244,13 +1578,12 @@ it.live("dry-run distinguishes a conflict-marker clean merge from a real conflic
       const git = fixture.git;
       const paths = dryRunPaths(fixture, path);
 
-      const error = yield* Effect.flip(
-        withSpawner(spawner)(
-          dryRunUpstreamSync({ tag: TAG, cwd: fixture.cwd, ...paths, githubOutput: false }),
-        ),
+      const returned = yield* withSpawner(spawner)(
+        dryRunUpstreamSync({ tag: TAG, cwd: fixture.cwd, ...paths, githubOutput: false }),
       );
-      assert.instanceOf(error, UpstreamSyncError);
-      assert.match(error.message, /integrity verification/);
+      assert.equal(returned.status, "merge_verification_failed");
+      const fs = yield* FileSystem.FileSystem;
+      assert.match(yield* fs.readFileString(paths.summaryPath), /failed integrity verification/);
 
       const report = yield* readReportFile(paths.reportPath);
       assert.equal(report.status, "merge_verification_failed");
@@ -1258,6 +1591,139 @@ it.live("dry-run distinguishes a conflict-marker clean merge from a real conflic
       assert.deepEqual(report.conflicts, []);
       assert.isNull(report.mergeCommit);
       assert.equal((yield* git(["rev-parse", "HEAD"])).trim(), fixture.forkHead);
+    }),
+  ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.live("dry-run reports a seam refresh failure inside merge verification", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const fixture = yield* makeRepositoryFixture({
+        variant: "clean",
+        forkSyncHistoryText: "not json\n",
+      });
+      const spawner = yield* localFetchSpawner(fixture);
+      const path = yield* Path.Path;
+      const paths = dryRunPaths(fixture, path);
+
+      const returned = yield* withSpawner(spawner)(
+        dryRunUpstreamSync({ tag: TAG, cwd: fixture.cwd, ...paths, githubOutput: false }),
+      );
+      assert.equal(returned.status, "merge_verification_failed");
+      assert.isNull(returned.mergeCommit);
+    }),
+  ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.live("buildImpactReport reports every state, conflicts with hunks, and the registry gaps", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const fixture = yield* makeRepositoryFixture({
+        variant: "conflict",
+        extraUpstreamFiles: {
+          "extra-upstream.txt": "x\n",
+          "app.ts": APP_BASE.replace("return a + b + c;", "return a * b * c;").replace(
+            "return 2;",
+            "return 3;",
+          ),
+        },
+        upstreamRenames: [["README.md", "docs/README.md"]],
+      });
+      yield* fixture.git([
+        "fetch",
+        fixture.upstreamLocalUrl,
+        `refs/tags/${TAG}:refs/upstream-sync/${TAG}`,
+      ]);
+      const seam = (id: string, mechanism: "hook" | "generated", anchor: SeamAnchor) => ({
+        id,
+        feature: id.split(".")[0] ?? "",
+        mechanism,
+        anchor,
+        fingerprint: PLACEHOLDER_FINGERPRINT,
+      });
+      const registry: SeamRegistry = {
+        version: 1,
+        upstreamRef: fixture.baseHead,
+        features: { demo: { title: "Demo", issue: 1 }, extra: { title: "Extra" } },
+        files: {
+          "README.md": {
+            delta: [0, 1],
+            seams: [seam("extra.readme", "generated", { file: true })],
+          },
+          "app.ts": {
+            delta: [1, 1],
+            seams: [
+              seam("demo.hook", "hook", { symbol: "hooked" }),
+              seam("demo.other", "hook", { symbol: "other" }),
+              seam("extra.gone", "hook", { symbol: "nonexistent" }),
+              seam("extra.vague", "hook", { text: "return" }),
+            ],
+          },
+          "extra-upstream.txt": { delta: [1, 0], legacy: true },
+        },
+        siblings: [
+          {
+            feature: "extra",
+            upstream: "conflict.txt",
+            plusplus: "plusplus/docs/conflict.md",
+            fingerprint: PLACEHOLDER_FINGERPRINT,
+          },
+        ],
+      };
+
+      const report = yield* buildImpactReport({
+        cwd: fixture.cwd,
+        registry,
+        forkSha: fixture.forkHead,
+        targetSha: fixture.upstreamHead,
+      });
+
+      assert.equal(report.upstreamRef, fixture.baseHead);
+      assert.equal(report.targetRef, fixture.upstreamHead);
+      assert.deepEqual(
+        report.features.map((feature) => [feature.feature, feature.title, feature.issue]),
+        [
+          ["demo", "Demo", 1],
+          ["extra", "Extra", null],
+        ],
+      );
+      const states = Object.fromEntries(
+        report.features.flatMap((feature) =>
+          feature.seams.map((entry) => [entry.id, [entry.state, entry.conflict]] as const),
+        ),
+      );
+      // The conflict flag is per path: every seam in a conflicted file carries it.
+      assert.deepEqual(states, {
+        "demo.hook": ["changed", true],
+        "demo.other": ["changed", true],
+        "extra.readme": ["file-deleted", false],
+        "extra.gone": ["missing", true],
+        "extra.vague": ["ambiguous", true],
+      });
+      // Upstream's diff of the region, with the change shown and capped.
+      const hook = report.features[0]?.seams[0];
+      assert.include(hook?.diff ?? "", "-  return a + b + c;");
+      assert.include(hook?.diff ?? "", "+  return a * b * c;");
+      assert.isNull(report.features[1]?.seams[0]?.diff);
+      const sibling = report.features[1]?.siblings[0];
+      assert.deepEqual(sibling && [sibling.state, sibling.conflict], ["changed", true]);
+
+      assert.deepEqual(report.legacyTouched, [{ path: "extra-upstream.txt", conflict: false }]);
+      assert.deepEqual(report.unregisteredConflicts, [{ path: "conflict.txt", hunks: 1 }]);
+      assert.deepEqual(report.unregisteredDeltas, ["conflict.txt"]);
+
+      const rendered = renderImpactReport(report).join("\n");
+      assert.include(rendered, "### demo: Demo (#1)");
+      assert.include(rendered, "### extra: Extra");
+      assert.include(rendered, "| `demo.hook` | `app.ts` | hook | changed | conflict |");
+      assert.include(rendered, "| `extra.readme` | `README.md` | generated | file-deleted | - |");
+      assert.include(
+        rendered,
+        "<details><summary>demo.hook: upstream changed this region</summary>",
+      );
+      assert.include(rendered, "Adapt the ++ change, or drop it if upstream now does the same.");
+      assert.include(rendered, "Unregistered conflicts (1)");
+      assert.include(rendered, '- "conflict.txt" (1 hunks)');
     }),
   ).pipe(Effect.provide(NodeServices.layer)),
 );
@@ -1736,6 +2202,15 @@ describe("sync PR metadata", () => {
   });
 });
 
+const emptyImpact = (targetRef: string): ImpactReport => ({
+  upstreamRef: sha("a"),
+  targetRef,
+  features: [],
+  legacyTouched: [],
+  unregisteredConflicts: [],
+  unregisteredDeltas: [],
+});
+
 describe("hotspot report validation", () => {
   const real = {
     tag: TAG,
@@ -1745,9 +2220,10 @@ describe("hotspot report validation", () => {
     headTree: sha("f"),
     mergeBaseSha: sha("d"),
     incomingPaths: ["upstream.txt"],
+    impact: emptyImpact(sha("c")),
   };
   const report = (overrides: Partial<DryRunReport> = {}): DryRunReport => ({
-    schemaVersion: 1,
+    schemaVersion: 2,
     requestedTag: TAG,
     tag: TAG,
     baseSha: real.baseSha,
@@ -1757,12 +2233,9 @@ describe("hotspot report validation", () => {
     tree: real.headTree,
     status: "clean",
     incomingPaths: ["upstream.txt"],
-    classification: {
-      fork: [],
-      seam: [],
-      shared: [{ path: "upstream.txt", category: "shared", diverged: false }],
-    },
+    impact: real.impact,
     conflicts: [],
+    seamRefreshProblems: [],
     windowsPackages: ["apps/desktop"],
     ...overrides,
   });
@@ -1782,38 +2255,52 @@ describe("hotspot report validation", () => {
     }
   });
 
-  it("rejects incoming-path and classification mismatches before rendering", () => {
+  it("rejects an old schema version, incoming-path mismatches, and a tampered impact", () => {
+    assert.isNotEmpty(validateHotspotReport({ ...report(), schemaVersion: 1 as 2 }, real));
     assert.isNotEmpty(validateHotspotReport(report({ incomingPaths: ["bogus.txt"] }), real));
     assert.isNotEmpty(validateHotspotReport(report({ incomingPaths: [] }), real));
+    assert.isNotEmpty(validateHotspotReport(report({ impact: null }), real));
     assert.isNotEmpty(
       validateHotspotReport(
-        report({
-          classification: {
-            fork: [],
-            seam: [],
-            shared: [{ path: "upstream.txt", category: "shared", diverged: true }],
-          },
-        }),
+        report({ impact: { ...real.impact, unregisteredDeltas: ["secret.ts"] } }),
         real,
       ),
     );
     assert.isNotEmpty(
       validateHotspotReport(
-        report({
-          classification: {
-            fork: [{ path: "upstream.txt", category: "fork", diverged: false }],
-            seam: [],
-            shared: [],
-          },
-        }),
+        report({ impact: { ...real.impact, legacyTouched: [{ path: "a.ts", conflict: true }] } }),
         real,
       ),
     );
+    // Key order is not content.
+    const reordered: ImpactReport = JSON.parse(
+      JSON.stringify({
+        unregisteredDeltas: [],
+        unregisteredConflicts: [],
+        legacyTouched: [],
+        features: [],
+        targetRef: real.impact.targetRef,
+        upstreamRef: real.impact.upstreamRef,
+      }),
+    );
+    assert.deepEqual(validateHotspotReport(report({ impact: reordered }), real), []);
   });
 
   it("requires the clean report tree to equal the real merged tree", () => {
     assert.deepEqual(validateHotspotReport(report({ tree: real.headTree }), real), []);
     assert.isNotEmpty(validateHotspotReport(report({ tree: sha("0") }), real));
+  });
+
+  it("accepts an unpinned tree only when the registry refresh failed", () => {
+    const problems = ["demo.hook (app.ts) is missing"];
+    assert.deepEqual(
+      validateHotspotReport(report({ tree: null, seamRefreshProblems: problems }), real),
+      [],
+    );
+    assert.isNotEmpty(
+      validateHotspotReport(report({ tree: real.headTree, seamRefreshProblems: problems }), real),
+    );
+    assert.isNotEmpty(validateHotspotReport(report({ tree: null }), real));
   });
 
   it("enforces status-specific nullable fields", () => {
@@ -1876,29 +2363,32 @@ describe("hotspot report validation", () => {
   });
 });
 
-describe("unmapped fork detection", () => {
-  it("flags only shared-classified PR paths the upstream tag never knew", () => {
-    const unmapped = findUnmappedForkPaths(
-      [
-        "apps/web/src/invented.ts",
-        "README.md",
-        "docs/removed-by-upstream.md",
-        ".github/workflows/ci.yml",
-        "apps/desktop/src/main.ts",
-      ],
-      ["docs/removed-by-upstream.md"],
-      ["README.md", "docs/other.md", "apps/desktop/src/main.ts"],
-    );
-    // README.md exists upstream; the deleted path is incoming upstream work;
-    // .github and apps/desktop/src/main.ts are fork/seam classified.
-    assert.deepEqual(unmapped, ["apps/web/src/invented.ts"]);
-  });
-});
-
 describe("hotspot report rendering", () => {
+  const impact: ImpactReport = {
+    ...emptyImpact(sha("c")),
+    features: [
+      {
+        feature: "demo",
+        title: "Demo",
+        issue: 1,
+        seams: [
+          {
+            id: "demo.hook",
+            path: "apps/desktop/src/main.ts",
+            mechanism: "hook",
+            state: "changed",
+            conflict: true,
+            diff: "@@ -1 +1 @@\n-old\n+new",
+          },
+        ],
+        siblings: [],
+      },
+    ],
+    unregisteredConflicts: [{ path: 'weird "path".ts', hunks: 3 }],
+  };
   const view = {
     report: {
-      schemaVersion: 1 as const,
+      schemaVersion: 2 as const,
       requestedTag: TAG,
       tag: TAG,
       baseSha: sha("b"),
@@ -1908,12 +2398,9 @@ describe("hotspot report rendering", () => {
       tree: sha("f"),
       status: "clean" as const,
       incomingPaths: ["apps/desktop/src/main.ts", "upstream.txt"],
-      classification: {
-        fork: [],
-        seam: [{ path: "apps/desktop/src/main.ts", category: "seam" as const, diverged: true }],
-        shared: [{ path: "upstream.txt", category: "shared" as const, diverged: false }],
-      },
+      impact,
       conflicts: [],
+      seamRefreshProblems: [],
       windowsPackages: ["apps/desktop"],
     },
     real: {
@@ -1924,44 +2411,57 @@ describe("hotspot report rendering", () => {
       headTree: sha("f"),
       mergeBaseSha: sha("d"),
       incomingPaths: ["apps/desktop/src/main.ts", "upstream.txt"],
+      impact,
     },
-    unmappedForkPaths: ['weird "path".ts'],
     sourceRun: "https://github.com/WianVDM/t3code/actions/runs/42",
     artifactName: "upstream-sync-dry-run-report",
   };
 
-  it("renders every required section from validated data", () => {
+  it("renders every required section from the recomputed impact", () => {
     const markdown = renderHotspotReport(view);
     assert.isTrue(markdown.startsWith("<!-- upstream-sync-hotspot-report -->"));
     assert.include(markdown, view.sourceRun);
     assert.include(markdown, "upstream-sync-dry-run-report");
     assert.include(markdown, `\`${TAG}\``);
     assert.include(markdown, `\`${sha("e")}\``);
-    assert.include(markdown, "Integration seams (1)");
-    assert.include(markdown, "(diverged)");
-    assert.include(markdown, "Unmapped ++-owned files — maintainer review required");
-    // Paths only ever appear JSON-escaped.
+    assert.include(markdown, "## ++ impact");
+    assert.include(markdown, "### demo: Demo (#1)");
+    assert.include(
+      markdown,
+      "| `demo.hook` | `apps/desktop/src/main.ts` | hook | changed | conflict |",
+    );
+    assert.include(markdown, "Unregistered conflicts (1)");
+    assert.isFalse(markdown.includes("Unmapped"));
+    // Paths only ever appear JSON-escaped in lists.
     assert.include(markdown, JSON.stringify('weird "path".ts'));
   });
 
-  it("caps long ownership sections", () => {
-    const paths = Array.from({ length: 205 }, (_, index) => `pkg/${index}.ts`);
-    const capped = renderHotspotReport({
+  it("renders the seam registry refresh problems", () => {
+    const markdown = renderHotspotReport({
       ...view,
       report: {
         ...view.report,
-        incomingPaths: paths,
-        classification: {
-          fork: paths.map((path) => ({ path, category: "fork" as const, diverged: false })),
-          seam: [],
-          shared: [],
-        },
+        tree: null,
+        seamRefreshProblems: ["demo.hook (app.ts) is missing"],
       },
-      real: { ...view.real, incomingPaths: paths },
-      unmappedForkPaths: [],
+    });
+    assert.include(markdown, "## Seam registry refresh (1)");
+    assert.include(markdown, JSON.stringify("demo.hook (app.ts) is missing"));
+    assert.isFalse(markdown.includes("Merged tree matches"));
+    assert.isFalse(renderHotspotReport(view).includes("Seam registry refresh"));
+  });
+
+  it("caps long impact lists", () => {
+    const paths = Array.from({ length: 205 }, (_, index) => `pkg/${index}.ts`);
+    const capped = renderHotspotReport({
+      ...view,
+      real: {
+        ...view.real,
+        impact: { ...impact, legacyTouched: paths.map((path) => ({ path, conflict: false })) },
+      },
     });
     assert.include(capped, "and 5 more");
-    assert.include(capped, "Unmapped ++-owned files — maintainer review required");
+    assert.include(capped, "Legacy files upstream touches (205)");
     assert.include(capped, "(none)");
   });
 });
@@ -1969,9 +2469,17 @@ describe("hotspot report rendering", () => {
 // Live flows: validate-merge over real repositories, and the hotspot report
 // over a real two-parent merge with a hand-built trusted artifact.
 const syncPrFixture = Effect.fn("test.syncPrFixture")(function* (
-  options: { readonly extraMergeFiles?: Readonly<Record<string, string>> } = {},
+  options: {
+    readonly extraMergeFiles?: Readonly<Record<string, string>>;
+    readonly extraUpstreamFiles?: Readonly<Record<string, string>>;
+  } = {},
 ) {
-  const fixture = yield* makeRepositoryFixture({ variant: "clean" });
+  const fixture = yield* makeRepositoryFixture({
+    variant: "clean",
+    ...(options.extraUpstreamFiles === undefined
+      ? {}
+      : { extraUpstreamFiles: options.extraUpstreamFiles }),
+  });
   const spawner = yield* localFetchSpawner(fixture);
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -2003,14 +2511,19 @@ const syncPrFixture = Effect.fn("test.syncPrFixture")(function* (
   return { fixture, spawner, fs, path, headSha, headTree, mergeBaseSha };
 });
 
-const classificationOf = (paths: ReadonlyArray<string>) => {
-  const classification = classifyPaths(paths);
-  return { fork: classification.fork, seam: classification.seam, shared: classification.shared };
-};
+// The artifact's impact is what the dry run computed on the base registry; the
+// hotspot recomputes it from the real merge parents.
+const impactOf = (fixture: RepositoryFixture) =>
+  buildImpactReport({
+    cwd: fixture.cwd,
+    registry: fixture.registry,
+    forkSha: fixture.forkHead,
+    targetSha: fixture.upstreamHead,
+  });
 
 const trustedReport = (overrides: Record<string, unknown>): string =>
   jsonText({
-    schemaVersion: 1,
+    schemaVersion: 2,
     requestedTag: TAG,
     tag: TAG,
     baseSha: null,
@@ -2020,8 +2533,9 @@ const trustedReport = (overrides: Record<string, unknown>): string =>
     tree: null,
     status: "clean",
     incomingPaths: ["upstream.txt"],
-    classification: { fork: [], seam: [], shared: [] },
+    impact: null,
     conflicts: [],
+    seamRefreshProblems: [],
     windowsPackages: [],
     ...overrides,
   });
@@ -2162,12 +2676,12 @@ it.live("hotspot-report validates the artifact against the real merge and render
   Effect.scoped(
     Effect.gen(function* () {
       const prepared = yield* syncPrFixture({
-        extraMergeFiles: {
-          "apps/web/src/invented.ts": "export const invented = true;\n",
-          "README.md": "base\nfork edit during resolution\n",
-        },
+        extraUpstreamFiles: { "app.ts": APP_BASE.replace("return 2;", "return 3;") },
       });
       const { fixture, spawner, fs, path, headSha, headTree, mergeBaseSha } = prepared;
+      const impact = yield* withSpawner(spawner)(impactOf(fixture));
+      // Upstream edited other(), outside the anchored region: same, no conflict.
+      assert.equal(impact.features[0]?.seams[0]?.state, "same");
       yield* fs.writeFileString(
         path.join(fixture.root, "artifact-report.json"),
         trustedReport({
@@ -2176,23 +2690,21 @@ it.live("hotspot-report validates the artifact against the real merge and render
           upstreamSha: fixture.upstreamHead,
           mergeCommit: headSha,
           tree: headTree,
-          classification: classificationOf(["upstream.txt"]),
+          incomingPaths: ["app.ts", "upstream.txt"],
+          impact,
         }),
       );
 
       const result = yield* withSpawner(spawner)(
         generateHotspotReport(hotspotOptions(fixture.root, fixture.cwd, 7, headSha)),
       );
-      // The fork-invented shared path is unmapped; README.md exists upstream
-      // and stays shared even though the resolution touched it.
-      assert.deepEqual(result.unmappedForkPaths, ["apps/web/src/invented.ts"]);
+      assert.deepStrictEqual(result, { headSha, tag: TAG });
 
       const markdown = yield* fs.readFileString(path.join(fixture.root, "hotspot.md"));
       assert.isTrue(markdown.startsWith("<!-- upstream-sync-hotspot-report -->"));
       assert.include(markdown, "https://github.com/WianVDM/t3code/actions/runs/42");
-      assert.include(markdown, "Unmapped ++-owned files — maintainer review required");
-      assert.include(markdown, JSON.stringify("apps/web/src/invented.ts"));
-      assert.isFalse(markdown.includes('"README.md"'));
+      assert.include(markdown, "## ++ impact");
+      assert.include(markdown, "| `demo.hook` | `app.ts` | hook | same | - |");
       assert.include(markdown, headSha);
     }),
   ).pipe(Effect.provide(NodeServices.layer)),
@@ -2205,13 +2717,14 @@ it.live("hotspot-report fails closed before rendering on any mismatch", () =>
         yield* syncPrFixture();
       const reportPath = path.join(fixture.root, "artifact-report.json");
       const options = hotspotOptions(fixture.root, fixture.cwd, 7, headSha);
+      const impact = yield* withSpawner(spawner)(impactOf(fixture));
       const goodFields = {
         baseSha: fixture.forkHead,
         mergeBaseSha,
         upstreamSha: fixture.upstreamHead,
         mergeCommit: headSha,
         tree: headTree,
-        classification: classificationOf(["upstream.txt"]),
+        impact,
       };
       const generate = () =>
         Effect.flip(withSpawner(spawner)(generateHotspotReport({ ...options, reportPath })));
@@ -2240,13 +2753,29 @@ it.live("hotspot-report fails closed before rendering on any mismatch", () =>
       );
       assert.match(stale.message, /payload SHA/);
 
-      // An incoming/classification mismatch fails before rendering.
+      // An incoming-path mismatch fails before rendering.
       yield* fs.writeFileString(
         reportPath,
         trustedReport({ ...goodFields, incomingPaths: ["bogus.txt"] }),
       );
       assert.match((yield* generate()).message, /does not survive validation/);
       assert.isFalse(yield* fs.exists(options.outputPath));
+
+      // A tampered impact fails before rendering, even with every identity right.
+      yield* fs.writeFileString(
+        reportPath,
+        trustedReport({
+          ...goodFields,
+          impact: { ...impact, unregisteredDeltas: ["hidden.ts"] },
+        }),
+      );
+      const tampered = yield* generate();
+      assert.match(tampered.message, /impact does not match/);
+      assert.isFalse(yield* fs.exists(options.outputPath));
+
+      // So does a report without any impact.
+      yield* fs.writeFileString(reportPath, trustedReport({ ...goodFields, impact: null }));
+      assert.match((yield* generate()).message, /carries no impact/);
     }),
   ).pipe(Effect.provide(NodeServices.layer)),
 );

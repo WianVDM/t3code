@@ -6,7 +6,6 @@ import * as NodePath from "node:path";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
-import * as Schema from "effect/Schema";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import {
@@ -14,73 +13,57 @@ import {
   classifyChanges,
   collectChanges,
   isViolation,
+  parseNameStatusZ,
   renderReport,
   seamAnalysisPaths,
   thinSeamViolation,
   type BoundaryChange,
   type BoundaryFinding,
+  type BoundaryPolicy,
 } from "./check-fork-boundaries.ts";
-import { FORK_INVENTORY_PATH, ForkInventory, validateForkInventory } from "./forkInventory.ts";
+import { SEAM_REGISTRY_PATH } from "./seamRegistry.ts";
 
-const decodeInventory = Schema.decodeUnknownSync(ForkInventory, { onExcessProperty: "error" });
-
-const TEST_POLICY = {
-  version: 1,
-  issue: "https://github.com/WianVDM/t3code/issues/39",
-  baseline: {
-    forkRef: "f".repeat(40),
+const policy: BoundaryPolicy = {
+  registry: {
+    version: 1,
     upstreamRef: "a".repeat(40),
-    mergeBase: "b".repeat(40),
-    counts: {
-      total: 4,
-      plusplusOwned: 1,
-      upstreamOwned: 1,
-      integrationSeam: 2,
-      sharedModified: 1,
-      renamed: 1,
+    features: {},
+    files: {
+      "apps/web/src/App.tsx": { delta: [3, 0], legacy: true },
+      "meta/app.xml": { delta: [1, 1], legacy: true },
+      "scripts/old.ts": { delta: [0, 4], legacy: true },
     },
+    siblings: [],
   },
-  plusplusOwnedRoots: ["packages/plusplus"],
-  boundaryInfrastructure: ["scripts/check-changed.ts"],
-  conflictHistory: [],
-  exceptions: [],
-  entries: [
-    { id: "OWN-001", category: "plusplus-owned", change: "added", path: "docs/fork.md" },
-    { id: "DEL-001", category: "upstream-owned", change: "deleted", path: "scripts/old.ts" },
-    {
-      id: "SEAM-001",
-      category: "integration-seam",
-      change: "modified",
-      path: "apps/web/src/App.tsx",
-    },
-    {
-      id: "SEAM-002",
-      category: "integration-seam",
-      change: "renamed",
-      path: "meta/fork-app.xml",
-      upstreamPath: "meta/app.xml",
-    },
-  ],
-} as const;
-
-const inventory = decodeInventory(TEST_POLICY);
+  upstreamPaths: new Set([
+    "apps/server/src/main.ts",
+    "apps/web/src/App.tsx",
+    "meta/app.xml",
+    "scripts/check-changed.ts",
+    "scripts/old.ts",
+  ]),
+  // scripts/old.ts is absent: the fork already deleted it.
+  basePaths: new Set([
+    "apps/server/src/main.ts",
+    "apps/web/src/App.tsx",
+    "docs/fork.md",
+    "meta/app.xml",
+    "scripts/check-changed.ts",
+  ]),
+};
 
 // A seam edit is thin when everything but imports and typed mounts matches;
 // the stub keeps classify tests independent of the AST analysis below.
 const analyze = () => undefined;
 
 const classify = (changes: ReadonlyArray<BoundaryChange>) =>
-  classifyChanges(inventory, changes, analyze);
+  classifyChanges(policy, changes, analyze);
 
 const verdicts = (findings: ReadonlyArray<BoundaryFinding>) =>
   Object.fromEntries(findings.map((finding) => [finding.path, finding.verdict]));
 
 describe("classifyChanges", () => {
-  it("accepts a valid fixture policy", () => {
-    assert.deepStrictEqual(validateForkInventory(inventory), []);
-  });
-
-  it("allows CRUD on own entries and owned roots, including deletions", () => {
+  it("allows CRUD on paths absent at upstreamRef, including deletions", () => {
     const findings = classify([
       { status: "M", path: "docs/fork.md" },
       { status: "D", path: "docs/fork.md" },
@@ -91,19 +74,15 @@ describe("classifyChanges", () => {
       "packages/plusplus/new/file.ts": "ALLOW_OWNED",
     });
     assert.isFalse(findings.some(isViolation));
-    assert.strictEqual(
-      findings.find((finding) => finding.path === "docs/fork.md")?.entry,
-      "OWN-001",
-    );
   });
 
-  it("flags the policy file itself as POLICY_CHANGED whatever the status", () => {
-    const findings = classify([{ status: "M", path: FORK_INVENTORY_PATH }]);
+  it("flags the registry itself as POLICY_CHANGED whatever the status", () => {
+    const findings = classify([{ status: "M", path: SEAM_REGISTRY_PATH }]);
     assert.strictEqual(findings[0]?.verdict, "POLICY_CHANGED");
     assert.isTrue(findings.every(isViolation));
   });
 
-  it("allows boundaryInfrastructure paths with any change kind", () => {
+  it("allows BOUNDARY_INFRASTRUCTURE paths with any change kind", () => {
     const findings = classify([
       { status: "M", path: "scripts/check-changed.ts" },
       { status: "A", path: "scripts/check-changed.ts" },
@@ -114,26 +93,22 @@ describe("classifyChanges", () => {
     );
   });
 
-  it("routes seam TS files through the thin analysis and fails every other seam edit", () => {
+  it("routes registered TS files through the thin analysis and fails every other seam edit", () => {
     const findings = classify([
       { status: "M", path: "apps/web/src/App.tsx" },
-      { status: "M", path: "meta/fork-app.xml" },
+      { status: "M", path: "meta/app.xml" },
     ]);
     assert.deepStrictEqual(verdicts(findings), {
       "apps/web/src/App.tsx": "ALLOW_THIN_SEAM",
-      "meta/fork-app.xml": "SEAM_NON_TS",
+      "meta/app.xml": "SEAM_NON_TS",
     });
-    assert.strictEqual(
-      findings.find((finding) => finding.path === "apps/web/src/App.tsx")?.entry,
-      "SEAM-001",
-    );
     const deleted = classify([{ status: "D", path: "apps/web/src/App.tsx" }]);
     assert.strictEqual(deleted[0]?.verdict, "SEAM_DELETED");
   });
 
   it("reports a non-thin seam edit with the analyzer's reason", () => {
     const thick = classifyChanges(
-      inventory,
+      policy,
       [{ status: "M", path: "apps/web/src/App.tsx" }],
       () => "statement 2 (FunctionDeclaration) changes code",
     );
@@ -141,25 +116,15 @@ describe("classifyChanges", () => {
     assert.strictEqual(thick[0]?.reason, "statement 2 (FunctionDeclaration) changes code");
   });
 
-  it("fails stale upstream paths, deleted-upstream resurrections, and unclassified paths", () => {
+  it("fails upstream deletions the fork already made and unregistered upstream edits", () => {
     const findings = classify([
-      { status: "A", path: "meta/app.xml" },
       { status: "A", path: "scripts/old.ts" },
       { status: "M", path: "apps/server/src/main.ts" },
     ]);
     assert.deepStrictEqual(verdicts(findings), {
-      "meta/app.xml": "STALE_UPSTREAM_PATH",
       "scripts/old.ts": "UPSTREAM_DELETION_TOUCHED",
       "apps/server/src/main.ts": "UNCLASSIFIED",
     });
-    assert.strictEqual(
-      findings.find((finding) => finding.path === "meta/app.xml")?.entry,
-      "SEAM-002",
-    );
-    assert.strictEqual(
-      findings.find((finding) => finding.path === "scripts/old.ts")?.entry,
-      "DEL-001",
-    );
     assert.isTrue(findings.every(isViolation));
   });
 
@@ -175,15 +140,52 @@ describe("classifyChanges", () => {
     );
   });
 
-  it("only sends non-deleted TS seam files to the AST analysis", () => {
+  it("only sends non-deleted registered TS files to the AST analysis", () => {
     assert.deepStrictEqual(
-      seamAnalysisPaths(inventory, [
+      seamAnalysisPaths(policy, [
         { status: "M", path: "apps/web/src/App.tsx" },
         { status: "D", path: "apps/web/src/App.tsx" },
-        { status: "M", path: "meta/fork-app.xml" },
+        { status: "M", path: "meta/app.xml" },
         { status: "M", path: "docs/fork.md" },
+        { status: "M", path: "apps/server/src/main.ts" },
       ]),
       ["apps/web/src/App.tsx"],
+    );
+  });
+});
+
+const NAME_STATUS_FIXTURE = [
+  "A\0docs/fork.md",
+  "D\0scripts/old.ts",
+  "M\0apps/web/src/main.tsx",
+  "R057\0meta/app.xml\0meta/fork-app.xml",
+].join("\0");
+
+describe("parseNameStatusZ", () => {
+  it("parses NUL-separated records including renames", () => {
+    assert.deepStrictEqual(parseNameStatusZ(`${NAME_STATUS_FIXTURE}\0`), [
+      { status: "A", path: "docs/fork.md" },
+      { status: "D", path: "scripts/old.ts" },
+      { status: "M", path: "apps/web/src/main.tsx" },
+      { status: "R", path: "meta/fork-app.xml", upstreamPath: "meta/app.xml" },
+    ]);
+  });
+
+  it("rejects typechange and copy statuses instead of skipping them", () => {
+    assert.throws(
+      () => parseNameStatusZ("T\0scripts/tool.sh\0"),
+      /unsupported git name-status "T"/,
+    );
+    assert.throws(
+      () => parseNameStatusZ("C075\0meta/app.xml\0meta/fork-app.xml\0"),
+      /unsupported git name-status "C075"/,
+    );
+  });
+
+  it("rejects an unknown status rather than misreading the tokens that follow it", () => {
+    assert.throws(
+      () => parseNameStatusZ("A\0docs/fork.md\0T\0Makefile\0A\0other.md\0"),
+      /unsupported git name-status "T"/,
     );
   });
 });
@@ -345,7 +347,9 @@ const env = {
   ),
 };
 
-function boundaryFixture(policyText?: string) {
+// An upstream commit, then a fork base on top of it that deletes one upstream
+// file, adds ++ files, and carries the registry that names the upstream commit.
+function boundaryFixture(registryOverride?: string) {
   const root = NodeFS.realpathSync(
     NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-fork-boundaries-")),
   );
@@ -356,18 +360,29 @@ function boundaryFixture(policyText?: string) {
   };
   const git = (...args: Array<string>) =>
     NodeChildProcess.execFileSync("git", args, { cwd: root, encoding: "utf8", env }).trim();
+  const commitAll = (message: string) => {
+    git("add", "-A");
+    git("-c", "commit.gpgsign=false", "commit", "-m", message);
+    return git("rev-parse", "HEAD");
+  };
   try {
-    if (policyText !== "") {
-      write(FORK_INVENTORY_PATH, policyText ?? JSON.stringify(TEST_POLICY, null, 2));
-    }
-    write("docs/fork.md", "# fork\n");
     write("apps/web/src/App.tsx", BASE_APP_TSX);
     write("apps/server/src/main.ts", "export const main = 1;\n");
-    write("meta/fork-app.xml", "<app/>\n");
+    write("meta/app.xml", "<app/>\n");
     write("scripts/check-changed.ts", "export const a = 1;\n");
+    write("scripts/old.ts", "export const old = 1;\n");
     git("init");
-    git("add", ".");
-    git("-c", "commit.gpgsign=false", "commit", "-m", "base");
+    const upstreamRef = commitAll("upstream");
+
+    git("rm", "-f", "--quiet", "scripts/old.ts");
+    write("docs/fork.md", "# fork\n");
+    if (registryOverride !== "") {
+      write(
+        SEAM_REGISTRY_PATH,
+        registryOverride ?? JSON.stringify({ ...policy.registry, upstreamRef }, null, 2),
+      );
+    }
+    commitAll("fork base");
   } catch (error) {
     NodeFS.rmSync(root, { recursive: true, force: true });
     throw error;
@@ -377,11 +392,8 @@ function boundaryFixture(policyText?: string) {
     write,
     git,
     base: git("rev-parse", "HEAD"),
-    commit(message: string) {
-      git("add", "-A");
-      git("-c", "commit.gpgsign=false", "commit", "-m", message);
-      return git("rev-parse", "HEAD");
-    },
+    upstreamRef: git("rev-parse", "HEAD~1"),
+    commit: commitAll,
     [Symbol.dispose]() {
       NodeFS.rmSync(root, { recursive: true, force: true });
     },
@@ -407,8 +419,8 @@ const renderReportLines = (run: {
 
 // Wall-clock it.live: these run real git subprocesses. The fixture is an
 // Effect resource so it disposes even when an assertion fails.
-const withFixture = (policyText?: string) =>
-  Effect.acquireDisposable(Effect.sync(() => boundaryFixture(policyText)));
+const withFixture = (registryOverride?: string) =>
+  Effect.acquireDisposable(Effect.sync(() => boundaryFixture(registryOverride)));
 
 const tempDir = (prefix: string) =>
   Effect.acquireRelease(
@@ -457,33 +469,31 @@ describe("checkForkBoundaries", () => {
   );
 
   it.live(
-    "fails unclassified edits, seam deletions, non-TS seams, stale upstream paths, and resurrections",
+    "fails unregistered edits, seam deletions, non-TS seams, and resurrected upstream deletions",
     () =>
       Effect.scoped(
         Effect.gen(function* () {
           const project = yield* withFixture();
           project.write("apps/server/src/main.ts", "export const main = 2;\n");
-          project.write("meta/fork-app.xml", "<app fork/>\n");
-          project.write("meta/app.xml", "<app/>\n");
+          project.write("meta/app.xml", "<app fork/>\n");
           project.write("scripts/old.ts", "export const old = 1;\n");
           project.git("rm", "-f", "--quiet", "apps/web/src/App.tsx");
           const checked = yield* runCheck(project.root, project.base);
           assert.deepStrictEqual(verdicts(checked.findings), {
             "apps/server/src/main.ts": "UNCLASSIFIED",
             "apps/web/src/App.tsx": "SEAM_DELETED",
-            "meta/app.xml": "STALE_UPSTREAM_PATH",
-            "meta/fork-app.xml": "SEAM_NON_TS",
+            "meta/app.xml": "SEAM_NON_TS",
             "scripts/old.ts": "UPSTREAM_DELETION_TOUCHED",
           });
-          // A rename of an unclassified upstream file fails on both halves.
+          // A rename of an unregistered upstream file fails on its upstream half;
+          // the new name is not upstream-owned.
           project.git("checkout", "HEAD", "--", "apps/web/src/App.tsx");
           project.git("mv", "apps/server/src/main.ts", "apps/server/src/moved.ts");
           const renamed = yield* runCheck(project.root, project.base);
           assert.deepStrictEqual(verdicts(renamed.findings), {
             "apps/server/src/main.ts": "UNCLASSIFIED",
-            "apps/server/src/moved.ts": "UNCLASSIFIED",
-            "meta/app.xml": "STALE_UPSTREAM_PATH",
-            "meta/fork-app.xml": "SEAM_NON_TS",
+            "apps/server/src/moved.ts": "ALLOW_OWNED",
+            "meta/app.xml": "SEAM_NON_TS",
             "scripts/old.ts": "UPSTREAM_DELETION_TOUCHED",
           });
         }),
@@ -502,28 +512,37 @@ describe("checkForkBoundaries", () => {
     ),
   );
 
-  it.live("treats a head-only policy edit as POLICY_CHANGED and grants it nothing", () =>
+  it.live("treats a head-only registry edit as POLICY_CHANGED and grants it nothing", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const project = yield* withFixture();
-        const spoofed = JSON.parse(JSON.stringify(TEST_POLICY));
-        spoofed.boundaryInfrastructure.push("apps/server/src/main.ts");
-        project.write(FORK_INVENTORY_PATH, JSON.stringify(spoofed, null, 2));
+        const spoofed = {
+          ...policy.registry,
+          upstreamRef: project.upstreamRef,
+          files: {
+            "apps/server/src/main.ts": { delta: [1, 1], legacy: true },
+            ...policy.registry.files,
+          },
+        };
+        project.write(SEAM_REGISTRY_PATH, JSON.stringify(spoofed, null, 2));
         project.write("apps/server/src/main.ts", "export const main = 2;\n");
         const headSpoof = yield* runCheck(project.root, project.base);
-        // The head policy approves main.ts, but only the base policy counts and
-        // the base does not list the path: the edit stays unclassified.
+        // The head registry lists main.ts, but only the base registry counts and
+        // the base does not: the edit stays unclassified.
         assert.deepStrictEqual(verdicts(headSpoof.findings), {
-          [FORK_INVENTORY_PATH]: "POLICY_CHANGED",
+          [SEAM_REGISTRY_PATH]: "POLICY_CHANGED",
           "apps/server/src/main.ts": "UNCLASSIFIED",
         });
-        // Once the spoof lands in a base, that base's policy grants the path:
+        // Once the spoof lands in a base, that base's registry grants the path:
         // trust follows the committed base, never the PR author.
         const spoofBase = project.commit("spoof");
-        project.write("apps/server/src/main.ts", "export const main = 3;\n");
+        project.write(
+          "apps/server/src/main.ts",
+          `import { extra } from "./extra";\nexport const main = 2;\n`,
+        );
         const againstSpoof = yield* runOk(project.root, spoofBase);
         assert.deepStrictEqual(verdicts(againstSpoof.findings), {
-          "apps/server/src/main.ts": "ALLOW_INFRASTRUCTURE",
+          "apps/server/src/main.ts": "ALLOW_THIN_SEAM",
         });
       }),
     ),
@@ -534,7 +553,7 @@ describe("checkForkBoundaries", () => {
       Effect.gen(function* () {
         const project = yield* withFixture();
         project.write("apps/server/src/main.ts", "export const main = 2;\n");
-        const middle = project.commit("middle: unclassified edit");
+        const middle = project.commit("middle: unregistered edit");
         project.write("docs/fork.md", "# fork v2\n");
         project.commit("head: owned edit");
         const againstMiddle = yield* runOk(project.root, middle);
@@ -551,7 +570,7 @@ describe("checkForkBoundaries", () => {
     ),
   );
 
-  it.live("fails closed on missing, malformed, and invalid policy plus unresolvable bases", () =>
+  it.live("fails closed on a missing, malformed, or invalid registry and unresolvable refs", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const missing = yield* withFixture("");
@@ -562,12 +581,22 @@ describe("checkForkBoundaries", () => {
         const malformedError = yield* runFail(malformed.root, malformed.base);
         assert.isTrue(malformedError.includes("is not valid"), malformedError);
 
-        const badCounts = JSON.parse(JSON.stringify(TEST_POLICY));
-        badCounts.baseline.counts.total = 99;
-        const invalid = yield* withFixture(JSON.stringify(badCounts));
+        const unsorted = {
+          ...policy.registry,
+          files: {
+            "meta/app.xml": { delta: [1, 1], legacy: true },
+            "apps/web/src/App.tsx": { delta: [3, 0], legacy: true },
+          },
+        };
+        const invalid = yield* withFixture(JSON.stringify(unsorted));
         const invalidError = yield* runFail(invalid.root, invalid.base);
-        assert.isTrue(invalidError.includes("fails validation"), invalidError);
-        assert.isTrue(invalidError.includes("baseline count total is 99"), invalidError);
+        assert.isTrue(invalidError.includes("files keys must be unique and sorted"), invalidError);
+
+        const unknownUpstream = yield* withFixture(
+          JSON.stringify({ ...policy.registry, upstreamRef: "0".repeat(40) }),
+        );
+        const upstreamError = yield* runFail(unknownUpstream.root, unknownUpstream.base);
+        assert.isTrue(upstreamError.includes("cannot list the tree of"), upstreamError);
 
         const project = yield* withFixture();
         const refError = yield* runFail(project.root, "no-such-ref");

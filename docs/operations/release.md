@@ -275,20 +275,30 @@ and the full eight-package Windows distribution lane. The lanes are independent,
 cannot hide the other.
 
 Read the result from the run's job summary and the `upstream-sync-dry-run-final` artifact. The
-report names the outcome and splits incoming paths into ++-owned, integration-seam, and shared code
-with the same registry that labels ++ PRs, so a conflict arrives already sorted by who owns it:
+report names the outcome, then an `## ++ impact` section grouped by ++ feature (`plusplus/seams.json`,
+rules in `plusplus/ARCHITECTURE.md`). Each seam shows whether upstream changed its anchored region
+and whether the merge conflicts on its path, with upstream's diff of the region. Legacy files
+upstream touches, conflicts outside the registry, and fork deltas with no entry follow. The run is
+report-only: every outcome except **error** concludes green, so read the outcome rather than the
+run's colour:
 
-- **already integrated** and **passed** succeed; nothing to do until you choose to sync.
+- **already integrated** and **passed** need nothing until you choose to sync.
 - **conflict** lists the unmerged paths and stages. Recover with the real flow below.
 - **merge verification failed** means the merge was clean but broke an integrity check, such as a
   leftover conflict marker; treat it like a conflict.
+- A **clean** or **passed** run can still carry a **Seam registry refresh** section: an anchor no
+  longer resolves or a fork delta has no registry entry. The lanes still run. The real sync's
+  `verify` refuses until the registry is fixed.
 - **verification failed** means the merged tree failed the Linux or Windows checks.
-- **error** is an infrastructure failure, a missing report, a cancelled lane, or an unexpected
-  state. Reporting fails closed: any of these outranks a passing sibling lane.
+- **error** is an infrastructure failure, a missing report, a cancelled lane, a registry that
+  cannot be read, or an unexpected state. Reporting fails closed: any of these outranks a passing
+  sibling lane.
 
 A dry run is reconnaissance, not the sync. It changes no ref, so it cannot land upstream code. Its
 `upstream-sync-dry-run-report` artifact is also what the protected sync PR's hotspot report is
-built from, so keep the schedule running while a sync is planned.
+built from, so keep the schedule running while a sync is planned. The report carries a
+`schemaVersion` (2 today) and the hotspot check rejects any other, so after a schema change run a
+fresh dry run on `main` before opening a sync PR.
 
 ### Sync runbook
 
@@ -315,9 +325,9 @@ it is missing.
 #### 2. Resolve conflicts
 
 - List unmerged paths with `git diff --name-only --diff-filter=U`, and use the dry-run report's
-  ownership split (and the sync PR's hotspot report once the PR exists) to decide who owns each
-  path: ++-owned files keep fork behavior, seams keep both sides working together, shared files
-  usually take upstream.
+  `## ++ impact` section (and the sync PR's hotspot report once the PR exists) to decide each path.
+  For a seam whose region changed, take upstream and re-apply the hook, or drop the ++ change when
+  upstream now does the same. Files outside the registry usually take upstream.
 - The merge commit carries conflict resolution only: no unrelated fixes, no scratch files.
 - `git rerere` is optional and local. It is uncommitted, unavailable to a fresh CI runner, can
   replay stale resolution text onto changed content, and linked worktrees may share its cache.
@@ -333,10 +343,13 @@ node scripts/upstream-sync.ts finish --tag vX.Y.Z
 
 - `verify` expects exactly one `MERGE_HEAD` entry equal to the namespaced tag commit, no unmerged
   paths, no unstaged tracked edits, no untracked files, no added conflict markers, and a clean
-  `git diff --check` against the upstream side. It records the verified state.
-- `finish` re-runs the same verification, refuses any drift from the verified record (moved HEAD,
-  changed `MERGE_HEAD`, restaged tree), commits, and then asserts the new commit has exactly two
-  parents (verified HEAD first, tag commit second) and the verified tree.
+  `git diff --check` against the upstream side. It first stages a registry refresh into the merge
+  (`plusplus/seams.json` gets the new `upstreamRef`, fingerprints and deltas; `plusplus/sync-history.json`
+  gets one entry) and refuses while any seam anchor is `missing` or `ambiguous` or a fork delta has
+  no registry entry. It records the verified state.
+- `finish` re-runs the same verification (the refresh is idempotent), refuses any drift from the
+  verified record (moved HEAD, changed `MERGE_HEAD`, restaged tree), commits, and then asserts the
+  new commit has exactly two parents (verified HEAD first, tag commit second) and the verified tree.
 - A clean merge, or a rerere replay, is not semantic verification. Add focused behavior tests for
   the fork behavior the merge touches, and run the release-note, persistence, and desktop checks
   the change affects. `check:changed HEAD` covers the fast lane; CI covers the rest.
@@ -352,7 +365,8 @@ node scripts/upstream-sync.ts finish --tag vX.Y.Z
   payload, and the bot publishes one hotspot report comment built from the newest matching
   trusted dry-run artifact.
 - Require the full `Check`, the Windows lane, and `Agent context budget` green, and review every
-  entry in the report's `Unmapped ++-owned files` bucket before merging.
+  entry under the report's `Unregistered conflicts` and `Unregistered fork deltas` lists before
+  merging.
 
 #### 5. Merge
 

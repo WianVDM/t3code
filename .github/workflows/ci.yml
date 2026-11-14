@@ -60,7 +60,6 @@ jobs:
             /.github/scripts/ci-changes.cjs
             /.github/scripts/upstream-sync-pr.cjs
             /.github/actions/ci-changes/
-            /config/fork-inventory.json
             /*/package.json
             /*/*/package.json
             !/.repos/
@@ -561,11 +560,12 @@ jobs:
       - name: Check shared-persistence compatibility
         run: node .github/scripts/check-shared-persistence-compat.cjs FETCH_HEAD
 
-  # Advisory until B12: reports ++ fork-boundary violations against the policy
-  # in the base commit, so head-authored policy grants nothing. continue-on-error
-  # and absent from `check`'s needs and from JOB_GATES, so its result can never
-  # affect Check. Every boundaryInfrastructure path already selects full CI via
-  # ci-changes.cjs.
+  # Advisory until B12: reports ++ fork-boundary violations against the seam
+  # registry in the base commit, so head-authored policy grants nothing. The
+  # registry check below validates the head registry against the head tree.
+  # continue-on-error and absent from `check`'s needs and from JOB_GATES, so its
+  # result can never affect Check. Every BOUNDARY_INFRASTRUCTURE path already
+  # selects full CI via ci-changes.cjs.
   fork_boundaries:
     permissions:
       contents: read
@@ -586,6 +586,9 @@ jobs:
 
       - name: Setup Vite+
         uses: ./.github/actions/setup-ci-deps
+
+      - name: Check the seam registry
+        run: node scripts/seamRegistry.ts check
 
       - name: Check fork boundaries
         env:
