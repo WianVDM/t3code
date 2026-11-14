@@ -1,0 +1,1650 @@
+{
+  "version": 1,
+  "upstreamRef": "322f6544dfad0a3c8a0c8cbecf2c7f7874b14268",
+  "features": {
+    "context-bridge": {
+      "title": "Context bridge",
+      "issue": 35
+    },
+    "contract-sidecar": {
+      "title": "++ contract sidecar",
+      "issue": 80
+    },
+    "generated": {
+      "title": "Regenerated files"
+    },
+    "plusplus-workspace": {
+      "title": "++ workspace wiring",
+      "issue": 30
+    },
+    "usage-vendor-icons": {
+      "title": "Model vendor icons on Usage",
+      "issue": 82
+    }
+  },
+  "files": {
+    ".agents/skills/contribution-triage/SKILL.md": {
+      "delta": [0, 196],
+      "legacy": true,
+      "reason": "Upstream maintainer vouch and triage infrastructure (VOUCHED.td, TRIAGE_EXEMPTIONS.td, pr-vouch workflow, contribution-triage skill) is out of scope for a solo-maintained fork per AGENTS.md. Deletions are intentional."
+    },
+    ".coderabbit.config.ts": {
+      "delta": [12, 8],
+      "legacy": true
+    },
+    ".github/ISSUE_TEMPLATE/bug_report.yml": {
+      "delta": [23, 2],
+      "legacy": true
+    },
+    ".github/ISSUE_TEMPLATE/config.yml": {
+      "delta": [6, 3],
+      "legacy": true
+    },
+    ".github/SECURITY.md": {
+      "delta": [16, 5],
+      "legacy": true
+    },
+    ".github/TRIAGE_EXEMPTIONS.td": {
+      "delta": [0, 9],
+      "legacy": true,
+      "reason": "Upstream maintainer vouch and triage infrastructure (VOUCHED.td, TRIAGE_EXEMPTIONS.td, pr-vouch workflow, contribution-triage skill) is out of scope for a solo-maintained fork per AGENTS.md. Deletions are intentional."
+    },
+    ".github/VOUCHED.td": {
+      "delta": [0, 89],
+      "legacy": true,
+      "reason": "Upstream maintainer vouch and triage infrastructure (VOUCHED.td, TRIAGE_EXEMPTIONS.td, pr-vouch workflow, contribution-triage skill) is out of scope for a solo-maintained fork per AGENTS.md. Deletions are intentional."
+    },
+    ".github/actions/ci-changes/action.yml": {
+      "delta": [39, 4],
+      "legacy": true
+    },
+    ".github/actions/setup-ci-deps/action.yml": {
+      "delta": [0, 21],
+      "legacy": true
+    },
+    ".github/pull_request_template.md": {
+      "delta": [40, 24],
+      "legacy": true
+    },
+    ".github/scripts/check-nightly-release.cjs": {
+      "delta": [8, 2],
+      "legacy": true
+    },
+    ".github/scripts/check-nightly-release.test.cjs": {
+      "delta": [849, 1],
+      "legacy": true
+    },
+    ".github/scripts/ci-changes.cjs": {
+      "delta": [216, 19],
+      "legacy": true
+    },
+    ".github/scripts/ci-changes.d.cts": {
+      "delta": [21, 1],
+      "legacy": true
+    },
+    ".github/scripts/relay-state-output.test.cjs": {
+      "delta": [0, 76],
+      "legacy": true,
+      "reason": "These three preview tests assert on upstream release.yml steps that the fork's release seam does not provide; they cannot pass without out-of-scope release changes. They stay deleted until B13 reconciles the release seam. The scripts and workflows they cover are restored."
+    },
+    ".github/scripts/stage-preview-bundle.test.py": {
+      "delta": [0, 97],
+      "legacy": true,
+      "reason": "These three preview tests assert on upstream release.yml steps that the fork's release seam does not provide; they cannot pass without out-of-scope release changes. They stay deleted until B13 reconciles the release seam. The scripts and workflows they cover are restored."
+    },
+    ".github/scripts/vercel-deployment-output.test.cjs": {
+      "delta": [0, 87],
+      "legacy": true,
+      "reason": "These three preview tests assert on upstream release.yml steps that the fork's release seam does not provide; they cannot pass without out-of-scope release changes. They stay deleted until B13 reconciles the release seam. The scripts and workflows they cover are restored."
+    },
+    ".github/workflows/agent-context-budget.yml": {
+      "delta": [8, 2],
+      "legacy": true
+    },
+    ".github/workflows/ci.yml": {
+      "delta": [213, 87],
+      "legacy": true
+    },
+    ".github/workflows/deploy-relay.yml": {
+      "delta": [1, 1],
+      "legacy": true
+    },
+    ".github/workflows/desktop-macos-preview-publish.yml": {
+      "delta": [4, 10],
+      "legacy": true
+    },
+    ".github/workflows/desktop-macos-preview.yml": {
+      "delta": [15, 4],
+      "legacy": true
+    },
+    ".github/workflows/issue-labels.yml": {
+      "delta": [41, 0],
+      "legacy": true
+    },
+    ".github/workflows/mobile-android-apk.yml": {
+      "delta": [1, 1],
+      "legacy": true
+    },
+    ".github/workflows/mobile-eas-preview-fork.yml": {
+      "delta": [1, 3],
+      "legacy": true
+    },
+    ".github/workflows/mobile-eas-preview.yml": {
+      "delta": [1, 4],
+      "legacy": true
+    },
+    ".github/workflows/mobile-eas-production.yml": {
+      "delta": [1, 1],
+      "legacy": true
+    },
+    ".github/workflows/mobile-fingerprint-check.yml": {
+      "delta": [1, 0],
+      "legacy": true
+    },
+    ".github/workflows/mobile-fingerprint-label.yml": {
+      "delta": [1, 3],
+      "legacy": true
+    },
+    ".github/workflows/mobile-showcase-screenshots.yml": {
+      "delta": [2, 2],
+      "legacy": true
+    },
+    ".github/workflows/pr-vouch.yml": {
+      "delta": [0, 203],
+      "legacy": true,
+      "reason": "Upstream maintainer vouch and triage infrastructure (VOUCHED.td, TRIAGE_EXEMPTIONS.td, pr-vouch workflow, contribution-triage skill) is out of scope for a solo-maintained fork per AGENTS.md. Deletions are intentional."
+    },
+    ".github/workflows/publish-aur.yml": {
+      "delta": [0, 66],
+      "legacy": true,
+      "reason": "AUR packaging publishes pingdotgg's t3code-bin packages under credentials the fork does not hold. Deletions are intentional."
+    },
+    ".github/workflows/relay-preview-cleanup.yml": {
+      "delta": [3, 9],
+      "legacy": true
+    },
+    ".github/workflows/relay-preview.yml": {
+      "delta": [1, 3],
+      "legacy": true
+    },
+    ".github/workflows/release-desktop.yml": {
+      "delta": [16, 169],
+      "legacy": true
+    },
+    ".github/workflows/release.yml": {
+      "delta": [278, 1066],
+      "legacy": true
+    },
+    ".github/workflows/web-preview.yml": {
+      "delta": [1, 4],
+      "legacy": true
+    },
+    ".github/workflows/windows-tests.yml": {
+      "delta": [201, 12],
+      "legacy": true
+    },
+    ".macroscope/approvability.md": {
+      "delta": [0, 7],
+      "legacy": true,
+      "reason": "Upstream-internal macroscope review agent configuration was dropped from the fork; fork CI does not run macroscope. Deletions are intentional; the test-signal eval suite they referenced is restored by A2."
+    },
+    ".macroscope/check-run-agents/effect-service-conventions.md": {
+      "delta": [0, 89],
+      "legacy": true,
+      "reason": "Upstream-internal macroscope review agent configuration was dropped from the fork; fork CI does not run macroscope. Deletions are intentional; the test-signal eval suite they referenced is restored by A2."
+    },
+    ".macroscope/check-run-agents/test-signal.md": {
+      "delta": [0, 27],
+      "legacy": true,
+      "reason": "Upstream-internal macroscope review agent configuration was dropped from the fork; fork CI does not run macroscope. Deletions are intentional; the test-signal eval suite they referenced is restored by A2."
+    },
+    ".macroscope/check-run-agents/ui-consistency.md": {
+      "delta": [0, 59],
+      "legacy": true,
+      "reason": "Upstream-internal macroscope review agent configuration was dropped from the fork; fork CI does not run macroscope. Deletions are intentional; the test-signal eval suite they referenced is restored by A2."
+    },
+    ".macroscope/ignore.md": {
+      "delta": [0, 281],
+      "legacy": true,
+      "reason": "Upstream-internal macroscope review agent configuration was dropped from the fork; fork CI does not run macroscope. Deletions are intentional; the test-signal eval suite they referenced is restored by A2."
+    },
+    "AGENTS.md": {
+      "delta": [8, 5],
+      "legacy": true
+    },
+    "CONTRIBUTING.md": {
+      "delta": [56, 143],
+      "legacy": true
+    },
+    "README.md": {
+      "delta": [11, 62],
+      "legacy": true
+    },
+    "apps/desktop/package.json": {
+      "delta": [1, 1],
+      "legacy": true
+    },
+    "apps/desktop/resources/installer.nsh": {
+      "delta": [4, 6],
+      "legacy": true
+    },
+    "apps/desktop/resources/linux/com.t3tools.t3code.metainfo.xml": {
+      "delta": [0, 32],
+      "legacy": true,
+      "reason": "The Linux metainfo file is renamed to the fork's app id (com.t3tools.t3code.plusplus). A2 must not restore the upstream path; A5 and A7 must treat the fork path as the seam, not the upstream one."
+    },
+    "apps/desktop/scripts/electron-launcher.test.mjs": {
+      "delta": [17, 12],
+      "legacy": true
+    },
+    "apps/desktop/src/app/DesktopAppIdentity.test.ts": {
+      "delta": [2, 2],
+      "legacy": true
+    },
+    "apps/desktop/src/app/DesktopAssets.ts": {
+      "delta": [13, 0],
+      "legacy": true
+    },
+    "apps/desktop/src/app/DesktopClerk.test.ts": {
+      "delta": [15, 12],
+      "legacy": true
+    },
+    "apps/desktop/src/app/DesktopCliCommand.test.ts": {
+      "delta": [9, 5],
+      "legacy": true
+    },
+    "apps/desktop/src/app/DesktopCliShim.test.ts": {
+      "delta": [8, 3],
+      "legacy": true
+    },
+    "apps/desktop/src/app/DesktopEarlyElectronStartup.ts": {
+      "delta": [3, 1],
+      "legacy": true
+    },
+    "apps/desktop/src/app/DesktopEnvironment.test.ts": {
+      "delta": [51, 0],
+      "legacy": true
+    },
+    "apps/desktop/src/app/DesktopEnvironment.ts": {
+      "delta": [24, 2],
+      "legacy": true
+    },
+    "apps/desktop/src/app/DesktopLegacyLocalStorage.ts": {
+      "delta": [2, 2],
+      "legacy": true
+    },
+    "apps/desktop/src/app/DesktopLifecycle.test.ts": {
+      "delta": [1, 0],
+      "legacy": true
+    },
+    "apps/desktop/src/app/DesktopLifecycle.ts": {
+      "delta": [9, 3],
+      "legacy": true
+    },
+    "apps/desktop/src/app/DesktopLinuxUrlHandler.test.ts": {
+      "delta": [67, 63],
+      "legacy": true
+    },
+    "apps/desktop/src/app/DesktopPreReadyPlatform.test.ts": {
+      "delta": [14, 8],
+      "legacy": true
+    },
+    "apps/desktop/src/app/DesktopPreReadyPlatform.ts": {
+      "delta": [1, 0],
+      "legacy": true
+    },
+    "apps/desktop/src/app/DesktopStartupRecovery.ts": {
+      "delta": [1, 1],
+      "legacy": true
+    },
+    "apps/desktop/src/app/DesktopStatePaths.ts": {
+      "delta": [7, 1],
+      "legacy": true
+    },
+    "apps/desktop/src/app/DesktopUserData.test.ts": {
+      "delta": [58, 0],
+      "legacy": true
+    },
+    "apps/desktop/src/app/DesktopUserData.ts": {
+      "delta": [8, 1],
+      "legacy": true
+    },
+    "apps/desktop/src/backend/DesktopBackendPool.ts": {
+      "delta": [3, 1],
+      "legacy": true
+    },
+    "apps/desktop/src/electron/ElectronProtocol.ts": {
+      "delta": [5, 5],
+      "legacy": true
+    },
+    "apps/desktop/src/main.ts": {
+      "delta": [7, 0],
+      "legacy": true
+    },
+    "apps/desktop/src/preview/DesktopBrowserHost.test.ts": {
+      "delta": [2, 1],
+      "legacy": true
+    },
+    "apps/desktop/src/settings/DesktopAppSettings.test.ts": {
+      "delta": [29, 24],
+      "legacy": true
+    },
+    "apps/desktop/src/settings/DesktopClientSettings.test.ts": {
+      "delta": [29, 24],
+      "legacy": true
+    },
+    "apps/desktop/src/shell/DesktopShellEnvironment.test.ts": {
+      "delta": [48, 45],
+      "legacy": true
+    },
+    "apps/desktop/src/snapShot/GnomeCaptureSetup.test.ts": {
+      "delta": [4, 1],
+      "legacy": true
+    },
+    "apps/desktop/src/snapShot/HyprlandSnapShot.test.ts": {
+      "delta": [4, 1],
+      "legacy": true
+    },
+    "apps/desktop/src/snapShot/KdeSnapShot.test.ts": {
+      "delta": [4, 1],
+      "legacy": true
+    },
+    "apps/desktop/src/snapShot/NiriSnapShot.test.ts": {
+      "delta": [4, 1],
+      "legacy": true
+    },
+    "apps/desktop/src/updates/releaseNotes.ts": {
+      "delta": [4, 1],
+      "legacy": true
+    },
+    "apps/desktop/src/updates/updatesTestHarness.ts": {
+      "delta": [3, 1],
+      "legacy": true
+    },
+    "apps/desktop/src/window/DesktopWindow.test.ts": {
+      "delta": [4, 3],
+      "legacy": true
+    },
+    "apps/desktop/src/wsl/DesktopWslBackend.ts": {
+      "delta": [2, 1],
+      "legacy": true
+    },
+    "apps/marketing/astro.config.mjs": {
+      "delta": [21, 2],
+      "legacy": true
+    },
+    "apps/marketing/src/layouts/Layout.astro": {
+      "delta": [26, 53],
+      "legacy": true
+    },
+    "apps/marketing/src/lib/releases.ts": {
+      "delta": [8, 27],
+      "legacy": true
+    },
+    "apps/marketing/src/lib/site.ts": {
+      "delta": [7, 5],
+      "legacy": true
+    },
+    "apps/marketing/src/pages/95.astro": {
+      "delta": [15, 17],
+      "legacy": true
+    },
+    "apps/marketing/src/pages/download.astro": {
+      "delta": [50, 277],
+      "legacy": true
+    },
+    "apps/marketing/src/pages/index.astro": {
+      "delta": [23, 55],
+      "legacy": true
+    },
+    "apps/marketing/src/pages/privacy-policy.astro": {
+      "delta": [62, 2],
+      "legacy": true
+    },
+    "apps/marketing/src/pages/security-policy.astro": {
+      "delta": [50, 0],
+      "legacy": true
+    },
+    "apps/marketing/src/pages/terms-of-service.astro": {
+      "delta": [62, 2],
+      "legacy": true
+    },
+    "apps/marketing/src/styles/retro.css": {
+      "delta": [0, 33],
+      "legacy": true
+    },
+    "apps/mobile/src/features/connection/pairing.test.ts": {
+      "delta": [8, 0],
+      "legacy": true
+    },
+    "apps/mobile/src/features/connection/pairing.ts": {
+      "delta": [3, 14],
+      "legacy": true
+    },
+    "apps/mobile/src/features/settings/environment-maintenance.test.ts": {
+      "delta": [7, 5],
+      "legacy": true
+    },
+    "apps/mobile/src/features/usage/UsageLimitsPooled.tsx": {
+      "delta": [34, 4],
+      "legacy": true
+    },
+    "apps/mobile/src/features/usage/UsageLimitsSection.tsx": {
+      "delta": [21, 0],
+      "legacy": true
+    },
+    "apps/server/package.json": {
+      "delta": [1, 0],
+      "legacy": true
+    },
+    "apps/server/scripts/cli.ts": {
+      "delta": [2, 42],
+      "legacy": true
+    },
+    "apps/server/scripts/cliErrors.ts": {
+      "delta": [0, 11],
+      "legacy": true
+    },
+    "apps/server/src/auth/EnvironmentAuth.test.ts": {
+      "delta": [2, 0],
+      "legacy": true
+    },
+    "apps/server/src/auth/RpcAuthorization.ts": {
+      "delta": [1, 0],
+      "legacy": true
+    },
+    "apps/server/src/binCli.ts": {
+      "delta": [3, 0],
+      "legacy": true
+    },
+    "apps/server/src/cli/config.test.ts": {
+      "delta": [329, 0],
+      "legacy": true
+    },
+    "apps/server/src/cli/config.ts": {
+      "delta": [47, 0],
+      "legacy": true
+    },
+    "apps/server/src/cli/pair.test.ts": {
+      "delta": [6, 1],
+      "legacy": true
+    },
+    "apps/server/src/cli/pair.ts": {
+      "delta": [2, 2],
+      "legacy": true
+    },
+    "apps/server/src/cli/update.test.ts": {
+      "delta": [9, 4],
+      "legacy": true
+    },
+    "apps/server/src/httpCors.ts": {
+      "delta": [7, 1],
+      "legacy": true
+    },
+    "apps/server/src/mcp/McpHttpServer.ts": {
+      "delta": [1, 0],
+      "legacy": true
+    },
+    "apps/server/src/mcp/linkOrigin.test.ts": {
+      "delta": [66, 20],
+      "legacy": true
+    },
+    "apps/server/src/mcp/toolkits/core.test.ts": {
+      "delta": [70, 0],
+      "legacy": true
+    },
+    "apps/server/src/mcp/toolkits/thread/handlers.ts": {
+      "delta": [67, 1],
+      "legacy": true
+    },
+    "apps/server/src/mcp/toolkits/thread/tools.ts": {
+      "delta": [32, 0],
+      "legacy": true
+    },
+    "apps/server/src/observability/RpcInstrumentation.ts": {
+      "delta": [1, 0],
+      "legacy": true
+    },
+    "apps/server/src/orchestration-v2/Adapters/AcpAdapterV2.test.ts": {
+      "delta": [224, 0],
+      "legacy": true
+    },
+    "apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.test.ts": {
+      "delta": [903, 7],
+      "legacy": true
+    },
+    "apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.testkit.ts": {
+      "delta": [2, 0],
+      "legacy": true
+    },
+    "apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts": {
+      "delta": [159, 13],
+      "legacy": true
+    },
+    "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts": {
+      "delta": [644, 2],
+      "legacy": true
+    },
+    "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.testkit.ts": {
+      "delta": [2, 0],
+      "legacy": true
+    },
+    "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts": {
+      "delta": [159, 1],
+      "legacy": true
+    },
+    "apps/server/src/orchestration-v2/ClaudeAutomaticDelivery.integration.test.ts": {
+      "delta": [2, 0],
+      "legacy": true
+    },
+    "apps/server/src/orchestration-v2/FoundationPersistence.test.ts": {
+      "delta": [29, 3],
+      "legacy": true
+    },
+    "apps/server/src/orchestration-v2/ProjectionMaintenance.ts": {
+      "delta": [170, 12],
+      "legacy": true
+    },
+    "apps/server/src/orchestration-v2/ProjectionStore.test.ts": {
+      "delta": [10, 1],
+      "legacy": true
+    },
+    "apps/server/src/orchestration-v2/runtimeLayer.ts": {
+      "delta": [5, 0],
+      "legacy": true
+    },
+    "apps/server/src/peer/PeerForwarding.test.ts": {
+      "delta": [5, 1],
+      "legacy": true
+    },
+    "apps/server/src/persistence/DatabaseMaintenance.ts": {
+      "delta": [3, 0],
+      "legacy": true
+    },
+    "apps/server/src/persistence/DatabaseStorage.test.ts": {
+      "delta": [5, 0],
+      "legacy": true
+    },
+    "apps/server/src/persistence/Migrations.test.ts": {
+      "delta": [14, 0],
+      "legacy": true
+    },
+    "apps/server/src/persistence/Migrations/064_CanonicalizeThreadPullRequestLinks.test.ts": {
+      "delta": [27, 0],
+      "legacy": true
+    },
+    "apps/server/src/persistence/Migrations/064_CanonicalizeThreadPullRequestLinks.ts": {
+      "delta": [2, 0],
+      "legacy": true
+    },
+    "apps/server/src/persistence/Migrations/071_PeerLinkFence.ts": {
+      "delta": [8, 3],
+      "legacy": true
+    },
+    "apps/server/src/persistence/Migrations/072_WaitingLinkRequestIndex.ts": {
+      "delta": [1, 1],
+      "legacy": true
+    },
+    "apps/server/src/persistence/initializeV2Database.test.ts": {
+      "delta": [2329, 0],
+      "legacy": true
+    },
+    "apps/server/src/project/AgentSessionScanner.test.ts": {
+      "delta": [37, 2],
+      "legacy": true
+    },
+    "apps/server/src/project/ProjectService.test.ts": {
+      "delta": [94, 4],
+      "legacy": true
+    },
+    "apps/server/src/project/ProjectService.ts": {
+      "delta": [31, 0],
+      "legacy": true
+    },
+    "apps/server/src/provider/AgentContextBudget.test.ts": {
+      "delta": [4, 0],
+      "legacy": true
+    },
+    "apps/server/src/provider/ClaudeProvider.ts": {
+      "delta": [10, 2],
+      "seams": [
+        {
+          "id": "context-bridge.claude-import",
+          "feature": "context-bridge",
+          "mechanism": "hook",
+          "anchor": {
+            "text": "type ClaudeSettings,"
+          },
+          "fingerprint": "sha256:a1b6a9f043d529db"
+        },
+        {
+          "id": "context-bridge.claude-probe-skills",
+          "feature": "context-bridge",
+          "mechanism": "override",
+          "anchor": {
+            "symbol": "probeClaudeWorkspaceSnapshot",
+            "text": "discoverClaudeSkills("
+          },
+          "reason": "discoverClaudeSkills needs the context bridge settings, so the call itself changes; an added call cannot supply them.",
+          "fingerprint": "sha256:e6c3c908364e14c4"
+        },
+        {
+          "id": "context-bridge.claude-status-params",
+          "feature": "context-bridge",
+          "mechanism": "hook",
+          "anchor": {
+            "symbol": "checkClaudeProviderStatus",
+            "text": "resolveResetCredits?:"
+          },
+          "fingerprint": "sha256:e44446d9bafa1b3b"
+        },
+        {
+          "id": "context-bridge.claude-status-skills",
+          "feature": "context-bridge",
+          "mechanism": "override",
+          "anchor": {
+            "symbol": "checkClaudeProviderStatus",
+            "text": "discoverClaudeSkills("
+          },
+          "reason": "discoverClaudeSkills needs the context bridge settings, so the call itself changes; an added call cannot supply them.",
+          "fingerprint": "sha256:fc8a5c1a23fb599a"
+        }
+      ]
+    },
+    "apps/server/src/provider/CodexDeveloperInstructions.ts": {
+      "delta": [2, 0],
+      "legacy": true
+    },
+    "apps/server/src/provider/CodexProvider.test.ts": {
+      "delta": [175, 2],
+      "legacy": true
+    },
+    "apps/server/src/provider/CodexProvider.ts": {
+      "delta": [11, 1],
+      "legacy": true
+    },
+    "apps/server/src/provider/Drivers/AntigravityDriver.test.ts": {
+      "delta": [77, 26],
+      "legacy": true
+    },
+    "apps/server/src/provider/Drivers/AntigravityDriver.ts": {
+      "delta": [69, 3],
+      "legacy": true
+    },
+    "apps/server/src/provider/Drivers/AntigravitySkills.ts": {
+      "delta": [42, 4],
+      "legacy": true
+    },
+    "apps/server/src/provider/Drivers/AntigravityUsage.ts": {
+      "delta": [26, 3],
+      "legacy": true
+    },
+    "apps/server/src/provider/Drivers/ClaudeDriver.ts": {
+      "delta": [38, 21],
+      "legacy": true
+    },
+    "apps/server/src/provider/Drivers/ClaudeSkillDispatch.test.ts": {
+      "delta": [102, 1],
+      "legacy": true
+    },
+    "apps/server/src/provider/Drivers/ClaudeSkillDispatch.ts": {
+      "delta": [30, 2],
+      "legacy": true
+    },
+    "apps/server/src/provider/Drivers/ClaudeSkills.test.ts": {
+      "delta": [2, 0],
+      "legacy": true
+    },
+    "apps/server/src/provider/Drivers/ClaudeSkills.ts": {
+      "delta": [29, 2],
+      "legacy": true
+    },
+    "apps/server/src/provider/Drivers/CodexDriver.test.ts": {
+      "delta": [103, 1],
+      "legacy": true
+    },
+    "apps/server/src/provider/Drivers/CodexDriver.ts": {
+      "delta": [2, 0],
+      "legacy": true
+    },
+    "apps/server/src/provider/Drivers/CodexManagedProvider.ts": {
+      "delta": [11, 0],
+      "legacy": true
+    },
+    "apps/server/src/provider/Drivers/antigravityUsageReader.test.ts": {
+      "delta": [60, 2],
+      "legacy": true
+    },
+    "apps/server/src/provider/Drivers/antigravityUsageReader.ts": {
+      "delta": [41, 14],
+      "legacy": true
+    },
+    "apps/server/src/provider/GrokProvider.test.ts": {
+      "delta": [20, 80],
+      "legacy": true
+    },
+    "apps/server/src/provider/agentContextBudget.json": {
+      "delta": [1, 1],
+      "seams": [
+        {
+          "id": "generated.agent-context-budget",
+          "feature": "generated",
+          "mechanism": "generated",
+          "anchor": {
+            "file": true
+          },
+          "fingerprint": "sha256:cf0fce7a70f62468"
+        }
+      ]
+    },
+    "apps/server/src/provider/antigravityAuthSupport.ts": {
+      "delta": [9, 1],
+      "legacy": true
+    },
+    "apps/server/src/provider/antigravityUsageLimits.test.ts": {
+      "delta": [41, 3],
+      "legacy": true
+    },
+    "apps/server/src/provider/antigravityUsageLimits.ts": {
+      "delta": [14, 149],
+      "legacy": true
+    },
+    "apps/server/src/provider/claudeUsageLimits.test.ts": {
+      "delta": [0, 271],
+      "legacy": true
+    },
+    "apps/server/src/provider/claudeUsageLimits.ts": {
+      "delta": [10, 222],
+      "legacy": true
+    },
+    "apps/server/src/provider/codexUsageLimits.test.ts": {
+      "delta": [2, 262],
+      "legacy": true
+    },
+    "apps/server/src/provider/codexUsageLimits.ts": {
+      "delta": [15, 203],
+      "legacy": true
+    },
+    "apps/server/src/server.ts": {
+      "delta": [11, 1],
+      "legacy": true
+    },
+    "apps/server/src/serverOwnership.ts": {
+      "delta": [2, 1],
+      "legacy": true
+    },
+    "apps/server/src/serverSettings.test.ts": {
+      "delta": [39, 0],
+      "legacy": true
+    },
+    "apps/server/src/storageCleanup.ts": {
+      "delta": [6, 1],
+      "legacy": true
+    },
+    "apps/server/src/terminal/Manager.test.ts": {
+      "delta": [155, 1],
+      "legacy": true
+    },
+    "apps/server/src/terminal/Manager.ts": {
+      "delta": [15, 0],
+      "legacy": true
+    },
+    "apps/server/src/usage/UsageService.test.ts": {
+      "delta": [1, 1],
+      "legacy": true
+    },
+    "apps/server/src/usage/usagePricing.test.ts": {
+      "delta": [3, 240],
+      "legacy": true
+    },
+    "apps/server/src/usage/usagePricing.ts": {
+      "delta": [18, 300],
+      "legacy": true
+    },
+    "apps/server/src/ws.test.ts": {
+      "delta": [2, 0],
+      "legacy": true
+    },
+    "apps/server/src/ws.ts": {
+      "delta": [3, 0],
+      "legacy": true
+    },
+    "apps/web/src/components/AppSidebarLayout.tsx": {
+      "delta": [2, 0],
+      "legacy": true
+    },
+    "apps/web/src/components/ChatView.tsx": {
+      "delta": [13, 0],
+      "legacy": true
+    },
+    "apps/web/src/components/HostedEmptyState.tsx": {
+      "delta": [2, 2],
+      "legacy": true
+    },
+    "apps/web/src/components/ServerUpdateAction.browser.test.tsx": {
+      "delta": [34, 0],
+      "legacy": true
+    },
+    "apps/web/src/components/ServerUpdateAction.tsx": {
+      "delta": [11, 13],
+      "legacy": true
+    },
+    "apps/web/src/components/ThreadStatusIndicators.tsx": {
+      "delta": [1, 1],
+      "legacy": true
+    },
+    "apps/web/src/components/chat/ChatOverlayHosts.tsx": {
+      "delta": [10, 4],
+      "legacy": true
+    },
+    "apps/web/src/components/chat/OpenInPicker.browser.test.tsx": {
+      "delta": [32, 17],
+      "legacy": true
+    },
+    "apps/web/src/components/chat/ThreadDetailsCard.browser.test.tsx": {
+      "delta": [18, 0],
+      "legacy": true
+    },
+    "apps/web/src/components/chat/ThreadDetailsCard.tsx": {
+      "delta": [12, 3],
+      "legacy": true
+    },
+    "apps/web/src/components/chat/ThreadDetailsPanel.tsx": {
+      "delta": [13, 0],
+      "legacy": true
+    },
+    "apps/web/src/components/chat/useComposerProviderModel.ts": {
+      "delta": [12, 87],
+      "legacy": true
+    },
+    "apps/web/src/components/chat/useThreadLifecycle.tsx": {
+      "delta": [2, 0],
+      "legacy": true
+    },
+    "apps/web/src/components/desktopUpdate.logic.test.ts": {
+      "delta": [3, 3],
+      "legacy": true
+    },
+    "apps/web/src/components/desktopUpdate.logic.ts": {
+      "delta": [1, 1],
+      "legacy": true
+    },
+    "apps/web/src/components/files/AttachmentFilePreview.browser.test.tsx": {
+      "delta": [9, 0],
+      "legacy": true
+    },
+    "apps/web/src/components/onboarding/WelcomeWizard.tsx": {
+      "delta": [5, 5],
+      "legacy": true
+    },
+    "apps/web/src/components/settings/AboutVersionTitle.tsx": {
+      "delta": [2, 1],
+      "legacy": true
+    },
+    "apps/web/src/components/settings/MultipleAccountsNote.tsx": {
+      "delta": [1, 1],
+      "legacy": true
+    },
+    "apps/web/src/components/settings/ProviderInstanceCard.tsx": {
+      "delta": [8, 0],
+      "legacy": true
+    },
+    "apps/web/src/components/settings/ProviderSettingsPanel.tsx": {
+      "delta": [6, 0],
+      "legacy": true
+    },
+    "apps/web/src/components/settings/SettingsPanels.tsx": {
+      "delta": [5, 0],
+      "legacy": true
+    },
+    "apps/web/src/components/settings/UpdateTrackSwitchDialog.tsx": {
+      "delta": [15, 9],
+      "legacy": true
+    },
+    "apps/web/src/components/settings/settingsSearch.ts": {
+      "delta": [21, 0],
+      "legacy": true
+    },
+    "apps/web/src/components/sidebar/SidebarChrome.tsx": {
+      "delta": [2, 0],
+      "legacy": true
+    },
+    "apps/web/src/components/sidebar/SidebarUpdatePill.tsx": {
+      "delta": [2, 0],
+      "legacy": true
+    },
+    "apps/web/src/components/sidebar/updateEverything.logic.test.ts": {
+      "delta": [50, 1],
+      "legacy": true
+    },
+    "apps/web/src/components/sidebar/updateEverything.logic.ts": {
+      "delta": [13, 6],
+      "legacy": true
+    },
+    "apps/web/src/components/usage/UsageLimits.tsx": {
+      "delta": [4, 0],
+      "legacy": true
+    },
+    "apps/web/src/components/usage/UsageLimitsPooled.browser.test.tsx": {
+      "delta": [65, 0],
+      "legacy": true
+    },
+    "apps/web/src/components/usage/UsageLimitsPooled.tsx": {
+      "delta": [42, 9],
+      "legacy": true
+    },
+    "apps/web/src/components/usage/UsagePage.tsx": {
+      "delta": [12, 1],
+      "seams": [
+        {
+          "id": "usage-vendor-icons.import",
+          "feature": "usage-vendor-icons",
+          "mechanism": "hook",
+          "anchor": {
+            "text": "from \"./usageProviders\""
+          },
+          "fingerprint": "sha256:2ee9cc94ffdd1736"
+        },
+        {
+          "id": "usage-vendor-icons.model-mark",
+          "feature": "usage-vendor-icons",
+          "mechanism": "override",
+          "anchor": {
+            "symbol": "UsageOverview",
+            "text": "<ProviderMark provider={model.provider}"
+          },
+          "reason": "The model row mark must pick a vendor icon per model, so the upstream ProviderMark element is replaced by a ++ conditional.",
+          "fingerprint": "sha256:a2afded43385d388"
+        }
+      ]
+    },
+    "apps/web/src/hooks/useHandleNewThread.test.ts": {
+      "delta": [2, 1],
+      "legacy": true
+    },
+    "apps/web/src/hooks/useStartTriage.ts": {
+      "delta": [1, 1],
+      "legacy": true
+    },
+    "apps/web/src/lib/bootError.test.ts": {
+      "delta": [6, 6],
+      "legacy": true
+    },
+    "apps/web/src/lib/bootError.ts": {
+      "delta": [2, 2],
+      "legacy": true
+    },
+    "apps/web/src/lib/revealThreadTerminal.test.ts": {
+      "delta": [0, 58],
+      "legacy": true
+    },
+    "apps/web/src/lib/revealThreadTerminal.ts": {
+      "delta": [0, 23],
+      "legacy": true
+    },
+    "apps/web/src/state/desktopUpdate.ts": {
+      "delta": [5, 0],
+      "legacy": true
+    },
+    "apps/web/src/state/use-orchestration-command.ts": {
+      "delta": [2, 1],
+      "legacy": true
+    },
+    "apps/web/src/versionSkew.test.ts": {
+      "delta": [62, 7],
+      "legacy": true
+    },
+    "apps/web/src/versionSkew.ts": {
+      "delta": [14, 12],
+      "legacy": true
+    },
+    "apps/web/src/vite-env.d.ts": {
+      "delta": [1, 0],
+      "legacy": true
+    },
+    "apps/web/vite.config.ts": {
+      "delta": [3, 0],
+      "legacy": true
+    },
+    "docs/README.md": {
+      "delta": [0, 1],
+      "legacy": true
+    },
+    "docs/internals/effect-services.md": {
+      "delta": [1, 3],
+      "legacy": true
+    },
+    "docs/internals/remote.md": {
+      "delta": [1, 1],
+      "legacy": true
+    },
+    "docs/operations/connect-setup.md": {
+      "delta": [7, 4],
+      "legacy": true
+    },
+    "docs/operations/development.md": {
+      "delta": [58, 2],
+      "legacy": true
+    },
+    "docs/operations/relay-observability.md": {
+      "delta": [3, 2],
+      "legacy": true
+    },
+    "docs/operations/release.md": {
+      "delta": [458, 673],
+      "legacy": true
+    },
+    "docs/user/faq.md": {
+      "delta": [5, 6],
+      "legacy": true
+    },
+    "docs/user/install.md": {
+      "delta": [90, 73],
+      "legacy": true
+    },
+    "docs/user/remote-access.md": {
+      "delta": [4, 4],
+      "legacy": true
+    },
+    "docs/user/triage.md": {
+      "delta": [1, 1],
+      "legacy": true
+    },
+    "docs/user/updating.md": {
+      "delta": [29, 14],
+      "legacy": true
+    },
+    "docs/user/usage.md": {
+      "delta": [6, 0],
+      "legacy": true
+    },
+    "docs/user/welcome-wizard.md": {
+      "delta": [1, 1],
+      "legacy": true
+    },
+    "evals/README.md": {
+      "delta": [0, 1],
+      "legacy": true
+    },
+    "infra/relay/README.md": {
+      "delta": [13, 17],
+      "legacy": true
+    },
+    "infra/task-cache/src/runHook.test.ts": {
+      "delta": [9, 3],
+      "legacy": true
+    },
+    "knip.jsonc": {
+      "delta": [35, 1],
+      "legacy": true
+    },
+    "package.json": {
+      "delta": [2, 1],
+      "seams": [
+        {
+          "id": "plusplus-workspace.knip-workspace",
+          "feature": "plusplus-workspace",
+          "mechanism": "config",
+          "anchor": {
+            "key": "scripts.knip:check"
+          },
+          "fingerprint": "sha256:dc89867c83068304"
+        },
+        {
+          "id": "plusplus-workspace.boundary-script",
+          "feature": "plusplus-workspace",
+          "mechanism": "config",
+          "anchor": {
+            "key": "scripts.check:changed"
+          },
+          "fingerprint": "sha256:e0f4401e5fe93b3c"
+        }
+      ]
+    },
+    "packages/client-runtime/src/preview/serverBrowserStream.ts": {
+      "delta": [2, 1],
+      "legacy": true
+    },
+    "packages/contracts/src/orchestrationV2.test.ts": {
+      "delta": [46, 0],
+      "legacy": true
+    },
+    "packages/contracts/src/orchestrationV2.ts": {
+      "delta": [10, 1],
+      "legacy": true,
+      "reason": "The only ++ contract data dual-written next to the typed plusplus sidecar carrier are the four released legacy seam groups: SEAM-185 contextBridge on ServerSettings and its patch, SEAM-181 startedAt on PendingBackgroundTask, SEAM-182 monetaryUsage on ServerProviderUsageLimits, and SEAM-183 usageAccounts on ServerProvider. Released clients and stored payloads read those fields directly, so writers keep emitting them while sidecar-first reads prefer the typed carrier. All future ++ data must be sidecar-only; no new direct ++ fields may be added to upstream structs."
+    },
+    "packages/contracts/src/providerUsageLimits.ts": {
+      "delta": [11, 0],
+      "legacy": true,
+      "reason": "The only ++ contract data dual-written next to the typed plusplus sidecar carrier are the four released legacy seam groups: SEAM-185 contextBridge on ServerSettings and its patch, SEAM-181 startedAt on PendingBackgroundTask, SEAM-182 monetaryUsage on ServerProviderUsageLimits, and SEAM-183 usageAccounts on ServerProvider. Released clients and stored payloads read those fields directly, so writers keep emitting them while sidecar-first reads prefer the typed carrier. All future ++ data must be sidecar-only; no new direct ++ fields may be added to upstream structs."
+    },
+    "packages/contracts/src/rpc.ts": {
+      "delta": [8, 0],
+      "legacy": true
+    },
+    "packages/contracts/src/server.test.ts": {
+      "delta": [13, 0],
+      "legacy": true
+    },
+    "packages/contracts/src/server.ts": {
+      "delta": [10, 1],
+      "legacy": true,
+      "reason": "The only ++ contract data dual-written next to the typed plusplus sidecar carrier are the four released legacy seam groups: SEAM-185 contextBridge on ServerSettings and its patch, SEAM-181 startedAt on PendingBackgroundTask, SEAM-182 monetaryUsage on ServerProviderUsageLimits, and SEAM-183 usageAccounts on ServerProvider. Released clients and stored payloads read those fields directly, so writers keep emitting them while sidecar-first reads prefer the typed carrier. All future ++ data must be sidecar-only; no new direct ++ fields may be added to upstream structs."
+    },
+    "packages/contracts/src/settings.test.ts": {
+      "delta": [64, 0],
+      "legacy": true
+    },
+    "packages/contracts/src/settings.ts": {
+      "delta": [50, 1],
+      "seams": [
+        {
+          "id": "context-bridge.settings-schemas",
+          "feature": "context-bridge",
+          "mechanism": "hook",
+          "anchor": {
+            "text": "export const ServerSettings = Schema.Struct({"
+          },
+          "reason": "The only ++ contract data dual-written next to the typed plusplus sidecar carrier are the four released legacy seam groups: SEAM-185 contextBridge on ServerSettings and its patch, SEAM-181 startedAt on PendingBackgroundTask, SEAM-182 monetaryUsage on ServerProviderUsageLimits, and SEAM-183 usageAccounts on ServerProvider. Released clients and stored payloads read those fields directly, so writers keep emitting them while sidecar-first reads prefer the typed carrier. All future ++ data must be sidecar-only; no new direct ++ fields may be added to upstream structs.",
+          "fingerprint": "sha256:b1321902ef3c2298"
+        },
+        {
+          "id": "context-bridge.settings-field",
+          "feature": "context-bridge",
+          "mechanism": "mount",
+          "anchor": {
+            "symbol": "ServerSettings.worktreesDirectory"
+          },
+          "reason": "The only ++ contract data dual-written next to the typed plusplus sidecar carrier are the four released legacy seam groups: SEAM-185 contextBridge on ServerSettings and its patch, SEAM-181 startedAt on PendingBackgroundTask, SEAM-182 monetaryUsage on ServerProviderUsageLimits, and SEAM-183 usageAccounts on ServerProvider. Released clients and stored payloads read those fields directly, so writers keep emitting them while sidecar-first reads prefer the typed carrier. All future ++ data must be sidecar-only; no new direct ++ fields may be added to upstream structs.",
+          "fingerprint": "sha256:8bb847a2a45d73ba"
+        },
+        {
+          "id": "context-bridge.settings-patch",
+          "feature": "context-bridge",
+          "mechanism": "mount",
+          "anchor": {
+            "symbol": "ServerSettingsPatch.worktreesDirectory"
+          },
+          "reason": "The only ++ contract data dual-written next to the typed plusplus sidecar carrier are the four released legacy seam groups: SEAM-185 contextBridge on ServerSettings and its patch, SEAM-181 startedAt on PendingBackgroundTask, SEAM-182 monetaryUsage on ServerProviderUsageLimits, and SEAM-183 usageAccounts on ServerProvider. Released clients and stored payloads read those fields directly, so writers keep emitting them while sidecar-first reads prefer the typed carrier. All future ++ data must be sidecar-only; no new direct ++ fields may be added to upstream structs.",
+          "fingerprint": "sha256:77679feeb0f49e57"
+        },
+        {
+          "id": "contract-sidecar.settings",
+          "feature": "contract-sidecar",
+          "mechanism": "mount",
+          "anchor": {
+            "symbol": "ServerSettings.usageModelFilter"
+          },
+          "fingerprint": "sha256:482b76cbfcb0bfdc"
+        },
+        {
+          "id": "contract-sidecar.settings-patch",
+          "feature": "contract-sidecar",
+          "mechanism": "mount",
+          "anchor": {
+            "symbol": "ServerSettingsPatch.usageModelAliases"
+          },
+          "fingerprint": "sha256:7af7affde8567d53"
+        }
+      ]
+    },
+    "packages/contracts/src/terminal.test.ts": {
+      "delta": [30, 0],
+      "legacy": true
+    },
+    "packages/contracts/src/terminal.ts": {
+      "delta": [5, 0],
+      "legacy": true
+    },
+    "packages/effect-codex-app-server/src/protocol.test.ts": {
+      "delta": [79, 0],
+      "legacy": true
+    },
+    "packages/provider-acp-registry/src/server/AcpRegistrySupport.test.ts": {
+      "delta": [4, 1],
+      "legacy": true
+    },
+    "packages/provider-acp/src/server/adapter.ts": {
+      "delta": [7, 0],
+      "legacy": true
+    },
+    "packages/provider-core/package.json": {
+      "delta": [21, 0],
+      "legacy": true
+    },
+    "packages/provider-core/src/server/instanceEnvironment.test.ts": {
+      "delta": [3, 1],
+      "legacy": true
+    },
+    "packages/provider-core/src/server/maintenanceResolver.test.ts": {
+      "delta": [13, 7],
+      "legacy": true
+    },
+    "packages/provider-core/src/server/managedProvider.test.ts": {
+      "delta": [46, 0],
+      "legacy": true
+    },
+    "packages/provider-core/src/server/managedProvider.ts": {
+      "delta": [10, 25],
+      "legacy": true
+    },
+    "packages/provider-core/src/server/runtimeInstructions.test.ts": {
+      "delta": [0, 55],
+      "legacy": true
+    },
+    "packages/provider-core/src/server/runtimeInstructions.ts": {
+      "delta": [9, 31],
+      "legacy": true
+    },
+    "packages/provider-core/src/server/snapshotProbe.test.ts": {
+      "delta": [42, 1],
+      "legacy": true
+    },
+    "packages/provider-core/src/server/snapshotProbe.ts": {
+      "delta": [4, 0],
+      "legacy": true
+    },
+    "packages/provider-core/src/server/usageLimits.test.ts": {
+      "delta": [0, 122],
+      "legacy": true
+    },
+    "packages/provider-core/src/server/usageLimits.ts": {
+      "delta": [14, 120],
+      "legacy": true
+    },
+    "packages/provider-cursor/package.json": {
+      "delta": [1, 0],
+      "legacy": true
+    },
+    "packages/provider-cursor/src/server/adapter.ts": {
+      "delta": [11, 1],
+      "legacy": true
+    },
+    "packages/provider-cursor/src/server/driver.ts": {
+      "delta": [21, 15],
+      "legacy": true
+    },
+    "packages/provider-cursor/src/server/skills.test.ts": {
+      "delta": [49, 0],
+      "legacy": true
+    },
+    "packages/provider-cursor/src/server/skills.ts": {
+      "delta": [32, 3],
+      "legacy": true
+    },
+    "packages/provider-cursor/src/server/usageLimits.test.ts": {
+      "delta": [1, 50],
+      "legacy": true
+    },
+    "packages/provider-cursor/src/server/usageLimits.ts": {
+      "delta": [11, 37],
+      "legacy": true
+    },
+    "packages/provider-grok/package.json": {
+      "delta": [1, 0],
+      "legacy": true
+    },
+    "packages/provider-grok/src/server/usageLimits.ts": {
+      "delta": [19, 76],
+      "legacy": true
+    },
+    "packages/provider-muse/package.json": {
+      "delta": [1, 0],
+      "legacy": true
+    },
+    "packages/provider-muse/src/server/adapter.ts": {
+      "delta": [7, 0],
+      "legacy": true
+    },
+    "packages/provider-muse/src/server/usageLimits.test.ts": {
+      "delta": [0, 56],
+      "legacy": true
+    },
+    "packages/provider-muse/src/server/usageLimits.ts": {
+      "delta": [8, 21],
+      "legacy": true
+    },
+    "packages/provider-opencode/package.json": {
+      "delta": [1, 0],
+      "legacy": true
+    },
+    "packages/provider-opencode/src/server/adapter.test.ts": {
+      "delta": [379, 1],
+      "legacy": true
+    },
+    "packages/provider-opencode/src/server/adapter.ts": {
+      "delta": [19, 4],
+      "legacy": true
+    },
+    "packages/provider-opencode/src/server/driver.test.ts": {
+      "delta": [355, 4],
+      "legacy": true
+    },
+    "packages/provider-opencode/src/server/driver.ts": {
+      "delta": [94, 10],
+      "legacy": true
+    },
+    "packages/provider-opencode/src/server/usageLimits.ts": {
+      "delta": [8, 40],
+      "legacy": true
+    },
+    "packages/provider-opencode/src/server/v2/adapter.ts": {
+      "delta": [91, 5],
+      "legacy": true
+    },
+    "packages/provider-pi/package.json": {
+      "delta": [1, 0],
+      "legacy": true
+    },
+    "packages/provider-pi/src/server/adapter.test.ts": {
+      "delta": [49, 0],
+      "legacy": true
+    },
+    "packages/provider-pi/src/server/adapter.ts": {
+      "delta": [46, 3],
+      "legacy": true
+    },
+    "packages/provider-pi/src/server/driver.test.ts": {
+      "delta": [270, 8],
+      "legacy": true
+    },
+    "packages/provider-pi/src/server/driver.ts": {
+      "delta": [100, 6],
+      "legacy": true
+    },
+    "packages/provider-pi/src/server/mcpBridge.testkit.ts": {
+      "delta": [31, 7],
+      "legacy": true
+    },
+    "packages/provider-pi/src/server/mcpExtensionSource.test.ts": {
+      "delta": [306, 2],
+      "legacy": true
+    },
+    "packages/provider-pi/src/server/mcpExtensionSource.ts": {
+      "delta": [205, 6],
+      "legacy": true
+    },
+    "packages/provider-pi/src/server/mcpInjection.test.ts": {
+      "delta": [179, 1],
+      "legacy": true
+    },
+    "packages/provider-pi/src/server/mcpInjection.ts": {
+      "delta": [73, 4],
+      "seams": [
+        {
+          "id": "context-bridge.pi-imports",
+          "feature": "context-bridge",
+          "mechanism": "override",
+          "anchor": {
+            "text": "PI_T3_MCP_EXTENSION_SOURCE,"
+          },
+          "reason": "The static extension source import gives way to the builder that embeds a session's context bridge payload.",
+          "fingerprint": "sha256:fa6fecb3fa2f5092"
+        },
+        {
+          "id": "context-bridge.pi-node-crypto",
+          "feature": "context-bridge",
+          "mechanism": "hook",
+          "anchor": {
+            "text": "import { tokenizeCliArgs }"
+          },
+          "fingerprint": "sha256:2e34ef88593a2989"
+        },
+        {
+          "id": "context-bridge.pi-session-paths",
+          "feature": "context-bridge",
+          "mechanism": "hook",
+          "anchor": {
+            "symbol": "piT3McpExtensionDestPath"
+          },
+          "fingerprint": "sha256:9c30add98fb530f6"
+        },
+        {
+          "id": "context-bridge.pi-materialize",
+          "feature": "context-bridge",
+          "mechanism": "override",
+          "anchor": {
+            "symbol": "materializePiT3McpExtension"
+          },
+          "reason": "The generated extension embeds a per-session payload, so the materializer builds its source instead of writing a constant.",
+          "fingerprint": "sha256:e627902989bc0595"
+        },
+        {
+          "id": "context-bridge.pi-launch",
+          "feature": "context-bridge",
+          "mechanism": "hook",
+          "anchor": {
+            "symbol": "buildPiRpcLaunch",
+            "text": "delete environment[T3_PI_MCP_EXTENSION_PATH_ENV]"
+          },
+          "fingerprint": "sha256:891af19d0e029ed6"
+        }
+      ]
+    },
+    "packages/shared/package.json": {
+      "delta": [5, 0],
+      "legacy": true
+    },
+    "packages/shared/src/atomicWrite.test.ts": {
+      "delta": [1, 1],
+      "legacy": true
+    },
+    "packages/shared/src/cliRelease.test.ts": {
+      "delta": [180, 2],
+      "legacy": true
+    },
+    "packages/shared/src/cliRelease.ts": {
+      "delta": [55, 45],
+      "legacy": true
+    },
+    "packages/shared/src/codexAuthHandoff.test.ts": {
+      "delta": [6, 0],
+      "legacy": true
+    },
+    "packages/shared/src/codexAuthHandoff.ts": {
+      "delta": [3, 2],
+      "legacy": true
+    },
+    "packages/shared/src/nodeSqliteClient.test.ts": {
+      "delta": [4, 8],
+      "legacy": true
+    },
+    "packages/shared/src/orchestrationV2PendingBackgroundWork.test.ts": {
+      "delta": [431, 0],
+      "legacy": true
+    },
+    "packages/shared/src/orchestrationV2PendingBackgroundWork.ts": {
+      "delta": [153, 32],
+      "legacy": true
+    },
+    "packages/shared/src/promptLinks.test.ts": {
+      "delta": [15, 1],
+      "legacy": true
+    },
+    "packages/shared/src/promptLinks.ts": {
+      "delta": [3, 3],
+      "legacy": true
+    },
+    "packages/shared/src/providerAuthReturnUrl.test.ts": {
+      "delta": [2, 1],
+      "legacy": true
+    },
+    "packages/shared/src/providerAuthReturnUrl.ts": {
+      "delta": [2, 1],
+      "legacy": true
+    },
+    "packages/shared/src/relayClient.test.ts": {
+      "delta": [168, 12],
+      "legacy": true
+    },
+    "packages/shared/src/relayClient.ts": {
+      "delta": [15, 4],
+      "legacy": true
+    },
+    "packages/shared/src/remote.test.ts": {
+      "delta": [7, 3],
+      "legacy": true
+    },
+    "packages/shared/src/remote.ts": {
+      "delta": [6, 5],
+      "legacy": true
+    },
+    "packages/shared/src/serverSettings.test.ts": {
+      "delta": [86, 0],
+      "legacy": true
+    },
+    "packages/shared/src/serverSettings.ts": {
+      "delta": [23, 0],
+      "legacy": true
+    },
+    "packages/shared/src/usageLimits.test.ts": {
+      "delta": [0, 1508],
+      "legacy": true
+    },
+    "packages/shared/src/usageLimits.ts": {
+      "delta": [46, 879],
+      "legacy": true
+    },
+    "packages/source-control-core/src/server/driver.ts": {
+      "delta": [2, 0],
+      "legacy": true
+    },
+    "packages/source-control-forgejo/src/server/ForgejoCheckout.test.ts": {
+      "delta": [8, 0],
+      "legacy": true
+    },
+    "packages/source-control-github/src/server/driver.test.ts": {
+      "delta": [100, 1],
+      "legacy": true
+    },
+    "packages/source-control-github/src/server/driver.ts": {
+      "delta": [31, 3],
+      "legacy": true
+    },
+    "packaging/aur/.gitignore": {
+      "delta": [0, 9],
+      "legacy": true,
+      "reason": "AUR packaging publishes pingdotgg's t3code-bin packages under credentials the fork does not hold. Deletions are intentional."
+    },
+    "packaging/aur/README.md": {
+      "delta": [0, 20],
+      "legacy": true,
+      "reason": "AUR packaging publishes pingdotgg's t3code-bin packages under credentials the fork does not hold. Deletions are intentional."
+    },
+    "packaging/aur/scripts/release.sh": {
+      "delta": [0, 91],
+      "legacy": true,
+      "reason": "AUR packaging publishes pingdotgg's t3code-bin packages under credentials the fork does not hold. Deletions are intentional."
+    },
+    "packaging/aur/t3code-bin/PKGBUILD": {
+      "delta": [0, 104],
+      "legacy": true,
+      "reason": "AUR packaging publishes pingdotgg's t3code-bin packages under credentials the fork does not hold. Deletions are intentional."
+    },
+    "packaging/aur/t3code-nightly-bin/PKGBUILD": {
+      "delta": [0, 105],
+      "legacy": true,
+      "reason": "AUR packaging publishes pingdotgg's t3code-bin packages under credentials the fork does not hold. Deletions are intentional."
+    },
+    "pnpm-lock.yaml": {
+      "delta": [43, 0],
+      "legacy": true
+    },
+    "pnpm-workspace.yaml": {
+      "delta": [2, 0],
+      "legacy": true
+    },
+    "scripts/build-cli-archive.ts": {
+      "delta": [2, 0],
+      "legacy": true
+    },
+    "scripts/build-desktop-artifact.test.ts": {
+      "delta": [287, 3],
+      "legacy": true
+    },
+    "scripts/build-desktop-artifact.ts": {
+      "delta": [70, 47],
+      "legacy": true
+    },
+    "scripts/build-npm-launcher.test.ts": {
+      "delta": [4, 4],
+      "legacy": true
+    },
+    "scripts/check-changed.test.ts": {
+      "delta": [176, 4],
+      "legacy": true
+    },
+    "scripts/check-changed.ts": {
+      "delta": [29, 8],
+      "legacy": true
+    },
+    "scripts/install.ps1": {
+      "delta": [12, 11],
+      "legacy": true
+    },
+    "scripts/install.sh": {
+      "delta": [15, 14],
+      "legacy": true
+    },
+    "scripts/install.test.ts": {
+      "delta": [80, 6],
+      "legacy": true
+    },
+    "scripts/lib/brand-assets.ts": {
+      "delta": [2, 0],
+      "legacy": true
+    },
+    "scripts/lib/cached-tests.test.ts": {
+      "delta": [84, 78],
+      "legacy": true
+    },
+    "scripts/lib/server-compile-cache.test.ts": {
+      "delta": [23, 17],
+      "legacy": true
+    },
+    "scripts/lib/third-party-licenses.test.ts": {
+      "delta": [6, 1],
+      "legacy": true
+    },
+    "scripts/lib/third-party-licenses.ts": {
+      "delta": [2, 1],
+      "legacy": true
+    },
+    "scripts/notify-discord-release.test.ts": {
+      "delta": [0, 500],
+      "legacy": true,
+      "reason": "Discord release notifications post to pingdotgg's Discord webhook, which the fork does not hold. Deletions are intentional; the rest of the upstream npm/release pipeline is restored by A2 under fork ownership."
+    },
+    "scripts/notify-discord-release.ts": {
+      "delta": [0, 408],
+      "legacy": true,
+      "reason": "Discord release notifications post to pingdotgg's Discord webhook, which the fork does not hold. Deletions are intentional; the rest of the upstream npm/release pipeline is restored by A2 under fork ownership."
+    },
+    "scripts/release-smoke.ts": {
+      "delta": [405, 339],
+      "legacy": true
+    },
+    "scripts/resolve-previous-release-tag.test.ts": {
+      "delta": [36, 0],
+      "legacy": true
+    },
+    "scripts/resolve-previous-release-tag.ts": {
+      "delta": [22, 5],
+      "legacy": true
+    },
+    "scripts/update-release-package-versions.test.ts": {
+      "delta": [34, 0],
+      "legacy": true
+    },
+    "scripts/update-release-package-versions.ts": {
+      "delta": [22, 0],
+      "legacy": true
+    },
+    "vite.config.ts": {
+      "delta": [0, 2],
+      "legacy": true
+    }
+  },
+  "siblings": []
+}

@@ -18,42 +18,31 @@ const INERT = [
 const RUNS_EVERYTHING = [
   /^packages\/shared\/src\/(HostProcess|testing\/(longTempDir|providerEnv))\.ts$/,
   /^apps\/mobile\/deps\//,
-  // The policy is read from the head checkout, so editing it runs every job: a PR
-  // cannot strip boundaryInfrastructure entries to narrow its own run.
-  /^config\/fork-inventory\.json$/,
   /^\.github\/workflows\/(ci|windows-tests)\.yml$/,
   /^\.github\/actions\/ci-changes\//,
   /^\.github\/scripts\/(ci-changes|upstream-sync-pr)/,
 ];
 
-// The ++ fork-boundary infrastructure named by the trusted policy shapes how
-// every other change is gated, so a change to any of its files runs full CI.
-// A missing or unreadable policy is fail-closed (null) and also runs full CI;
-// the boundary checker itself only trusts the policy at the base commit.
-const BOUNDARY_INVENTORY_PATH = path.join(root, "config", "fork-inventory.json");
-
-function boundaryInfrastructureOf(policyText) {
-  try {
-    const policy = JSON.parse(policyText);
-    const paths = policy?.boundaryInfrastructure;
-    return Array.isArray(paths) && paths.every((entry) => typeof entry === "string")
-      ? new Set(paths)
-      : null;
-  } catch {
-    return null;
-  }
-}
-
-function readBoundaryInfrastructure() {
-  try {
-    return boundaryInfrastructureOf(fs.readFileSync(BOUNDARY_INVENTORY_PATH, "utf8"));
-  } catch {
-    return null;
-  }
-}
+// The ++ fork-boundary infrastructure shapes how every other change is gated, so
+// a change to any of its files runs full CI. The list lives in this file, which
+// is itself on it: a PR cannot narrow its own run by editing the list.
+const BOUNDARY_INFRASTRUCTURE = new Set([
+  "package.json",
+  "scripts/seamRegistry.ts",
+  "scripts/seamRegistry.test.ts",
+  "scripts/check-fork-boundaries.ts",
+  "scripts/check-fork-boundaries.test.ts",
+  "scripts/check-changed.ts",
+  "scripts/check-changed.test.ts",
+  ".github/scripts/ci-changes.cjs",
+  ".github/scripts/ci-changes.test.cjs",
+  ".github/workflows/ci.yml",
+]);
 
 // Includes cross-package reads absent from package.json dependencies.
 const EXTRA_OWNERS = [
+  // seamRegistry.test.ts decodes the committed registry.
+  [/^plusplus\//, ["@t3tools/scripts"]],
   // Vite configs and tsconfigs of these apps import scripts/lib directly.
   [/^scripts\/lib\//, ["@t3tools/desktop", "@t3tools/mobile", "@t3tools/web", "t3"]],
   // scripts/build-desktop-artifact.ts reads the GNOME extension manifest.
@@ -261,13 +250,7 @@ function propagateDependents(packages, seed, depsOf) {
 // resolver/API failure). Anything but "none" forces the full run.
 const SYNC_DESIGNATIONS = new Set(["none", "designated", "invalid"]);
 
-function decide(
-  files,
-  packages,
-  full,
-  sync = "none",
-  boundaryInfra = readBoundaryInfrastructure(),
-) {
+function decide(files, packages, full, sync = "none") {
   if (!SYNC_DESIGNATIONS.has(sync)) {
     throw new Error(
       `Invalid --sync designation ${JSON.stringify(sync)}. Expected none, designated, or invalid.`,
@@ -275,12 +258,12 @@ function decide(
   }
   const all = new Set(packages.map((pkg) => pkg.name));
   let affected = new Set();
-  let everything = full || files === null || sync !== "none" || boundaryInfra === null;
+  let everything = full || files === null || sync !== "none";
   let rust = false;
 
   for (const file of files ?? []) {
     if (RUST.test(file)) rust = true;
-    if (boundaryInfra?.has(file)) {
+    if (BOUNDARY_INFRASTRUCTURE.has(file)) {
       everything = true;
       console.error(`Boundary infrastructure runs everything: ${file}`);
       continue;
@@ -395,7 +378,7 @@ module.exports = {
   readWorkspace,
   decide,
   desktopClosure,
-  boundaryInfrastructureOf,
+  BOUNDARY_INFRASTRUCTURE,
   checkJobResults,
   EXPECTED_JOBS,
   SEPARATELY_REQUIRED_JOBS,

@@ -6,7 +6,7 @@ const {
   decide,
   desktopClosure,
   readWorkspace,
-  boundaryInfrastructureOf,
+  BOUNDARY_INFRASTRUCTURE,
   EXPECTED_JOBS,
   SEPARATELY_REQUIRED_JOBS,
 } = require("./ci-changes.cjs");
@@ -427,39 +427,18 @@ function assertEverything(outputs, file) {
   }
 }
 
-test("boundaryInfrastructureOf parses only a well-formed policy list", () => {
-  assert.deepEqual(
-    boundaryInfrastructureOf('{"boundaryInfrastructure":["a.ts","b/c.ts"]}'),
-    new Set(["a.ts", "b/c.ts"]),
-  );
-  assert.equal(boundaryInfrastructureOf("{oops"), null);
-  assert.equal(boundaryInfrastructureOf("{}"), null);
-  assert.equal(boundaryInfrastructureOf('{"boundaryInfrastructure":"a.ts"}'), null);
-  assert.equal(boundaryInfrastructureOf('{"boundaryInfrastructure":[42]}'), null);
-});
-
-test("every recorded boundaryInfrastructure path runs every job", () => {
-  const repoRoot = path.resolve(__dirname, "../..");
-  const policy = JSON.parse(
-    fs.readFileSync(path.join(repoRoot, "config/fork-inventory.json"), "utf8"),
-  );
-  assert.ok(policy.boundaryInfrastructure.length > 0);
-  for (const file of policy.boundaryInfrastructure) {
+test("every BOUNDARY_INFRASTRUCTURE path runs every job", () => {
+  assert.ok(BOUNDARY_INFRASTRUCTURE.size > 0);
+  for (const file of BOUNDARY_INFRASTRUCTURE) {
     const { outputs } = decide([file], packages, false);
     assertEverything(outputs, file);
   }
 });
 
-// The empty set stands in for a head policy stripped of every boundary entry.
-test("a hostile inventory edit stripping boundary entries still runs every job", () => {
-  const { outputs } = decide(
-    ["config/fork-inventory.json", ".github/scripts/ci-changes.cjs"],
-    packages,
-    false,
-    "none",
-    new Set(),
-  );
-  assertEverything(outputs, "config/fork-inventory.json");
+test("a seam registry edit selects the scripts tests that decode it, not everything", () => {
+  const { affected, outputs } = decide(["plusplus/seams.json"], packages, false);
+  assert.ok(affected.includes("@t3tools/scripts"), affected.join(", "));
+  assertNotEverything(outputs);
 });
 
 test("a scripts file outside the boundary list stays scoped", () => {
@@ -467,13 +446,8 @@ test("a scripts file outside the boundary list stays scoped", () => {
   assertNotEverything(outputs);
 });
 
-test("an unreadable boundary policy runs every job rather than guessing", () => {
-  const { outputs } = decide(["docs/user/install.md"], packages, false, "none", null);
-  assertEverything(outputs, "unreadable policy");
-});
-
-test("an inert docs diff still runs nothing when the policy is readable", () => {
-  const { outputs } = decide(["docs/user/install.md"], packages, false, "none", new Set());
+test("an inert docs diff runs nothing", () => {
+  const { outputs } = decide(["docs/user/install.md"], packages, false);
   assert.deepEqual(outputs.test_packages, "");
   assert.equal(outputs.rust, false);
 });
@@ -725,6 +699,19 @@ test("the verification lanes gate independently on a clean merge", () => {
   // Each lane records one of the three verification results, fail-closed.
   assert.equal((dryRunWorkflow.match(/result=verification_failed ;;/g) ?? []).length, 1);
   assert.equal((dryRunWorkflow.match(/result=error\n/g) ?? []).length, 1);
+});
+
+// The dry run is report-only: a failing verification step must conclude its job
+// as success and leave the verdict to the verification_result output.
+test("failing verification steps do not fail the dry-run lanes", () => {
+  assert.match(
+    dryRunWorkflow,
+    /- name: Verify the merged tree\n\s+id: check\n\s+continue-on-error: true/,
+  );
+  assert.match(
+    windowsWorkflow,
+    /id: test\n[\s\S]{0,200}continue-on-error: \$\{\{ inputs\.dry_run_tag != '' \}\}/,
+  );
 });
 
 test("the report job always runs and aggregates every lane", () => {

@@ -59,9 +59,12 @@
 /apps/web/src/components/sidebar/SidebarUpstreamReleasePill.tsx @WianVDM
 /apps/web/src/components/sidebar/SidebarUpstreamReleasePill.browser.test.tsx @WianVDM
 
+# The seam registry, sync history, and ++ rules.
+/plusplus/ @WianVDM
+
 # Integration seams: upstream-owned files carrying fork hooks. These are the
 # sync-conflict hotspots; keep this list aligned with the seam registry in
-# .github/scripts/pr-ownership-label.cjs.
+# plusplus/seams.json.
 /apps/desktop/src/main.ts @WianVDM
 /apps/desktop/src/app/DesktopEnvironment.ts @WianVDM
 /apps/desktop/src/app/DesktopEnvironment.test.ts @WianVDM

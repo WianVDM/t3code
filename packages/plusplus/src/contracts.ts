@@ -1,6 +1,7 @@
 /**
  * Typed ++ sidecars for the optional `plusplus` carrier on upstream contract structs.
- * Sidecar-first reads, legacy fallback; dual-writes limited to EXC-09 in `config/fork-inventory.json`.
+ * Sidecar-first reads, legacy fallback; dual-writes limited to the `reason` on the
+ * `context-bridge.settings-*` seams and the legacy contract entries in `plusplus/seams.json`.
  * All future ++ data is sidecar-only.
  */
 import {

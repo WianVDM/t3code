@@ -3,8 +3,10 @@
 # ref, opening a PR, or holding a secret: the merge happens on a detached HEAD
 # with hooks disabled, clean merges are replayed and verified independently on
 # Linux and Windows, and the report job fails closed on any missing, cancelled,
-# or unexpected outcome. The real sync flow stays the manual one documented in
-# docs/operations/release.md.
+# or unexpected outcome. The run is report-only: conflicts and failed
+# verification are findings in the ++ impact report, and only a report that
+# cannot be computed fails it. The real sync flow stays the manual one
+# documented in docs/operations/release.md.
 name: Upstream Sync Dry Run
 
 on:
@@ -90,7 +92,7 @@ jobs:
 
       # The dry run must be driven by helpers this commit already trusts.
       - name: Test the trusted helpers
-        run: node --test .github/scripts/ci-changes.test.cjs .github/scripts/pr-ownership-label.test.cjs
+        run: node --test .github/scripts/ci-changes.test.cjs
 
       - name: Dry-run merge
         id: dry_run
@@ -237,8 +239,11 @@ jobs:
             node apps/web/node_modules/playwright/cli.js install-deps chromium
           fi
 
+      # continue-on-error: a failing check is a finding recorded in the result
+      # step below, never a red run.
       - name: Verify the merged tree
         id: check
+        continue-on-error: true
         env:
           DRY_BASE_SHA: ${{ needs.merge.outputs.base_sha }}
         run: vp run check:changed "$DRY_BASE_SHA"

@@ -1,0 +1,175 @@
+{
+  "version": 1,
+  "syncs": [
+    {
+      "tag": "v0.1.6",
+      "commit": "af021cfa142e947486cd78469bb45aa052a686a3",
+      "conflicts": [
+        {
+          "path": ".github/workflows/ci.yml",
+          "features": []
+        },
+        {
+          "path": "apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.test.ts",
+          "features": []
+        },
+        {
+          "path": "apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts",
+          "features": []
+        },
+        {
+          "path": "apps/server/src/provider/Drivers/AntigravityDriver.ts",
+          "features": []
+        },
+        {
+          "path": "apps/server/src/provider/Drivers/AntigravitySkills.ts",
+          "features": []
+        },
+        {
+          "path": "apps/server/src/provider/Drivers/ClaudeSkills.ts",
+          "features": []
+        },
+        {
+          "path": "apps/server/src/provider/antigravityUsageLimits.ts",
+          "features": []
+        },
+        {
+          "path": "apps/server/src/terminal/Manager.test.ts",
+          "features": []
+        },
+        {
+          "path": "apps/server/src/terminal/Manager.ts",
+          "features": []
+        },
+        {
+          "path": "apps/web/src/components/AppSidebarLayout.tsx",
+          "features": []
+        },
+        {
+          "path": "apps/web/src/components/ChatView.tsx",
+          "features": []
+        },
+        {
+          "path": "apps/web/src/components/chat/ChatOverlayHosts.tsx",
+          "features": []
+        },
+        {
+          "path": "apps/web/src/components/chat/ThreadDetailsCard.tsx",
+          "features": []
+        },
+        {
+          "path": "apps/web/src/components/chat/ThreadDetailsPanel.tsx",
+          "features": []
+        },
+        {
+          "path": "apps/web/src/components/chat/useComposerProviderModel.ts",
+          "features": []
+        },
+        {
+          "path": "apps/web/src/components/chat/useThreadLifecycle.tsx",
+          "features": []
+        },
+        {
+          "path": "apps/web/src/components/settings/SettingsPanels.tsx",
+          "features": []
+        },
+        {
+          "path": "apps/web/src/components/usage/UsagePage.tsx",
+          "features": []
+        },
+        {
+          "path": "apps/web/src/lib/revealThreadTerminal.ts",
+          "features": []
+        },
+        {
+          "path": "apps/web/src/vite-env.d.ts",
+          "features": []
+        },
+        {
+          "path": "apps/web/vite.config.ts",
+          "features": []
+        },
+        {
+          "path": "packages/contracts/src/orchestrationV2.ts",
+          "features": []
+        },
+        {
+          "path": "packages/provider-core/src/server/runtimeInstructions.ts",
+          "features": []
+        },
+        {
+          "path": "packages/provider-cursor/src/server/adapter.ts",
+          "features": []
+        },
+        {
+          "path": "packages/provider-cursor/src/server/skills.ts",
+          "features": []
+        },
+        {
+          "path": "packages/provider-opencode/src/server/v2/adapter.ts",
+          "features": []
+        },
+        {
+          "path": "packages/provider-pi/src/server/adapter.test.ts",
+          "features": []
+        },
+        {
+          "path": "packages/provider-pi/src/server/adapter.ts",
+          "features": []
+        },
+        {
+          "path": "packages/provider-pi/src/server/mcpExtensionSource.ts",
+          "features": []
+        },
+        {
+          "path": "packages/shared/src/orchestrationV2PendingBackgroundWork.test.ts",
+          "features": []
+        },
+        {
+          "path": "packages/shared/src/orchestrationV2PendingBackgroundWork.ts",
+          "features": []
+        },
+        {
+          "path": "packages/shared/src/serverSettings.ts",
+          "features": []
+        },
+        {
+          "path": "scripts/build-desktop-artifact.ts",
+          "features": []
+        }
+      ],
+      "dropped": []
+    },
+    {
+      "tag": "v0.1.7",
+      "commit": "daa19cc19141f56ba87370fe2d4d43174288940c",
+      "conflicts": [
+        {
+          "path": "apps/web/src/components/chat/ThreadDetailsCard.tsx",
+          "features": []
+        },
+        {
+          "path": "packages/provider-opencode/src/server/driver.test.ts",
+          "features": []
+        },
+        {
+          "path": "packages/shared/src/cliRelease.ts",
+          "features": []
+        },
+        {
+          "path": "packages/shared/src/usageLimits.ts",
+          "features": []
+        },
+        {
+          "path": "scripts/build-npm-launcher.test.ts",
+          "features": []
+        },
+        {
+          "path": "scripts/npm-launcher/t3.mjs",
+          "features": []
+        }
+      ],
+      "dropped": []
+    }
+  ]
+}
