@@ -1,10 +1,33 @@
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
+// Fork identity, release discovery, and channel classification live in
+// @t3tools/plusplus/forkIdentity; this facade keeps the cliRelease import surface stable for
+// consumers that can only reach @t3tools/shared.
+import {
+  FORK_BROWSER_SETUP_COMMAND,
+  FORK_CLI_RELEASE_CHANNELS as CLI_RELEASE_CHANNELS,
+  FORK_RELEASE_DOWNLOAD_BASE_URL as CLI_RELEASE_DEFAULT_BASE_URL,
+  FORK_RELEASES_URL as CLI_RELEASES_PAGE_URL,
+  forkCliReleaseChannelOf as cliReleaseChannelOf,
+  forkCliReleaseIndexPageUrl as cliReleaseIndexPageUrl,
+  newestForkCliReleaseVersion as newestCliReleaseVersion,
+  resolveForkGitHubPublishConfig,
+  type ForkCliReleaseChannel as CliReleaseChannel,
+} from "@t3tools/plusplus/forkIdentity";
 import { compareSemverVersions } from "./semver.ts";
 
-const CLI_RELEASE_REPOSITORY = "WianVDM/t3code";
-export const CLI_RELEASES_PAGE_URL = `https://github.com/${CLI_RELEASE_REPOSITORY}/releases`;
+export {
+  CLI_RELEASE_CHANNELS,
+  CLI_RELEASES_PAGE_URL,
+  FORK_BROWSER_SETUP_COMMAND,
+  cliReleaseChannelOf,
+  cliReleaseIndexPageUrl,
+  newestCliReleaseVersion,
+  resolveForkGitHubPublishConfig,
+};
+export type { CliReleaseChannel };
+
 export const CLI_RELEASE_CHECKSUMS_FILE = "SHA256SUMS";
 export const CLI_RELEASE_METADATA_FILE = "release-metadata.json";
 export const CLI_RELEASE_BASE_URL_ENV = "T3CODE_RELEASE_BASE_URL";
@@ -36,8 +59,6 @@ export function cliArchiveTarCommand(
 export function cliArchiveFileName(version: string, platformKey: CliArchivePlatformKey): string {
   return `t3-${version}-${platformKey}.${platformKey.startsWith("win32") ? "zip" : "tar.gz"}`;
 }
-
-const CLI_RELEASE_DEFAULT_BASE_URL = `https://github.com/${CLI_RELEASE_REPOSITORY}/releases/download`;
 
 export function cliReleaseDownloadBaseUrl(
   version: string,
@@ -75,18 +96,6 @@ export function parseChecksums(text: string): ReadonlyMap<string, string> {
     }
   }
   return checksums;
-}
-
-export type CliReleaseChannel = "stable" | "nightly" | "preview";
-export const CLI_RELEASE_CHANNELS: ReadonlyArray<CliReleaseChannel> = [
-  "stable",
-  "nightly",
-  "preview",
-];
-
-export function cliReleaseChannelOf(version: string): CliReleaseChannel {
-  const channel = /^[^-+]+-(nightly|preview)\.\d{8}\.\d+$/.exec(version)?.[1];
-  return channel === "nightly" || channel === "preview" ? channel : "stable";
 }
 
 /** Whether updating between these versions crosses Stable and Nightly. Preview builds cross nothing.
@@ -128,28 +137,6 @@ export function acceptsTrackSwitchRelease(
     cliReleaseChannelOf(found) === (channel === "nightly" ? "nightly" : "stable") &&
     compareSemverVersions(found, checked) >= 0
   );
-}
-
-/** Page until the channel matches; nightlies can push preview/stable releases past the first page. */
-export function cliReleaseIndexPageUrl(page: number): string {
-  return `https://api.github.com/repos/${CLI_RELEASE_REPOSITORY}/releases?per_page=100&page=${page}`;
-}
-
-/** Draft assets are not downloadable. */
-export function newestCliReleaseVersion(
-  releases: ReadonlyArray<{
-    readonly tag_name: string;
-    readonly draft?: boolean | undefined;
-  }>,
-  channel: CliReleaseChannel,
-): string | undefined {
-  for (const release of releases) {
-    if (release.draft) continue;
-    const version = /^v(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)$/.exec(release.tag_name)?.[1];
-    if (version === undefined) continue;
-    if (cliReleaseChannelOf(version) === channel) return version;
-  }
-  return undefined;
 }
 
 export const ReleaseMetadataSchema = Schema.Struct({
