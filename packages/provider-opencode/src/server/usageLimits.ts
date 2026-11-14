@@ -1,6 +1,5 @@
 import * as NodeSqlite from "node:sqlite";
 
-import type { ServerProviderUsageWindow } from "@t3tools/contracts";
 import * as Digest from "effect/crypto/Digest";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -14,10 +13,11 @@ import * as HttpClientRequest from "effect/http/HttpClientRequest";
 import * as HttpClientResponse from "effect/http/HttpClientResponse";
 
 import {
-  clampPercent,
-  makeUnavailableUsageLimits,
-  makeUsageLimits,
-} from "@t3tools/provider-core/server/usageLimits";
+  OPENCODE_GO_PROBE_FAILED_MESSAGE,
+  OpenCodeGoUsageResponse,
+  openCodeGoUsageToWindows,
+} from "@t3tools/plusplus/openCodeUsageLimits";
+import { makeUnavailableUsageLimits, makeUsageLimits } from "@t3tools/plusplus/usageLimits";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 
 const AuthFile = Schema.Struct({ "opencode-go": Schema.optionalKey(Schema.Unknown) });
@@ -33,14 +33,6 @@ const StoredKey = Schema.Struct({
   ),
 });
 const decodeStoredKey = Schema.decodeOption(Schema.fromJsonString(StoredKey));
-const UsageWindow = Schema.Struct({
-  percent: Schema.Finite,
-  resetsAt: Schema.DateTimeUtcFromString,
-});
-const UsageResponse = Schema.Struct({
-  usage: Schema.Struct({ rolling: UsageWindow, weekly: UsageWindow, monthly: UsageWindow }),
-});
-
 // Select before decoding so an OAuth or self-hosted connection cannot fall
 // through to another stored account. NULL-active rows predate the selection flag.
 const readStoredApiKey = (databasePath: string, integrationId: "opencode" | "opencode-go") =>
@@ -137,33 +129,9 @@ export const readOpenCodeGoUsageLimits = Effect.fn("readOpenCodeGoUsageLimits")(
     // A valid Zen key can exist without a Go subscription.
     if (response.status === 403) return unsupported;
     const body = yield* HttpClientResponse.filterStatusOk(response).pipe(
-      Effect.flatMap(HttpClientResponse.schemaBodyJson(UsageResponse)),
+      Effect.flatMap(HttpClientResponse.schemaBodyJson(OpenCodeGoUsageResponse)),
     );
-    const windows: ServerProviderUsageWindow[] = [
-      {
-        id: "go_rolling",
-        kind: "session",
-        label: "Go · Session",
-        windowDurationMins: 5 * 60,
-        usedPercent: clampPercent(body.usage.rolling.percent),
-        resetsAt: DateTime.formatIso(body.usage.rolling.resetsAt),
-      },
-      {
-        id: "go_weekly",
-        kind: "weekly",
-        label: "Go · Weekly",
-        windowDurationMins: 7 * 24 * 60,
-        usedPercent: clampPercent(body.usage.weekly.percent),
-        resetsAt: DateTime.formatIso(body.usage.weekly.resetsAt),
-      },
-      {
-        id: "go_monthly",
-        kind: "monthly",
-        label: "Go · Monthly",
-        usedPercent: clampPercent(body.usage.monthly.percent),
-        resetsAt: DateTime.formatIso(body.usage.monthly.resetsAt),
-      },
-    ];
+    const windows = openCodeGoUsageToWindows(body);
     const digest = yield* Digest.Digest;
     // Unkeyed hashes match across environments; random Go keys resist offline guessing.
     const credentialFingerprint = yield* digest
@@ -179,7 +147,7 @@ export const readOpenCodeGoUsageLimits = Effect.fn("readOpenCodeGoUsageLimits")(
       makeUnavailableUsageLimits({
         checkedAt,
         reason: "probeFailed",
-        message: "OpenCode Go could not read usage.",
+        message: OPENCODE_GO_PROBE_FAILED_MESSAGE,
       }),
     ),
   );

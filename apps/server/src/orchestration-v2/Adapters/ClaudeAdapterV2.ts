@@ -22,6 +22,10 @@ import {
 
 import { isWorkspaceImagePreviewPath } from "@t3tools/shared/filePreview";
 import {
+  pendingBackgroundTaskStartedAtFields,
+  readPendingBackgroundTaskStartedAt,
+} from "@t3tools/plusplus/contracts";
+import {
   addClaudeLedgerUsage,
   claudeLedgerDelta,
   claudeModelLedger,
@@ -2982,7 +2986,7 @@ function claudePendingBackgroundTask(input: {
     ...(typeof input.parentTaskId === "string" && input.parentTaskId.trim().length > 0
       ? { parentTaskId: input.parentTaskId }
       : {}),
-    ...(input.startedAt === undefined ? {} : { startedAt: input.startedAt }),
+    ...pendingBackgroundTaskStartedAtFields(input.startedAt),
   };
 }
 
@@ -5276,7 +5280,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         ) =>
           Ref.update(lastKnownOpaqueTasks, (current) => {
             const stamped = tasks.filter(
-              (task) => task.startedAt !== undefined && !current.has(task.taskId),
+              (task) =>
+                readPendingBackgroundTaskStartedAt(task) !== undefined && !current.has(task.taskId),
             );
             if (stamped.length === 0) return current;
             const updated = new Map(current);
@@ -5299,11 +5304,14 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           Ref.update(preservedBackgroundTaskStarts, (current) => {
             const snapshot = new Map<string, string | null>();
             for (const task of persistedRoster ?? []) {
-              snapshot.set(task.taskId, task.startedAt ?? null);
+              snapshot.set(task.taskId, readPendingBackgroundTaskStartedAt(task) ?? null);
             }
             // An in-session task_started stamp outranks the persisted stamp.
             for (const [taskId, task] of liveRoster) {
-              snapshot.set(taskId, task.startedAt ?? snapshot.get(taskId) ?? null);
+              snapshot.set(
+                taskId,
+                readPendingBackgroundTaskStartedAt(task) ?? snapshot.get(taskId) ?? null,
+              );
             }
             const updated = new Map(current);
             if (snapshot.size === 0) {
@@ -8368,7 +8376,9 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               yield* Ref.get(pendingBackgroundTasksByNativeThread),
               input.nativeThreadId,
             ).get(taskId);
-            if (live !== undefined) return { found: true, startedAt: live.startedAt };
+            if (live !== undefined) {
+              return { found: true, startedAt: readPendingBackgroundTaskStartedAt(live) };
+            }
             // A fresh process resets the roster when its query opens; the identity
             // snapshot taken at that reset survives it, per native thread.
             const seeded = (yield* Ref.get(preservedBackgroundTaskStarts))
@@ -8381,7 +8391,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               .get(input.nativeThreadId)
               ?.pendingBackgroundTasks?.find((task) => task.taskId === taskId);
             if (persisted !== undefined) {
-              return { found: true, startedAt: persisted.startedAt };
+              return { found: true, startedAt: readPendingBackgroundTaskStartedAt(persisted) };
             }
             return { found: false };
           });
@@ -8410,7 +8420,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               if (task !== null) {
                 const preserved = yield* preservedStartedAt(task.taskId);
                 const startedAt = preserved.found ? preserved.startedAt : undefined;
-                nextTasks.push(startedAt === undefined ? task : { ...task, startedAt });
+                nextTasks.push(
+                  startedAt === undefined
+                    ? task
+                    : { ...task, ...pendingBackgroundTaskStartedAtFields(startedAt) },
+                );
               }
             }
             yield* replacePendingBackgroundTasks(input.nativeThreadId, nextTasks);

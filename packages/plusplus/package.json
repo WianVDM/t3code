@@ -1,0 +1,92 @@
+{
+  "name": "@t3tools/plusplus",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./contracts": {
+      "types": "./src/contracts.ts",
+      "import": "./src/contracts.ts"
+    },
+    "./contextBridge": {
+      "types": "./src/contextBridge.ts",
+      "import": "./src/contextBridge.ts"
+    },
+    "./runtimeInstructions": {
+      "types": "./src/runtimeInstructions.ts",
+      "import": "./src/runtimeInstructions.ts"
+    },
+    "./openCodeContextBridge": {
+      "types": "./src/openCodeContextBridge.ts",
+      "import": "./src/openCodeContextBridge.ts"
+    },
+    "./antigravityContextBridge": {
+      "types": "./src/antigravityContextBridge.ts",
+      "import": "./src/antigravityContextBridge.ts"
+    },
+    "./usageLimits": {
+      "types": "./src/usageLimits.ts",
+      "import": "./src/usageLimits.ts"
+    },
+    "./usageReporting": {
+      "types": "./src/usageReporting.ts",
+      "import": "./src/usageReporting.ts"
+    },
+    "./usagePricing": {
+      "types": "./src/usagePricing.ts",
+      "import": "./src/usagePricing.ts"
+    },
+    "./upstreamUsage": {
+      "types": "./src/upstreamUsage.ts",
+      "import": "./src/upstreamUsage.ts"
+    },
+    "./kimiUsageLimits": {
+      "types": "./src/kimiUsageLimits.ts",
+      "import": "./src/kimiUsageLimits.ts"
+    },
+    "./openRouterUsage": {
+      "types": "./src/openRouterUsage.ts",
+      "import": "./src/openRouterUsage.ts"
+    },
+    "./codexUsageLimits": {
+      "types": "./src/codexUsageLimits.ts",
+      "import": "./src/codexUsageLimits.ts"
+    },
+    "./claudeUsageLimits": {
+      "types": "./src/claudeUsageLimits.ts",
+      "import": "./src/claudeUsageLimits.ts"
+    },
+    "./cursorUsageLimits": {
+      "types": "./src/cursorUsageLimits.ts",
+      "import": "./src/cursorUsageLimits.ts"
+    },
+    "./grokUsageLimits": {
+      "types": "./src/grokUsageLimits.ts",
+      "import": "./src/grokUsageLimits.ts"
+    },
+    "./openCodeUsageLimits": {
+      "types": "./src/openCodeUsageLimits.ts",
+      "import": "./src/openCodeUsageLimits.ts"
+    },
+    "./antigravityUsageLimits": {
+      "types": "./src/antigravityUsageLimits.ts",
+      "import": "./src/antigravityUsageLimits.ts"
+    },
+    "./museUsageLimits": {
+      "types": "./src/museUsageLimits.ts",
+      "import": "./src/museUsageLimits.ts"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vp test run --config ../../vite.config.ts --dir ."
+  },
+  "dependencies": {
+    "@t3tools/contracts": "workspace:*",
+    "effect": "catalog:"
+  },
+  "devDependencies": {
+    "@effect/vitest": "catalog:",
+    "@types/node": "catalog:",
+    "vite-plus": "catalog:"
+  }
+}

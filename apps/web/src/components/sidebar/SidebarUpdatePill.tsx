@@ -13,7 +13,7 @@ import { cn } from "../../lib/utils";
 import { ensureLocalApi } from "../../localApi";
 import { useDesktopUpdateState } from "../../state/desktopUpdate";
 import { usePrimaryManagedPolicy } from "../../state/managedPolicy";
-import { runManualUpstreamCheck } from "../../state/upstreamRelease";
+import { runManualUpstreamCheck } from "~/plusplus/state/upstreamRelease";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import {
   canCheckForUpdate,

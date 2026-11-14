@@ -11,6 +11,7 @@ import {
   displayLimitWindows,
   formatResetsIn,
   paceRemainingPercent,
+  readMonetaryUsage,
   remainingPercent,
   type LimitAccount,
   type LimitPool,
@@ -408,13 +409,13 @@ function PoolWindowCard({
 function hasDisplayableLimits(pool: LimitPool) {
   return (
     displayLimitWindows(pool).length > 0 ||
-    pool.accounts.some((account) => monetaryUsageText(account.limits.monetaryUsage) !== null)
+    pool.accounts.some((account) => monetaryUsageText(readMonetaryUsage(account.limits)) !== null)
   );
 }
 
 function PoolMonetaryAccounts({ pool }: { readonly pool: LimitPool }) {
   const rows = pool.accounts.flatMap((account) => {
-    const text = monetaryUsageText(account.limits.monetaryUsage);
+    const text = monetaryUsageText(readMonetaryUsage(account.limits));
     return text !== null ? [{ account, text }] : [];
   });
   if (rows.length === 0) return null;

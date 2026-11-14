@@ -306,6 +306,16 @@ it.layer(layerTest)("PiDriver workspace discovery", (it) => {
         snapshot.usageAccounts?.map((account) => account.id),
         ["openrouter"],
       );
+      // EXC-09 dual-write: the snapshot sidecar mirrors the released usageAccounts field.
+      assert.deepEqual(
+        (
+          snapshot.plusplus as { usageAccounts?: ReadonlyArray<{ id: string }> } | undefined
+        )?.usageAccounts?.map((account) => account.id),
+        ["openrouter"],
+      );
+      assert.deepEqual(snapshot.usageAccounts?.[0]?.usageLimits.plusplus, {
+        monetaryUsage: { usedUsd: 1, remainingUsd: 9, limitUsd: 10 },
+      });
     }).pipe(Effect.scoped),
   );
 

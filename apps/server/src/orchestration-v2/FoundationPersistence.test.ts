@@ -1628,7 +1628,13 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
         handoffIds: [] as const,
         forkedFrom: null,
         pendingBackgroundTasks: [
-          { taskId: "bg-owner", description: "sleep 20", kind: "command" as const },
+          {
+            taskId: "bg-owner",
+            description: "sleep 20",
+            kind: "command" as const,
+            startedAt: "2026-04-20T00:00:01.000Z",
+            plusplus: { startedAt: "2026-04-20T00:00:01.000Z" },
+          },
         ],
         createdAt: now,
         updatedAt: now,
@@ -1662,6 +1668,22 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
           },
         ],
       });
+
+      // A stored roster keeps its sidecar start; the released field rides along for old readers.
+      const withSidecarTask = yield* projectionStore.getThreadProjection(threadId);
+      assert.deepEqual(
+        withSidecarTask.providerThreads.find((candidate) => candidate.id === providerThreadId)
+          ?.pendingBackgroundTasks,
+        [
+          {
+            taskId: "bg-owner",
+            description: "sleep 20",
+            kind: "command",
+            startedAt: "2026-04-20T00:00:01.000Z",
+            plusplus: { startedAt: "2026-04-20T00:00:01.000Z" },
+          },
+        ],
+      );
 
       const ownedClear = yield* eventSink.writeIfProviderThreadOwner({
         providerThreadId,

@@ -31,7 +31,7 @@ import {
 import { useRender } from "@base-ui/react/use-render";
 import { type ReactNode, type AnimationEvent, type MouseEvent, type ReactElement } from "react";
 import { cn } from "../lib/utils";
-import { revealThreadTerminal } from "../lib/revealThreadTerminal";
+import { revealThreadTerminal } from "~/plusplus/lib/revealThreadTerminal";
 
 import { useEnvironmentQuery } from "../state/query";
 import { linkedPullRequestDetailAtom, useSharedPullRequestSummary } from "../state/pullRequests";

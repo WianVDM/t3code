@@ -2,7 +2,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
-const { decide } = require("./ci-changes.cjs");
+const { decide, boundaryInfrastructureOf } = require("./ci-changes.cjs");
 
 // A miniature of the real workspace: apps and packages with the dependency
 // edges gating cares about. t3 and @t3tools/web model the packages with their
@@ -203,4 +203,97 @@ test("every gate the workflow references is a decide output", () => {
   for (const gate of referenced) {
     assert.ok(gate in outputs, `workflow references gate "${gate}" that decide does not emit`);
   }
+});
+
+// ++ fork-boundary infrastructure gates the checker itself, so any of its
+// paths must select full CI even when a package would otherwise own them.
+function assertEverything(outputs, file) {
+  assert.equal(outputs.test_packages, "", file);
+  for (const gate of [
+    "typecheck",
+    "build",
+    "test",
+    "test_web",
+    "test_server",
+    "rust",
+    "release_smoke",
+  ]) {
+    assert.equal(outputs[gate], true, `${file}: ${gate}`);
+  }
+}
+
+test("boundaryInfrastructureOf parses only a well-formed policy list", () => {
+  assert.deepEqual(
+    boundaryInfrastructureOf('{"boundaryInfrastructure":["a.ts","b/c.ts"]}'),
+    new Set(["a.ts", "b/c.ts"]),
+  );
+  assert.equal(boundaryInfrastructureOf("{oops"), null);
+  assert.equal(boundaryInfrastructureOf("{}"), null);
+  assert.equal(boundaryInfrastructureOf('{"boundaryInfrastructure":"a.ts"}'), null);
+  assert.equal(boundaryInfrastructureOf('{"boundaryInfrastructure":[42]}'), null);
+});
+
+test("every recorded boundaryInfrastructure path runs every job", () => {
+  const repoRoot = path.resolve(__dirname, "../..");
+  const policy = JSON.parse(
+    fs.readFileSync(path.join(repoRoot, "config/fork-inventory.json"), "utf8"),
+  );
+  assert.ok(policy.boundaryInfrastructure.length > 0);
+  for (const file of policy.boundaryInfrastructure) {
+    const { outputs } = decide([file], packages, false);
+    assertEverything(outputs, file);
+  }
+});
+
+// The empty set stands in for a head policy stripped of every boundary entry.
+test("a hostile inventory edit stripping boundary entries still runs every job", () => {
+  const { outputs } = decide(
+    ["config/fork-inventory.json", ".github/scripts/ci-changes.cjs"],
+    packages,
+    false,
+    new Set(),
+  );
+  assertEverything(outputs, "config/fork-inventory.json");
+});
+
+test("a scripts file outside the boundary list stays scoped", () => {
+  const { outputs } = decide(["scripts/build-cli-archive.ts"], packages, false);
+  assertNotEverything(outputs);
+});
+
+test("an unreadable boundary policy runs every job rather than guessing", () => {
+  const { outputs } = decide(["docs/user/install.md"], packages, false, null);
+  assertEverything(outputs, "unreadable policy");
+});
+
+test("an inert docs diff still runs nothing when the policy is readable", () => {
+  const { outputs } = decide(["docs/user/install.md"], packages, false, new Set());
+  assert.deepEqual(outputs.test_packages, "");
+  assert.equal(outputs.rust, false);
+});
+
+// The fork-boundary job is advisory until B12: it must carry
+// continue-on-error and stay out of Check's needs, so its result can never
+// gate a PR. check-changed.ts's JOB_GATES mirrors Check's needs and stays
+// unaware of the job for the same reason.
+test("fork_boundaries is advisory and outside the Check gate", () => {
+  const repoRoot = path.resolve(__dirname, "../..");
+  const workflow = fs.readFileSync(path.join(repoRoot, ".github/workflows/ci.yml"), "utf8");
+
+  const job = workflow.match(/^ {2}fork_boundaries:\n(?:.*\n)*?^ {4}continue-on-error: true$/m);
+  assert.ok(job, "fork_boundaries job must set continue-on-error: true");
+  assert.ok(
+    !/fork_boundaries[\s\S]*?needs:/.test(job[0]),
+    "fork_boundaries must not gate on needs",
+  );
+
+  const check = workflow.slice(workflow.indexOf("\n  check:"));
+  const needs = check.match(/needs:\s*\[([\s\S]*?)\]/);
+  assert.ok(needs, "check job must declare needs");
+  assert.ok(!needs[1].includes("fork_boundaries"), "Check must not need fork_boundaries");
+
+  const changed = fs.readFileSync(path.join(repoRoot, "scripts/check-changed.ts"), "utf8");
+  const gates = changed.match(/const JOB_GATES[^=]*=\s*{([\s\S]*?)};/);
+  assert.ok(gates, "JOB_GATES must exist");
+  assert.ok(!gates[1].includes("fork_boundaries"), "JOB_GATES must not map fork_boundaries");
 });
