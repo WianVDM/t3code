@@ -1,5 +1,8 @@
 blank_issues_enabled: false
 contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/WianVDM/t3code/security/advisories/new
+    about: Report privately. Do not open a public issue for a vulnerability.
   - name: Upstream T3 Code
     url: https://github.com/pingdotgg/t3code
-    about: This is the ++ fork. Report problems in upstream itself there, or use the upstream sync form to bring a release in.
+    about: This is the ++ fork. Bugs and feature requests for upstream itself go there, not security reports. Use the upstream sync form to bring a release in.
